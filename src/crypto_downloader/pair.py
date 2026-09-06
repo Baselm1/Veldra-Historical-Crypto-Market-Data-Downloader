@@ -1,6 +1,7 @@
 """Run the download workflow for one requested pair."""
 
-from datetime import UTC, datetime, time, timedelta
+from datetime import UTC, date, datetime, time, timedelta
+from difflib import get_close_matches
 from pathlib import Path
 
 import httpx
@@ -36,19 +37,56 @@ def _result(pair: str, request: Request, dataset: DatasetSpec) -> Result:
     )
 
 
-def _market(pair: str, markets: list[Market]) -> Market | None:
-    """Resolve one normalized pair only when it has one exact match.
+def _suggestions(pair: str, markets: list[Market]) -> tuple[str, ...]:
+    """Return likely native symbols for one unknown pair spelling.
 
     Args:
         pair: The caller's pair spelling.
         markets: The current source market snapshot.
 
     Returns:
-        The unique normalized market, or ``None``.
+        Up to three ranked native symbol suggestions.
     """
     normalized = normalize_pair(pair)
+    by_normalized: dict[str, list[str]] = {}
+    for market in markets:
+        by_normalized.setdefault(market.normalized_symbol, []).append(market.symbol)
+    close = get_close_matches(normalized, by_normalized, n=3, cutoff=0.6)
+    symbols = [symbol for candidate in close for symbol in by_normalized[candidate]]
+    return tuple(symbols[:3])
+
+
+def _resolve_market(
+    pair: str, markets: list[Market]
+) -> tuple[Market | None, Message | None]:
+    """Resolve one normalized pair or describe why it is unresolved.
+
+    Args:
+        pair: The caller's pair spelling.
+        markets: The current source market snapshot.
+
+    Returns:
+        The unique market and no error, or no market and a structured error.
+    """
+    native = [market for market in markets if market.symbol == pair]
+    if len(native) == 1:
+        return native[0], None
+    normalized = normalize_pair(pair)
     matches = [market for market in markets if market.normalized_symbol == normalized]
-    return matches[0] if len(matches) == 1 else None
+    if len(matches) == 1:
+        return matches[0], None
+    if matches:
+        suggestions = tuple(sorted(market.symbol for market in matches))
+        return None, Message(
+            "ambiguous_pair",
+            f"Pair '{pair}' matches more than one source symbol.",
+            suggestions=suggestions,
+        )
+    return None, Message(
+        "unknown_pair",
+        f"Pair '{pair}' was not found.",
+        suggestions=_suggestions(pair, markets),
+    )
 
 
 def _missing_resources(
@@ -77,11 +115,19 @@ def _missing_resources(
     ]
 
 
-def _availability(resources: list[Resource]) -> tuple[datetime, datetime] | None:
+def _availability(
+    resources: list[Resource],
+    market: Market,
+    active_statuses: frozenset[str],
+    today: date,
+) -> tuple[datetime, datetime] | None:
     """Return daily source bounds around discovered resources.
 
     Args:
         resources: The discovered resources to bound.
+        market: The resolved source market.
+        active_statuses: Source-native statuses considered active.
+        today: The current UTC date used as the active exclusive end.
 
     Returns:
         The inclusive start and exclusive end, or ``None`` when empty.
@@ -89,8 +135,68 @@ def _availability(resources: list[Resource]) -> tuple[datetime, datetime] | None
     if not resources:
         return None
     first = min(resource.day for resource in resources)
-    last = max(resource.day for resource in resources) + timedelta(days=1)
+    if market.status in active_statuses:
+        last = today
+    else:
+        last = max(resource.day for resource in resources) + timedelta(days=1)
     return datetime.combine(first, time.min, UTC), datetime.combine(last, time.min, UTC)
+
+
+def _clean_range(
+    result: Result,
+    request: Request,
+    availability: tuple[datetime, datetime],
+) -> tuple[datetime, datetime] | None:
+    """Trim a request to known pair availability and report each edge.
+
+    Args:
+        result: The pair result receiving boundary warnings.
+        request: The original validated request.
+        availability: The pair's inclusive start and exclusive end.
+
+    Returns:
+        The usable range, or ``None`` when no timestamps overlap.
+    """
+    start = max(request.start, availability[0])
+    end = min(request.end, availability[1])
+    if start != request.start:
+        result.warnings.append(
+            Message(
+                "start_trimmed",
+                f"Earliest available date for {result.pair} is {availability[0].date()}.",
+            )
+        )
+    if end != request.end:
+        result.warnings.append(
+            Message(
+                "end_trimmed",
+                f"Latest available end for {result.pair} is "
+                f"{availability[1].date()} (exclusive).",
+            )
+        )
+    if start >= end:
+        result.warnings.append(
+            Message("no_overlap", "The request does not overlap available data.")
+        )
+        return None
+    return start, end
+
+
+def _resources_in_range(
+    resources: list[Resource], start: datetime, end: datetime
+) -> list[Resource]:
+    """Select daily resources touched by one cleaned timestamp range.
+
+    Args:
+        resources: Every discovered resource for the pair.
+        start: The inclusive cleaned start timestamp.
+        end: The exclusive cleaned end timestamp.
+
+    Returns:
+        Resources whose days overlap the cleaned request.
+    """
+    first, last = requested_days(start, end)
+    return [resource for resource in resources if first <= resource.day <= last]
 
 
 def process_pair(
@@ -102,6 +208,8 @@ def process_pair(
     pair: str,
     request: Request,
     dataset: DatasetSpec,
+    earliest_date: date,
+    today: date,
 ) -> Result:
     """Discover, cache, and query one requested market.
 
@@ -114,16 +222,18 @@ def process_pair(
         pair: The caller's original pair spelling.
         request: The validated shared request.
         dataset: The requested dataset schema.
+        earliest_date: The first daily archive date allowed by configuration.
+        today: The current UTC date and exclusive active-market boundary.
 
     Returns:
         The pair's data and structured outcome report.
     """
     result = _result(pair, request, dataset)
-    market = _market(pair, markets)
+    market, pair_error = _resolve_market(pair, markets)
     if market is None:
-        result.errors.append(
-            Message("unknown_pair", f"Pair '{pair}' was not found uniquely.")
-        )
+        if pair_error is None:
+            raise RuntimeError("pair resolution returned no market or error")
+        result.errors.append(pair_error)
         return result
 
     result.pair = market.symbol
@@ -134,18 +244,33 @@ def process_pair(
         market.symbol,
         dataset.base_interval,
     )
+    discovery_start = datetime.combine(earliest_date, time.min, UTC)
+    discovery_end = datetime.combine(today, time.min, UTC)
     try:
         resources = discover_resources(
-            source, catalog, client, key, request.start, request.end
+            source, catalog, client, key, discovery_start, discovery_end
         )
     except Exception as error:
         result.errors.append(Message("discovery_failed", str(error)))
         return result
 
-    result.available_range = _availability(resources)
-    result.problems.extend(_missing_resources(resources, request.start, request.end))
+    availability = _availability(resources, market, source.active_statuses, today)
+    result.available_range = availability
+    if availability is None:
+        result.errors.append(
+            Message(
+                "no_availability", f"No daily files are available for {result.pair}."
+            )
+        )
+        return result
+    used_range = _clean_range(result, request, availability)
+    if used_range is None:
+        return result
+    result.used_range = used_range
+    requested_resources = _resources_in_range(resources, *used_range)
+    result.problems.extend(_missing_resources(requested_resources, *used_range))
     coverage = cache_resources(
-        source, catalog, client, key, dataset, resources, data_dir
+        source, catalog, client, key, dataset, requested_resources, data_dir
     )
     result.problems.extend(coverage.problems)
     if not coverage.paths:
@@ -157,12 +282,11 @@ def process_pair(
             catalog.connection,
             coverage.paths,
             dataset,
-            request.start,
-            request.end,
+            used_range[0],
+            used_range[1],
             columns,
         )
     except Exception as error:
         result.errors.append(Message("query_failed", str(error)))
         return result
-    result.used_range = (request.start, request.end)
     return result

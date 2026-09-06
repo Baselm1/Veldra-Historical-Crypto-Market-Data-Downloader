@@ -265,7 +265,9 @@ def test_downloader_completes_and_reuses_one_spot_kline_day(
         datetime(2024, 1, 2, tzinfo=UTC),
     )
     assert first.used_range == first.requested_range
-    assert first.available_range == first.requested_range
+    assert first.available_range is not None
+    assert first.available_range[0] == first.requested_range[0]
+    assert first.available_range[1].date() == datetime.now(UTC).date()
     assert list(first.data.columns) == ["time", "price"]
     assert first.data["price"].tolist() == [42298.61, 42320.0]
     pd.testing.assert_frame_equal(first.data, second.data)
@@ -361,8 +363,8 @@ def test_unavailable_daily_resource_returns_a_problem(tmp_path: Path) -> None:
 
     assert isinstance(result, Result)
     assert result.data.empty
-    assert [problem.code for problem in result.problems] == ["resource_unavailable"]
-    assert result.errors == []
+    assert result.problems == []
+    assert [error.code for error in result.errors] == ["no_availability"]
     assert not result.complete
     assert server.archive_requests == 0
 
@@ -469,6 +471,7 @@ def test_downloader_defaults_to_the_binance_source(tmp_path: Path) -> None:
     service = Downloader(tmp_path)
 
     assert isinstance(service.source, Binance)
+    assert service.earliest_date == date(2020, 1, 1)
 
 
 @pytest.mark.parametrize("data_dir", ["", "   ", 1, None])
