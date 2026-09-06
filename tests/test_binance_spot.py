@@ -343,6 +343,32 @@ def test_first_resource_uses_a_small_forward_listing() -> None:
     assert requests[0].url.params["marker"].endswith("BTCUSDT-1m-2020-01-01")
 
 
+def test_first_resource_can_start_at_the_beginning_of_a_source_folder() -> None:
+    """Confirm all-history discovery omits the date marker from its listing.
+
+    The source should choose the first actual archive key rather than assuming an
+    arbitrary exchange launch date.
+    """
+    prefix = f"{SPOT_KLINES_PREFIX}BTCUSDT/1m/"
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        """Record an unbounded listing and return Binance's first archive."""
+        requests.append(request)
+        return httpx.Response(
+            200,
+            text=listing(keys=(f"{prefix}BTCUSDT-1m-2017-08-17.zip",)),
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        resource = Binance().first_resource(client, KEY, None, date(2025, 1, 1))
+
+    assert resource is not None
+    assert resource.day == date(2017, 8, 17)
+    assert requests[0].url.params.get("marker") is None
+    assert requests[0].url.params["max-keys"] == "2"
+
+
 def test_archive_layout_uses_dataset_rules_and_an_optional_archive_symbol() -> None:
     """Confirm interval and raw archive paths stay inside the Binance connector."""
     raw_trades = DatasetSpec(

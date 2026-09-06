@@ -77,7 +77,7 @@ class DurableSource:
         self,
         client: httpx.Client,
         key: ResourceKey,
-        start_day: date,
+        start_day: date | None,
         end_day: date,
     ) -> Resource | None:
         """Return the first deterministic resource in a valid range.
@@ -85,15 +85,15 @@ class DurableSource:
         Args:
             client: The unused HTTP client.
             key: The unused resource identity.
-            start_day: The earliest acceptable archive day.
+            start_day: The earliest acceptable archive day, or ``None`` for all days.
             end_day: The latest acceptable archive day.
 
         Returns:
             The first daily resource when the range is nonempty.
         """
-        if start_day > end_day:
+        if start_day is not None and start_day > end_day:
             return None
-        return resource(start_day)
+        return resource(start_day or date(2024, 1, 1))
 
     def ingest(
         self,

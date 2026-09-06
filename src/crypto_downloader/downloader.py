@@ -13,6 +13,7 @@ import httpx
 import pandas as pd
 
 from .catalog import Catalog, catalog_lock, open_catalog
+from .config import Settings, load_settings
 from .datasets import DatasetSpec, get_dataset
 from .display import Reporter
 from .models import Market, Result
@@ -22,7 +23,6 @@ from .request import parse_timestamp
 from .source import Source
 from .sources.binance import Binance
 
-MINIMUM_HISTORY_DATE = date(2018, 1, 1)
 LOGGER = logging.getLogger(__name__)
 
 
@@ -44,21 +44,23 @@ def utc_now() -> datetime:
     return datetime.now(UTC)
 
 
-def _history_date(value: object) -> date:
+def _history_date(value: object) -> date | None:
     """Parse a configurable UTC history boundary.
 
     Args:
         value: The proposed date-like earliest boundary.
 
     Returns:
-        A valid UTC calendar date on or after 2018.
+        A valid UTC calendar date, or ``None`` for all source history.
     """
+    if value is None or value == "all":
+        return None
     try:
         parsed = parse_timestamp(value)
     except (TypeError, ValueError) as error:
-        raise ValueError("earliest_date must be a valid date") from error
-    if parsed.time() != time.min or parsed.date() < MINIMUM_HISTORY_DATE:
-        raise ValueError("earliest_date must be a UTC day on or after 2018-01-01")
+        raise ValueError("earliest_date must be an ISO date or 'all'") from error
+    if parsed.time() != time.min:
+        raise ValueError("earliest_date must be a UTC day or 'all'")
     return parsed.date()
 
 
@@ -147,7 +149,7 @@ def _run_pair(
     pair: str,
     request: Request,
     dataset: DatasetSpec,
-    earliest_date: date,
+    earliest_date: date | None,
     today: date,
     *,
     refresh: bool,
@@ -167,7 +169,7 @@ def _run_pair(
         pair: The caller's original pair spelling.
         request: The validated shared request.
         dataset: The requested dataset schema.
-        earliest_date: The configured global history boundary.
+        earliest_date: The optional configured global history boundary.
         today: The current UTC day.
         refresh: Whether source metadata should be refreshed.
         offline: Whether source access is forbidden.
@@ -205,7 +207,7 @@ def _process_pairs(
     markets: list[Market],
     request: Request,
     dataset: DatasetSpec,
-    earliest_date: date,
+    earliest_date: date | None,
     today: date,
     *,
     refresh: bool,
@@ -224,7 +226,7 @@ def _process_pairs(
         markets: The current market snapshot.
         request: The validated shared request.
         dataset: The requested dataset schema.
-        earliest_date: The configured global history boundary.
+        earliest_date: The optional configured global history boundary.
         today: The current UTC day.
         refresh: Whether source metadata should be refreshed.
         offline: Whether source access is forbidden.
@@ -296,7 +298,8 @@ class Downloader:
         *,
         source: Source | None = None,
         transport: httpx.BaseTransport | None = None,
-        earliest_date: object = date(2020, 1, 1),
+        config_path: str | Path = "config.toml",
+        earliest_date: object = None,
         max_workers: int = 32,
         discovery_tail_days: int = 7,
         market_refresh_hours: float = 24.0,
@@ -307,7 +310,8 @@ class Downloader:
             data_dir: The directory containing the catalog and Parquet cache.
             source: The optional source strategy, defaulting to Binance.
             transport: An optional HTTPX transport used for requests.
-            earliest_date: The first daily archive date considered by discovery.
+            config_path: The TOML file containing default downloader settings.
+            earliest_date: An optional override for the configured history boundary.
             max_workers: The maximum concurrent daily archive downloads.
             discovery_tail_days: Recent active-market days rediscovered per request.
             market_refresh_hours: Hours before market metadata is refreshed again.
@@ -319,9 +323,14 @@ class Downloader:
         self.data_dir = Path(data_dir).expanduser().resolve()
         self.source: Source = source if source is not None else Binance()
         self.transport = transport
-        self.earliest_date = _history_date(earliest_date)
-        if self.earliest_date >= utc_today():
+        self.settings: Settings = load_settings(config_path)
+        configured_date = self.settings.earliest_date
+        self.earliest_date = _history_date(
+            configured_date if earliest_date is None else earliest_date
+        )
+        if self.earliest_date is not None and self.earliest_date >= utc_today():
             raise ValueError("earliest_date must be before today in UTC")
+        self.kline_base_interval = self.settings.kline_base_interval
         self.max_workers = _positive_integer(max_workers, "max_workers")
         self.discovery_tail_days = _positive_integer(
             discovery_tail_days, "discovery_tail_days"
@@ -373,7 +382,11 @@ class Downloader:
             desired_columns=desired_columns,
             gap_policy=gap_policy,
         )
-        specification = get_dataset(request.product, request.dataset)
+        specification = get_dataset(
+            request.product,
+            request.dataset,
+            kline_base_interval=self.kline_base_interval,
+        )
         request = request.resolve_dataset(specification)
         if request.product not in self.source.products:
             raise ValueError(
@@ -570,7 +583,8 @@ def get_results(
     desired_columns: object = None,
     source: Source | None = None,
     transport: httpx.BaseTransport | None = None,
-    earliest_date: object = date(2020, 1, 1),
+    config_path: str | Path = "config.toml",
+    earliest_date: object = None,
     max_workers: int = 32,
     discovery_tail_days: int = 7,
     market_refresh_hours: float = 24.0,
@@ -592,7 +606,8 @@ def get_results(
         desired_columns: Optional selected and renamed columns.
         source: The optional source strategy, defaulting to Binance.
         transport: An optional HTTPX transport used for requests.
-        earliest_date: The first daily archive date considered by discovery.
+        config_path: The TOML file containing default downloader settings.
+        earliest_date: An optional override for the configured history boundary.
         max_workers: The maximum concurrent daily archive downloads.
         discovery_tail_days: Recent active-market days rediscovered per request.
         market_refresh_hours: Hours before market metadata is refreshed again.
@@ -608,6 +623,7 @@ def get_results(
         data_dir,
         source=source,
         transport=transport,
+        config_path=config_path,
         earliest_date=earliest_date,
         max_workers=max_workers,
         discovery_tail_days=discovery_tail_days,
@@ -639,7 +655,8 @@ def get_data(
     desired_columns: object = None,
     source: Source | None = None,
     transport: httpx.BaseTransport | None = None,
-    earliest_date: object = date(2020, 1, 1),
+    config_path: str | Path = "config.toml",
+    earliest_date: object = None,
     max_workers: int = 32,
     discovery_tail_days: int = 7,
     market_refresh_hours: float = 24.0,
@@ -661,7 +678,8 @@ def get_data(
         desired_columns: Optional selected and renamed columns.
         source: The optional source strategy, defaulting to Binance.
         transport: An optional HTTPX transport used for requests.
-        earliest_date: The first daily archive date considered by discovery.
+        config_path: The TOML file containing default downloader settings.
+        earliest_date: An optional override for the configured history boundary.
         max_workers: The maximum concurrent daily archive downloads.
         discovery_tail_days: Recent active-market days rediscovered per request.
         market_refresh_hours: Hours before market metadata is refreshed again.
@@ -677,6 +695,7 @@ def get_data(
         data_dir,
         source=source,
         transport=transport,
+        config_path=config_path,
         earliest_date=earliest_date,
         max_workers=max_workers,
         discovery_tail_days=discovery_tail_days,
@@ -708,7 +727,8 @@ async def aget_data(
     desired_columns: object = None,
     source: Source | None = None,
     transport: httpx.BaseTransport | None = None,
-    earliest_date: object = date(2020, 1, 1),
+    config_path: str | Path = "config.toml",
+    earliest_date: object = None,
     max_workers: int = 32,
     discovery_tail_days: int = 7,
     market_refresh_hours: float = 24.0,
@@ -730,7 +750,8 @@ async def aget_data(
         desired_columns: Optional selected and renamed columns.
         source: The optional source strategy, defaulting to Binance.
         transport: An optional HTTPX transport used for requests.
-        earliest_date: The first daily archive date considered by discovery.
+        config_path: The TOML file containing default downloader settings.
+        earliest_date: An optional override for the configured history boundary.
         max_workers: The maximum concurrent daily archive downloads.
         discovery_tail_days: Recent active-market days rediscovered per request.
         market_refresh_hours: Hours before market metadata is refreshed again.
@@ -746,6 +767,7 @@ async def aget_data(
         data_dir,
         source=source,
         transport=transport,
+        config_path=config_path,
         earliest_date=earliest_date,
         max_workers=max_workers,
         discovery_tail_days=discovery_tail_days,

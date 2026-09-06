@@ -92,9 +92,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dataset", default="klines", help="dataset (default: klines)")
     parser.add_argument("--interval", help="output interval (default: stored interval)")
     parser.add_argument("--columns", nargs="+", help="columns to select")
+    parser.add_argument("--config", default="config.toml", help="settings TOML file")
     parser.add_argument("--data-dir", default="data", help="cache directory")
     parser.add_argument(
-        "--earliest-date", default="2020-01-01", help="earliest discovery date"
+        "--earliest-date", help="override configured earliest date or use 'all'"
     )
     parser.add_argument("--max-workers", type=int, default=32, help="download workers")
     parser.add_argument(
@@ -145,6 +146,7 @@ def _run(parser: argparse.ArgumentParser, arguments: argparse.Namespace) -> int:
             dataset=arguments.dataset,
             interval=arguments.interval,
             desired_columns=arguments.columns,
+            config_path=arguments.config,
             earliest_date=arguments.earliest_date,
             max_workers=arguments.max_workers,
             discovery_tail_days=arguments.discovery_tail_days,

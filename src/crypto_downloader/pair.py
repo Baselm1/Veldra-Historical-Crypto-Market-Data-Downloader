@@ -1,5 +1,6 @@
 """Run the download workflow for one requested pair."""
 
+from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 from difflib import get_close_matches
 import logging
@@ -20,6 +21,17 @@ from .request import Request, normalize_pair
 from .source import Source
 
 LOGGER = logging.getLogger(__name__)
+
+type TimeRange = tuple[datetime, datetime]
+
+
+@dataclass(frozen=True)
+class Availability:
+    """Separate full source availability from the configured usable range."""
+
+    source_range: TimeRange
+    usable_range: TimeRange
+    configured_start: datetime | None
 
 
 def _result(pair: str, request: Request, dataset: DatasetSpec) -> Result:
@@ -126,7 +138,7 @@ def _availability(
     bounds: tuple[date, date] | None,
     active: bool,
     today: date,
-) -> tuple[datetime, datetime] | None:
+) -> TimeRange | None:
     """Return timestamp bounds around known daily resource days.
 
     Args:
@@ -144,12 +156,62 @@ def _availability(
     return datetime.combine(first, time.min, UTC), datetime.combine(last, time.min, UTC)
 
 
+def _first_resource(
+    source: Source,
+    catalog: Catalog,
+    client: httpx.Client,
+    key: ResourceKey,
+    today: date,
+    result: Result,
+    reporter: Reporter,
+    *,
+    offline: bool,
+) -> Resource | None:
+    """Return and catalog the first source archive without a configured cutoff.
+
+    Args:
+        source: The source strategy used for discovery.
+        catalog: The metadata catalog receiving the first resource.
+        client: The HTTPX client used for source requests.
+        key: The requested source dataset identity.
+        today: The current UTC date and exclusive active boundary.
+        result: The result receiving discovery failures.
+        reporter: The optional Rich activity reporter.
+        offline: Whether source access is forbidden.
+
+    Returns:
+        The first known resource, or ``None`` when no source file is available.
+    """
+    cached = catalog.resource_bounds(key)
+    if offline:
+        if cached is None:
+            return None
+        day = cached[0]
+        resources = catalog.resources(key, day, day)
+        return resources[0] if resources else None
+    try:
+        with reporter.status(f"Finding the first {key.symbol} daily file"):
+            first = source.first_resource(
+                client,
+                key,
+                None,
+                today - timedelta(days=1),
+            )
+    except Exception as error:
+        LOGGER.exception("Earliest resource discovery failed: key=%s", key)
+        result.errors.append(Message("discovery_failed", str(error)))
+        return None
+    if first is not None:
+        catalog.save_discovery(key, first.day, first.day, [first])
+    return first
+
+
 def _availability_range(
     source: Source,
     catalog: Catalog,
     client: httpx.Client,
     key: ResourceKey,
-    earliest_date: date,
+    earliest_date: date | None,
     today: date,
     result: Result,
     reporter: Reporter,
@@ -158,7 +220,7 @@ def _availability_range(
     refresh: bool,
     offline: bool,
     tail_days: int,
-) -> tuple[datetime, datetime] | None:
+) -> Availability | None:
     """Resolve pair bounds without listing active-market history.
 
     Args:
@@ -166,7 +228,7 @@ def _availability_range(
         catalog: The metadata catalog containing known resources.
         client: The HTTPX client used for source requests.
         key: The requested source dataset identity.
-        earliest_date: The first configured archive date.
+        earliest_date: The optional first configured archive date.
         today: The current UTC day and exclusive active boundary.
         result: The result receiving discovery failures.
         reporter: The optional Rich activity reporter.
@@ -176,11 +238,23 @@ def _availability_range(
         tail_days: The recent active-market rediscovery window.
 
     Returns:
-        The known timestamp bounds, or ``None`` when no files exist.
+        The source and configured timestamp bounds, or ``None`` when no files exist.
     """
-    broad_start = datetime.combine(earliest_date, time.min, UTC)
-    broad_end = datetime.combine(today, time.min, UTC)
+    first = _first_resource(
+        source,
+        catalog,
+        client,
+        key,
+        today,
+        result,
+        reporter,
+        offline=offline,
+    )
+    if result.errors or first is None:
+        return None
     if not active:
+        broad_start = datetime.combine(first.day, time.min, UTC)
+        broad_end = datetime.combine(today, time.min, UTC)
         resources = _discover(
             source,
             catalog,
@@ -197,26 +271,20 @@ def _availability_range(
         )
         if resources is None:
             return None
-        return _availability(catalog.resource_bounds(key), False, today)
-
-    bounds = catalog.resource_bounds(key)
-    if bounds is None and not offline:
-        try:
-            with reporter.status(f"Finding the first {key.symbol} daily file"):
-                first = source.first_resource(
-                    client,
-                    key,
-                    earliest_date,
-                    today - timedelta(days=1),
-                )
-            if first is not None:
-                catalog.save_discovery(key, first.day, first.day, [first])
-                bounds = (first.day, first.day)
-        except Exception as error:
-            LOGGER.exception("Earliest resource discovery failed: key=%s", key)
-            result.errors.append(Message("discovery_failed", str(error)))
-            return None
-    return _availability(bounds, True, today)
+    source_range = _availability(catalog.resource_bounds(key), active, today)
+    if source_range is None:
+        return None
+    configured_start = (
+        datetime.combine(earliest_date, time.min, UTC)
+        if earliest_date is not None
+        else None
+    )
+    usable_start = max(source_range[0], configured_start or source_range[0])
+    return Availability(
+        source_range=source_range,
+        usable_range=(usable_start, source_range[1]),
+        configured_start=configured_start,
+    )
 
 
 def _recent_active_range(
@@ -245,50 +313,71 @@ def _recent_active_range(
 def _clean_range(
     result: Result,
     request: Request,
-    availability: tuple[datetime, datetime],
+    availability: Availability,
     reporter: Reporter,
-) -> tuple[datetime, datetime] | None:
+) -> TimeRange | None:
     """Trim a request to known pair availability and report each edge.
 
     Args:
         result: The pair result receiving boundary warnings.
         request: The original validated request.
-        availability: The pair's inclusive start and exclusive end.
+        availability: The pair's full source and configured usable ranges.
         reporter: The optional Rich activity reporter.
 
     Returns:
         The usable range, or ``None`` when no timestamps overlap.
     """
-    start = max(request.start, availability[0])
-    end = min(request.end, availability[1])
+    source_start, _source_end = availability.source_range
+    usable_start, usable_end = availability.usable_range
+    start = max(request.start, usable_start)
+    end = min(request.end, usable_end)
+    configured_start = availability.configured_start
+    limited_by_configuration = (
+        configured_start is not None
+        and source_start < configured_start
+        and request.start < configured_start
+    )
     if start != request.start:
-        result.warnings.append(
-            Message(
-                "start_trimmed",
-                f"Earliest available date for {result.pair} is {availability[0].date()}.",
+        if limited_by_configuration:
+            assert configured_start is not None
+            message = Message(
+                "configured_start",
+                f"Configured history for {result.pair} begins on "
+                f"{configured_start.date()}; Binance archive data begins "
+                f"on {source_start.date()}, so earlier files were not used.",
             )
-        )
-        reporter.warning(
-            f"{result.pair}: start trimmed to {format_time(availability[0])}"
-        )
+            reporter.warning(
+                f"{result.pair}: configured history begins "
+                f"{format_time(configured_start)}; source archive "
+                f"begins {format_time(source_start)}"
+            )
+        else:
+            message = Message(
+                "start_trimmed",
+                f"Earliest source archive date for {result.pair} is "
+                f"{source_start.date()}.",
+            )
+            reporter.warning(
+                f"{result.pair}: start trimmed to {format_time(source_start)}"
+            )
+        result.warnings.append(message)
     if end != request.end:
         result.warnings.append(
             Message(
                 "end_trimmed",
                 f"Latest available end for {result.pair} is "
-                f"{availability[1].date()} (exclusive).",
+                f"{usable_end.date()} (exclusive).",
             )
         )
-        reporter.warning(
-            f"{result.pair}: end trimmed to {format_time(availability[1])}"
-        )
+        reporter.warning(f"{result.pair}: end trimmed to {format_time(usable_end)}")
     if start >= end:
-        result.warnings.append(
-            Message("no_overlap", "The request does not overlap available data.")
+        overlap_message = (
+            "The request does not overlap the configured history range."
+            if limited_by_configuration
+            else "The request does not overlap source archive availability."
         )
-        reporter.warning(
-            f"{result.pair}: requested dates do not overlap known availability"
-        )
+        result.warnings.append(Message("no_overlap", overlap_message))
+        reporter.warning(f"{result.pair}: {overlap_message}")
         return None
     return start, end
 
@@ -308,6 +397,43 @@ def _resources_in_range(
     """
     first, last = requested_days(start, end)
     return [resource for resource in resources if first <= resource.day <= last]
+
+
+def _usable_range(
+    result: Result,
+    request: Request,
+    availability: Availability | None,
+    reporter: Reporter,
+) -> TimeRange | None:
+    """Record one availability result and return its cleaned usable range.
+
+    Args:
+        result: The pair result receiving availability diagnostics.
+        request: The original caller request to clean.
+        availability: The source and configured ranges, if any source file exists.
+        reporter: The optional Rich activity reporter.
+
+    Returns:
+        The cleaned request range, or ``None`` when no usable data exists.
+    """
+    if availability is None:
+        result.errors.append(
+            Message(
+                "no_availability", f"No daily files are available for {result.pair}."
+            )
+        )
+        return None
+    result.available_range = availability.source_range
+    reporter.info(
+        f"{result.pair}: source archive availability "
+        f"{format_range(availability.source_range)}"
+    )
+    if availability.configured_start is not None:
+        reporter.info(
+            f"{result.pair}: configured history begins "
+            f"{format_time(availability.configured_start)}"
+        )
+    return _clean_range(result, request, availability, reporter)
 
 
 def _query_result(
@@ -569,7 +695,7 @@ def process_pair(
     pair: str,
     request: Request,
     dataset: DatasetSpec,
-    earliest_date: date,
+    earliest_date: date | None,
     today: date,
     *,
     refresh: bool = False,
@@ -589,7 +715,7 @@ def process_pair(
         pair: The caller's original pair spelling.
         request: The validated shared request.
         dataset: The requested dataset schema.
-        earliest_date: The first daily archive date allowed by configuration.
+        earliest_date: The optional first daily archive date allowed by configuration.
         today: The current UTC date and exclusive active-market boundary.
         refresh: Whether to repeat complete resource discovery.
         offline: Whether source access and downloads must be skipped.
@@ -639,16 +765,7 @@ def process_pair(
     )
     if result.errors:
         return _finish(result, display, started)
-    result.available_range = availability
-    if availability is None:
-        result.errors.append(
-            Message(
-                "no_availability", f"No daily files are available for {result.pair}."
-            )
-        )
-        return _finish(result, display, started)
-    display.info(f"{market.symbol}: known availability {format_range(availability)}")
-    used_range = _clean_range(result, request, availability, display)
+    used_range = _usable_range(result, request, availability, display)
     if used_range is None:
         return _finish(result, display, started)
     result.used_range = used_range

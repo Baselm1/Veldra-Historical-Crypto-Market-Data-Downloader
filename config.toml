@@ -1,0 +1,7 @@
+[history]
+# Use "all" to retain each pair's full Binance archive history.
+earliest_date = "2020-01-01"
+
+[klines]
+# Spot Kline archives are cached at this source resolution.
+base_interval = "1m"

@@ -158,7 +158,7 @@ class Binance:
         self,
         client: httpx.Client,
         key: ResourceKey,
-        start_day: date,
+        start_day: date | None,
         end_day: date,
     ) -> Resource | None:
         """Return the first Binance daily archive on or after a boundary.
@@ -166,7 +166,8 @@ class Binance:
         Args:
             client: The HTTPX client used for Binance requests.
             key: The requested Binance dataset identity.
-            start_day: The earliest acceptable archive day.
+            start_day: The earliest acceptable archive day, or ``None`` for
+                the first archive in the source folder.
             end_day: The latest acceptable archive day.
 
         Returns:
@@ -174,12 +175,12 @@ class Binance:
         """
         dataset = self._validate_resource_request(key, start_day, end_day)
         prefix, stem, archive_symbol = self._archive_layout(key, dataset)
-        marker = f"{prefix}{stem}{start_day.isoformat()}"
+        marker = f"{prefix}{stem}{start_day.isoformat()}" if start_day else None
         pattern = re.compile(re.escape(prefix + stem) + r"(\d{4}-\d{2}-\d{2})\.zip")
         for keys, _ in self._pages(client, prefix, marker=marker, max_keys=2):
             for object_key in keys:
                 day = self._resource_day(object_key, pattern)
-                if day is None or day < start_day:
+                if day is None or (start_day is not None and day < start_day):
                     continue
                 if day > end_day:
                     return None
@@ -490,13 +491,14 @@ class Binance:
             raise ValueError(f"unsupported Binance product: {product}")
 
     def _validate_resource_request(
-        self, key: ResourceKey, start_day: date, end_day: date
+        self, key: ResourceKey, start_day: date | None, end_day: date
     ) -> DatasetSpec:
         """Reject unsupported or unsafe daily resource requests.
 
         Args:
             key: The requested source dataset identity.
-            start_day: The first archive day to include.
+            start_day: The first archive day to include, or ``None`` when
+                finding the first source archive.
             end_day: The last archive day to include.
         """
         if key.source != self.code:
@@ -515,7 +517,7 @@ class Binance:
             and re.fullmatch(r"[A-Za-z0-9_]+", key.archive_symbol) is None
         ):
             raise ValueError("invalid Binance archive symbol")
-        if end_day < start_day:
+        if start_day is not None and end_day < start_day:
             raise ValueError("Binance date range ends before it starts")
         return dataset
 

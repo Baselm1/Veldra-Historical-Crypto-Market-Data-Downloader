@@ -51,7 +51,7 @@ class RangeSource:
         self.days = days
         self.delay = delay
         self.market_calls = 0
-        self.first_calls: list[tuple[str, date, date]] = []
+        self.first_calls: list[tuple[str, date | None, date]] = []
         self.resource_calls: list[tuple[str, date, date]] = []
         self.active_calls = 0
         self.peak_calls = 0
@@ -74,7 +74,7 @@ class RangeSource:
         self,
         client: httpx.Client,
         key: ResourceKey,
-        start_day: date,
+        start_day: date | None,
         end_day: date,
     ) -> Resource | None:
         """Return the first configured resource inside a broad range.
@@ -82,7 +82,7 @@ class RangeSource:
         Args:
             client: The unused HTTPX client.
             key: The requested source dataset identity.
-            start_day: The earliest acceptable archive day.
+            start_day: The earliest acceptable archive day, or ``None`` for all days.
             end_day: The latest acceptable archive day.
 
         Returns:
@@ -91,7 +91,9 @@ class RangeSource:
         self.first_calls.append((key.symbol, start_day, end_day))
         self._pause()
         matching = [
-            day for day in self.days.get(key.symbol, []) if start_day <= day <= end_day
+            day
+            for day in self.days.get(key.symbol, [])
+            if (start_day is None or start_day <= day) and day <= end_day
         ]
         if not matching:
             return None
@@ -293,11 +295,13 @@ def test_exact_native_symbol_wins_over_a_normalized_collision(tmp_path: Path) ->
     assert len(result.data) == 1
 
 
-def test_start_is_trimmed_to_global_and_pair_availability(tmp_path: Path) -> None:
-    """Confirm requests cannot precede 2020 or a pair's first archive."""
+def test_start_is_limited_by_configuration_when_source_has_older_files(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Confirm configured history does not misrepresent older source archives."""
     source = RangeSource(
         [market("BTCUSDT")],
-        {"BTCUSDT": [date(2019, 1, 1), date(2020, 1, 2)]},
+        {"BTCUSDT": [date(2017, 8, 17), date(2020, 1, 1), date(2020, 1, 2)]},
     )
 
     result = one_result(
@@ -305,18 +309,81 @@ def test_start_is_trimmed_to_global_and_pair_availability(tmp_path: Path) -> Non
     )
 
     assert result.available_range == (
-        datetime(2020, 1, 2, tzinfo=UTC),
+        datetime(2017, 8, 17, tzinfo=UTC),
         datetime(2025, 1, 5, tzinfo=UTC),
     )
     assert result.used_range == (
-        datetime(2020, 1, 2, tzinfo=UTC),
+        datetime(2020, 1, 1, tzinfo=UTC),
         datetime(2020, 1, 3, tzinfo=UTC),
     )
-    assert [warning.code for warning in result.warnings] == ["start_trimmed"]
+    assert [warning.code for warning in result.warnings] == ["configured_start"]
     assert "BTCUSDT" in result.warnings[0].message
-    assert "2020-01-02" in result.warnings[0].message
-    assert source.first_calls == [("BTCUSDT", date(2020, 1, 1), date(2025, 1, 4))]
-    assert source.resource_calls == []
+    assert "2017-08-17" in result.warnings[0].message
+    assert "2020-01-01" in result.warnings[0].message
+    assert source.first_calls == [("BTCUSDT", None, date(2025, 1, 4))]
+    assert source.resource_calls == [("BTCUSDT", date(2020, 1, 1), date(2020, 1, 2))]
+    output = " ".join(capsys.readouterr().err.split())
+    assert "source archive availability 2017-08-17 UTC" in output
+    assert "configured history begins 2020-01-01 UTC" in output
+    assert "source archive begins 2017-08-17 UTC" in output
+
+
+def test_pre_cutoff_request_reports_configuration_not_source_unavailability(
+    tmp_path: Path,
+) -> None:
+    """Confirm a wholly pre-cutoff request names the configured history limit.
+
+    Args:
+        tmp_path: The isolated data directory.
+    """
+    source = RangeSource([market("BTCUSDT")], {"BTCUSDT": [date(2017, 8, 17)]})
+
+    result = one_result(
+        service(tmp_path, source).get_results("BTCUSDT", "2019-01-01", "2019-01-01")
+    )
+
+    assert [warning.code for warning in result.warnings] == [
+        "configured_start",
+        "no_overlap",
+    ]
+    assert result.warnings[1].message == (
+        "The request does not overlap the configured history range."
+    )
+
+
+def test_all_history_configuration_uses_the_first_real_source_archive(
+    tmp_path: Path,
+) -> None:
+    """Confirm all-history TOML settings permit a pair's real archive start.
+
+    Args:
+        tmp_path: The isolated data and settings directory.
+    """
+    config = tmp_path / "all-history.toml"
+    config.write_text(
+        """[history]
+earliest_date = "all"
+
+[klines]
+base_interval = "1m"
+""",
+        encoding="utf-8",
+    )
+    source = RangeSource([market("BTCUSDT")], {"BTCUSDT": [date(2017, 8, 17)]})
+
+    result = one_result(
+        Downloader(tmp_path / "data", source=source, config_path=config).get_results(
+            "BTCUSDT", "2017-08-17", "2017-08-17"
+        )
+    )
+
+    assert result.available_range == (
+        datetime(2017, 8, 17, tzinfo=UTC),
+        datetime(2025, 1, 5, tzinfo=UTC),
+    )
+    assert result.used_range == result.requested_range
+    assert result.warnings == []
+    assert source.first_calls == [("BTCUSDT", None, date(2025, 1, 4))]
 
 
 def test_active_market_end_is_trimmed_to_yesterday_boundary(tmp_path: Path) -> None:
@@ -515,7 +582,7 @@ def test_active_discovery_is_limited_to_the_cleaned_request(tmp_path: Path) -> N
     )
 
     assert result.complete
-    assert source.first_calls == [("BTCUSDT", date(2020, 1, 1), date(2025, 1, 4))]
+    assert source.first_calls == [("BTCUSDT", None, date(2025, 1, 4))]
     assert source.resource_calls == [("BTCUSDT", date(2024, 6, 1), date(2024, 6, 2))]
 
 
@@ -572,7 +639,6 @@ def test_multiple_pair_workflows_run_concurrently_and_preserve_order(
 @pytest.mark.parametrize(
     "earliest",
     [
-        date(2017, 12, 31),
         "not-a-date",
         datetime(2020, 1, 1, 1, tzinfo=UTC),
         TODAY,
@@ -581,7 +647,7 @@ def test_multiple_pair_workflows_run_concurrently_and_preserve_order(
 def test_invalid_earliest_history_boundary_is_rejected(
     tmp_path: Path, earliest: object
 ) -> None:
-    """Confirm the configurable history boundary is a valid UTC day since 2018.
+    """Confirm the configurable history boundary is a valid UTC day or all.
 
     Args:
         tmp_path: The isolated data directory.

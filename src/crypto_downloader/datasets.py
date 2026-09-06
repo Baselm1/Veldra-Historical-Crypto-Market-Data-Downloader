@@ -479,12 +479,15 @@ DATASETS: Mapping[tuple[str, str], DatasetSpec] = MappingProxyType(
 )
 
 
-def get_dataset(product: object, dataset: object) -> DatasetSpec:
+def get_dataset(
+    product: object, dataset: object, *, kline_base_interval: object = "1m"
+) -> DatasetSpec:
     """Return the specification for a supported product and dataset.
 
     Args:
         product: The parsed source product identifier.
         dataset: The parsed dataset identifier.
+        kline_base_interval: The configured Spot Kline archive resolution.
 
     Returns:
         The matching dataset specification.
@@ -498,6 +501,8 @@ def get_dataset(product: object, dataset: object) -> DatasetSpec:
         specification = DATASETS[(product, dataset)]
     except KeyError as error:
         raise ValueError(f"unsupported dataset '{product}/{dataset}'") from error
+    if specification is SPOT_KLINES and kline_base_interval != "1m":
+        raise ValueError("configured Spot Kline base interval must be '1m'")
     LOGGER.debug(
         "Dataset resolved: product=%s dataset=%s base_interval=%s",
         product,

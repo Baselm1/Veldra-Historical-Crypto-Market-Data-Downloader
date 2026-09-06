@@ -53,7 +53,7 @@ class Source(Protocol):
         self,
         client: httpx.Client,
         key: ResourceKey,
-        start_day: date,
+        start_day: date | None,
         end_day: date,
     ) -> Resource | None:
         """Return the first daily resource inside a broad date range.
@@ -61,7 +61,8 @@ class Source(Protocol):
         Args:
             client: The HTTPX client used for source requests.
             key: The requested source dataset identity.
-            start_day: The earliest acceptable source day.
+            start_day: The earliest acceptable source day, or ``None`` for all
+                source history.
             end_day: The latest acceptable source day.
 
         Returns:

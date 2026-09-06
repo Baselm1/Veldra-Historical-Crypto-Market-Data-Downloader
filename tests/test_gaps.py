@@ -404,7 +404,7 @@ class GapSource:
         self,
         client: httpx.Client,
         key: ResourceKey,
-        start_day: date,
+        start_day: date | None,
         end_day: date,
     ) -> Resource | None:
         """Return the gap archive when it follows the history boundary.
@@ -412,13 +412,13 @@ class GapSource:
         Args:
             client: The unused HTTP client.
             key: The unused resource identity.
-            start_day: The earliest acceptable archive day.
+            start_day: The earliest acceptable archive day, or ``None`` for all days.
             end_day: The latest acceptable archive day.
 
         Returns:
             The daily test resource when it is inside the range.
         """
-        if start_day <= DAY <= end_day:
+        if (start_day is None or start_day <= DAY) and DAY <= end_day:
             return Resource(DAY, "archive", "checksum")
         return None
 
