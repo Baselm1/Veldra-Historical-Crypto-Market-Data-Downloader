@@ -2,7 +2,7 @@
 
 import logging
 
-from .downloader import Downloader, get_data, get_results
+from .downloader import Downloader, aget_data, get_data, get_results
 from .display import render_result, render_results
 from .models import Gap, Message, MissingCandlesError, Result
 
@@ -14,6 +14,7 @@ __all__: tuple[str, ...] = (
     "Message",
     "MissingCandlesError",
     "Result",
+    "aget_data",
     "get_data",
     "get_results",
     "render_result",

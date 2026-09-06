@@ -14,6 +14,7 @@ def test_package_can_be_imported() -> None:
         "Message",
         "MissingCandlesError",
         "Result",
+        "aget_data",
         "get_data",
         "get_results",
         "render_result",

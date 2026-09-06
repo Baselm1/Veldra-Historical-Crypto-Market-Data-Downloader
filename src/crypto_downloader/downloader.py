@@ -1,5 +1,6 @@
 """Coordinate public cryptocurrency data requests."""
 
+import asyncio
 from datetime import UTC, date, datetime, time
 import logging
 from pathlib import Path
@@ -281,6 +282,55 @@ class Downloader:
             return results.frame()
         return [result.frame() for result in results]
 
+    async def aget_data(
+        self,
+        pairs: object,
+        starting_date: object,
+        end_date: object,
+        *,
+        product: object = "spot",
+        dataset: object = "klines",
+        interval: object = None,
+        desired_columns: object = None,
+        refresh: bool = False,
+        offline: bool = False,
+        gap_policy: object = "forward",
+        progress: bool = True,
+    ) -> pd.DataFrame | list[pd.DataFrame]:
+        """Run the DataFrame pipeline without blocking an async event loop.
+
+        Args:
+            pairs: One pair string or an ordered list of pair strings.
+            starting_date: The requested first date or timestamp.
+            end_date: The requested inclusive date or exclusive timestamp.
+            product: The source product identifier.
+            dataset: The historical dataset identifier.
+            interval: The optional output interval.
+            desired_columns: Optional selected and renamed columns.
+            refresh: Whether to repeat complete resource discovery.
+            offline: Whether to use only cataloged markets and cached files.
+            gap_policy: The behavior used for internal missing candles.
+            progress: Whether to show optional Rich activity.
+
+        Returns:
+            One DataFrame for string input or an ordered DataFrame list.
+        """
+        LOGGER.debug("Async downloader request delegated to a worker thread")
+        return await asyncio.to_thread(
+            self.get_data,
+            pairs,
+            starting_date,
+            end_date,
+            product=product,
+            dataset=dataset,
+            interval=interval,
+            desired_columns=desired_columns,
+            refresh=refresh,
+            offline=offline,
+            gap_policy=gap_policy,
+            progress=progress,
+        )
+
 
 def get_results(
     pairs: object,
@@ -400,6 +450,72 @@ def get_data(
         max_workers=max_workers,
         discovery_tail_days=discovery_tail_days,
     ).get_data(
+        pairs,
+        starting_date,
+        end_date,
+        product=product,
+        dataset=dataset,
+        interval=interval,
+        desired_columns=desired_columns,
+        refresh=refresh,
+        offline=offline,
+        gap_policy=gap_policy,
+        progress=progress,
+    )
+
+
+async def aget_data(
+    pairs: object,
+    starting_date: object,
+    end_date: object,
+    *,
+    data_dir: str | Path = "data",
+    product: object = "spot",
+    dataset: object = "klines",
+    interval: object = None,
+    desired_columns: object = None,
+    source: Source | None = None,
+    transport: httpx.BaseTransport | None = None,
+    earliest_date: object = date(2020, 1, 1),
+    max_workers: int = 16,
+    discovery_tail_days: int = 7,
+    refresh: bool = False,
+    offline: bool = False,
+    gap_policy: object = "forward",
+    progress: bool = True,
+) -> pd.DataFrame | list[pd.DataFrame]:
+    """Create a downloader and run it without blocking an async event loop.
+
+    Args:
+        pairs: One pair string or an ordered list of pair strings.
+        starting_date: The requested first date or timestamp.
+        end_date: The requested inclusive date or exclusive timestamp.
+        data_dir: The directory containing the catalog and Parquet cache.
+        product: The source product identifier.
+        dataset: The historical dataset identifier.
+        interval: The optional output interval.
+        desired_columns: Optional selected and renamed columns.
+        source: The optional source strategy, defaulting to Binance.
+        transport: An optional HTTPX transport used for requests.
+        earliest_date: The first daily archive date considered by discovery.
+        max_workers: The maximum concurrent daily archive downloads.
+        discovery_tail_days: Recent active-market days rediscovered per request.
+        refresh: Whether to repeat complete resource discovery.
+        offline: Whether to use only cataloged markets and cached files.
+        gap_policy: The behavior used for internal missing candles.
+        progress: Whether to show optional Rich activity.
+
+    Returns:
+        One DataFrame for string input or an ordered DataFrame list.
+    """
+    return await Downloader(
+        data_dir,
+        source=source,
+        transport=transport,
+        earliest_date=earliest_date,
+        max_workers=max_workers,
+        discovery_tail_days=discovery_tail_days,
+    ).aget_data(
         pairs,
         starting_date,
         end_date,
