@@ -143,6 +143,39 @@ def _validate_ordering(stored_columns: Columns, ordering_columns: Columns) -> No
         raise ValueError("dataset ordering columns must be stored")
 
 
+def _validate_typed_columns(
+    stored_columns: Columns,
+    time_column: str,
+    timestamp_columns: Columns,
+    integer_columns: Columns,
+    boolean_columns: Columns,
+) -> None:
+    """Reject typed columns that are absent, ambiguous, or miss the primary time.
+
+    Args:
+        stored_columns: The canonical columns retained in Parquet.
+        time_column: The primary timestamp used for range filtering.
+        timestamp_columns: Canonical columns stored as UTC timestamps.
+        integer_columns: Canonical columns stored as signed integers.
+        boolean_columns: Canonical columns stored as booleans.
+
+    Raises:
+        ValueError: If a type declaration is not compatible with the schema.
+    """
+    for name, columns in (
+        ("timestamp", timestamp_columns),
+        ("integer", integer_columns),
+        ("boolean", boolean_columns),
+    ):
+        if any(column not in stored_columns for column in columns):
+            raise ValueError(f"dataset {name} columns must be stored")
+    declared = (*timestamp_columns, *integer_columns, *boolean_columns)
+    if time_column not in timestamp_columns:
+        raise ValueError("dataset time_column must be a timestamp column")
+    if len(set(declared)) != len(declared):
+        raise ValueError("dataset typed columns cannot overlap")
+
+
 def _validate_schema_version(value: int) -> None:
     """Reject an unusable dataset schema version.
 
@@ -175,6 +208,9 @@ class DatasetSpec:
     supports_resampling: bool = False
     supports_gap_policy: bool = False
     ordering_columns: Columns = ()
+    timestamp_columns: Columns = ()
+    integer_columns: Columns = ()
+    boolean_columns: Columns = ()
 
     def __post_init__(self) -> None:
         """Validate the immutable capability declaration.
@@ -192,7 +228,16 @@ class DatasetSpec:
         )
         if not self.ordering_columns:
             object.__setattr__(self, "ordering_columns", (self.time_column,))
+        if not self.timestamp_columns:
+            object.__setattr__(self, "timestamp_columns", (self.time_column,))
         _validate_ordering(self.stored_columns, self.ordering_columns)
+        _validate_typed_columns(
+            self.stored_columns,
+            self.time_column,
+            self.timestamp_columns,
+            self.integer_columns,
+            self.boolean_columns,
+        )
         _validate_schema_version(self.schema_version)
 
     @property
@@ -231,6 +276,28 @@ class DatasetSpec:
         """
         generated = ("is_synthetic",) if self.supports_gap_policy else ()
         return (*self.stored_columns, *generated)
+
+    def column_dtype(self, column: str) -> str:
+        """Return the stable pandas dtype for one output column.
+
+        Args:
+            column: A stored or generated canonical output column.
+
+        Returns:
+            The pandas dtype string used for empty result frames.
+
+        Raises:
+            ValueError: If the column is not exposed by this dataset.
+        """
+        if column not in self.output_columns:
+            raise ValueError(f"unknown dataset column '{column}'")
+        if column in self.timestamp_columns:
+            return "datetime64[us, UTC]"
+        if column in self.integer_columns:
+            return "int64"
+        if column in self.boolean_columns or column == "is_synthetic":
+            return "bool"
+        return "float64"
 
     def resolve_interval(self, value: object) -> str | None:
         """Validate an output interval against this dataset.
@@ -320,6 +387,8 @@ SPOT_KLINES = DatasetSpec(
     supports_resampling=True,
     supports_gap_policy=True,
     ordering_columns=("open_time",),
+    timestamp_columns=("open_time", "close_time"),
+    integer_columns=("trade_count",),
 )
 
 DATASETS: Mapping[tuple[str, str], DatasetSpec] = MappingProxyType(

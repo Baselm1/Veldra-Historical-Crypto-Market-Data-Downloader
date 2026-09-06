@@ -8,7 +8,7 @@ import duckdb
 import pandas as pd
 import pytest
 
-from crypto_downloader.datasets import SPOT_KLINES
+from crypto_downloader.datasets import DatasetSpec, SPOT_KLINES
 from crypto_downloader.query import empty_frame, query_parquet
 
 
@@ -77,6 +77,29 @@ def selected_columns() -> dict[str, str]:
         Canonical column names mapped to caller-facing labels.
     """
     return {"open_time": "time", "close": "price", "trade_count": "trades"}
+
+
+def raw_events() -> DatasetSpec:
+    """Return a minimal raw event schema for generic query behavior.
+
+    Returns:
+        An interval-less dataset with deterministic event ordering.
+    """
+    return DatasetSpec(
+        product="spot",
+        name="events",
+        remote_name="events",
+        source_columns=("event_time", "trade_id", "is_buyer_maker", "price"),
+        stored_columns=("event_time", "trade_id", "is_buyer_maker", "price"),
+        time_column="event_time",
+        base_interval=None,
+        output_intervals=(),
+        aliases={},
+        timestamp_columns=("event_time",),
+        integer_columns=("trade_id",),
+        boolean_columns=("is_buyer_maker",),
+        ordering_columns=("event_time", "trade_id"),
+    )
 
 
 def test_query_parquet_filters_end_exclusively_and_orders_multiple_files(
@@ -311,3 +334,66 @@ def test_existing_files_with_no_matching_rows_return_stable_types(
     )
 
     pd.testing.assert_frame_equal(result, empty_frame(SPOT_KLINES, columns))
+
+
+def test_query_parquet_uses_raw_event_timestamp_and_secondary_ordering(
+    connection: duckdb.DuckDBPyConnection, tmp_path: Path
+) -> None:
+    """Confirm event data filters by its timestamp and orders equal times by ID."""
+    dataset = raw_events()
+    path = tmp_path / "events.parquet"
+    pd.DataFrame(
+        {
+            "event_time": pd.to_datetime(
+                [
+                    "2025-01-01 00:01:00Z",
+                    "2025-01-01 00:00:00Z",
+                    "2025-01-01 00:00:00Z",
+                ],
+                utc=True,
+            ).as_unit("us"),
+            "trade_id": pd.Series([3, 2, 1], dtype="int64"),
+            "is_buyer_maker": [True, False, True],
+            "price": [103.0, 102.0, 101.0],
+        }
+    ).to_parquet(path, index=False)
+    columns = {
+        "event_time": "time",
+        "trade_id": "id",
+        "is_buyer_maker": "maker",
+        "price": "price",
+    }
+
+    result = query_parquet(
+        connection,
+        [path],
+        dataset,
+        datetime(2025, 1, 1, tzinfo=UTC),
+        datetime(2025, 1, 1, 0, 1, tzinfo=UTC),
+        columns,
+        gap_policy=None,
+        interval=None,
+    )
+
+    assert result["id"].tolist() == [1, 2]
+    assert result["maker"].tolist() == [True, False]
+    assert str(result["time"].dtype) == "datetime64[us, UTC]"
+    assert result["id"].dtype == "int64"
+    assert result["maker"].dtype == "bool"
+
+
+def test_empty_frame_uses_declared_raw_event_types() -> None:
+    """Confirm empty raw event results retain their declared column types."""
+    columns = {
+        "event_time": "time",
+        "trade_id": "id",
+        "is_buyer_maker": "maker",
+        "price": "price",
+    }
+
+    result = empty_frame(raw_events(), columns)
+
+    assert str(result["time"].dtype) == "datetime64[us, UTC]"
+    assert result["id"].dtype == "int64"
+    assert result["maker"].dtype == "bool"
+    assert result["price"].dtype == "float64"

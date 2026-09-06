@@ -102,6 +102,9 @@ def test_spot_kline_schema_matches_the_daily_archive_and_cache() -> None:
     assert spec.supports_resampling is True
     assert spec.supports_gap_policy is True
     assert spec.ordering_columns == ("open_time",)
+    assert spec.timestamp_columns == ("open_time", "close_time")
+    assert spec.integer_columns == ("trade_count",)
+    assert spec.boolean_columns == ()
     assert spec.needs_interval is True
     assert spec.csv_header_row is None
     assert spec.storage_interval == "1m"
@@ -124,6 +127,7 @@ def test_interval_less_snapshot_capabilities_are_declared_without_a_subclass() -
     assert snapshot.supports_resampling is False
     assert snapshot.supports_gap_policy is False
     assert snapshot.output_columns == ("event_time", "value")
+    assert snapshot.timestamp_columns == ("event_time",)
 
 
 def test_capabilities_apply_dataset_specific_interval_and_gap_defaults() -> None:
@@ -153,6 +157,10 @@ def test_capabilities_apply_dataset_specific_interval_and_gap_defaults() -> None
         ({"supports_resampling": True}, "raw datasets"),
         ({"supports_gap_policy": True}, "raw datasets"),
         ({"ordering_columns": ("missing",)}, "ordering columns"),
+        ({"timestamp_columns": ("missing",)}, "timestamp columns"),
+        ({"integer_columns": ("missing",)}, "integer columns"),
+        ({"boolean_columns": ("missing",)}, "boolean columns"),
+        ({"timestamp_columns": ("value",)}, "time_column"),
         ({"schema_version": 0}, "schema_version"),
         ({"schema_version": True}, "schema_version"),
     ],

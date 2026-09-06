@@ -333,37 +333,38 @@ def _query_result(
         reporter: The optional Rich activity reporter.
     """
     gap_policy = request.gap_policy
-    if gap_policy is None:
-        raise ValueError("interval-less dataset querying is not implemented")
-    result.gaps = missing_ranges(
-        connection,
-        paths,
-        dataset,
-        used_range[0],
-        used_range[1],
-    )
-    if result.gaps:
-        missing = sum(gap.count for gap in result.gaps)
-        result.problems.append(
-            Message(
-                "missing_candles",
-                f"{source_code} omitted {missing} candle(s) across "
-                f"{len(result.gaps)} internal gap(s).",
+    if dataset.supports_gap_policy:
+        if gap_policy is None:
+            raise ValueError("candle dataset requires a resolved gap policy")
+        result.gaps = missing_ranges(
+            connection,
+            paths,
+            dataset,
+            used_range[0],
+            used_range[1],
+        )
+        if result.gaps:
+            missing = sum(gap.count for gap in result.gaps)
+            result.problems.append(
+                Message(
+                    "missing_candles",
+                    f"{source_code} omitted {missing} candle(s) across "
+                    f"{len(result.gaps)} internal gap(s).",
+                )
             )
-        )
-        reporter.warning(
-            f"{result.pair}: {missing:,} missing candle(s) across "
-            f"{len(result.gaps):,} internal gap(s); policy {gap_policy}"
-        )
-        LOGGER.warning(
-            "Missing source candles: pair=%s count=%d gaps=%d policy=%s",
-            result.pair,
-            missing,
-            len(result.gaps),
-            gap_policy,
-        )
-        if gap_policy == "raise":
-            raise MissingCandlesError(result.pair, result.gaps)
+            reporter.warning(
+                f"{result.pair}: {missing:,} missing candle(s) across "
+                f"{len(result.gaps):,} internal gap(s); policy {gap_policy}"
+            )
+            LOGGER.warning(
+                "Missing source candles: pair=%s count=%d gaps=%d policy=%s",
+                result.pair,
+                missing,
+                len(result.gaps),
+                gap_policy,
+            )
+            if gap_policy == "raise":
+                raise MissingCandlesError(result.pair, result.gaps)
     columns = dataset.resolve_columns(request.columns)
     result.data = query_parquet(
         connection,

@@ -124,15 +124,7 @@ def empty_frame(dataset: DatasetSpec, columns: Mapping[str, str]) -> pd.DataFram
     """
     values: dict[str, pd.Series] = {}
     for source, label in columns.items():
-        if source.endswith("time"):
-            dtype = "datetime64[us, UTC]"
-        elif source == "trade_count":
-            dtype = "int64"
-        elif source == "is_synthetic":
-            dtype = "bool"
-        else:
-            dtype = "float64"
-        values[label] = pd.Series(dtype=dtype)
+        values[label] = pd.Series(dtype=dataset.column_dtype(source))
     return pd.DataFrame(values)
 
 
@@ -214,6 +206,18 @@ def _projection(columns: Mapping[str, str], *, synthetic_column: bool = False) -
         )
         expressions.append(f"{value} AS {_identifier(label)}")
     return ", ".join(expressions)
+
+
+def _ordering(dataset: DatasetSpec) -> str:
+    """Build the deterministic canonical ordering for one dataset.
+
+    Args:
+        dataset: The schema declaring primary and secondary sort columns.
+
+    Returns:
+        A comma-separated DuckDB ``ORDER BY`` expression.
+    """
+    return ", ".join(_identifier(column) for column in dataset.ordering_columns)
 
 
 def _filled_fields(dataset: DatasetSpec, step: int, policy: str) -> str:
@@ -311,7 +315,7 @@ def _filled_query(
         )
         SELECT * FROM filled
         WHERE {time_column} >= ? AND {time_column} < ?
-        ORDER BY {time_column}
+        ORDER BY {_ordering(dataset)}
     """
     return sql, [[str(path) for path in paths], step, step, start, end]
 
@@ -336,7 +340,8 @@ def _raw_query(
     time_column = _identifier(dataset.time_column)
     sql = (
         "SELECT *, false AS is_synthetic FROM read_parquet(?) "
-        f"WHERE {time_column} >= ? AND {time_column} < ?"
+        f"WHERE {time_column} >= ? AND {time_column} < ? "
+        f"ORDER BY {_ordering(dataset)}"
     )
     return sql, [[str(path) for path in paths], start, end]
 
@@ -429,18 +434,98 @@ def _resampled_query(
     )
 
 
-def _normalize_result_times(frame: pd.DataFrame, columns: Mapping[str, str]) -> None:
+def _normalize_result_times(
+    frame: pd.DataFrame, dataset: DatasetSpec, columns: Mapping[str, str]
+) -> None:
     """Restore stable UTC timestamp dtypes after a DuckDB query.
 
     Args:
         frame: The query result to update in place.
+        dataset: The schema declaring timestamp output columns.
         columns: Canonical columns mapped to output labels.
     """
     for source, label in columns.items():
-        if source.endswith("time"):
+        if source in dataset.timestamp_columns:
             frame[label] = pd.to_datetime(frame[label], utc=True).astype(
                 "datetime64[us, UTC]"
             )
+
+
+def _query_options(
+    dataset: DatasetSpec, gap_policy: str | None, interval: str | None
+) -> tuple[str | None, str | None]:
+    """Resolve query options according to a dataset's declared capabilities.
+
+    Args:
+        dataset: The dataset whose query behavior is being resolved.
+        gap_policy: An optional caller-selected candle gap policy.
+        interval: An optional caller-selected output interval.
+
+    Returns:
+        The effective gap policy and output interval.
+
+    Raises:
+        ValueError: If a raw dataset receives a candle-only gap policy.
+    """
+    if dataset.supports_gap_policy:
+        policy = parse_gap_policy("keep" if gap_policy is None else gap_policy)
+    elif gap_policy is not None:
+        raise ValueError(f"{dataset.product}/{dataset.name} does not accept gap_policy")
+    else:
+        policy = None
+    return policy, dataset.resolve_interval(interval)
+
+
+def _source_query(
+    dataset: DatasetSpec,
+    paths: Sequence[Path],
+    start: datetime,
+    end: datetime,
+    gap_policy: str | None,
+) -> tuple[str, list[object]]:
+    """Build the unprojected DuckDB query for cached source rows.
+
+    Args:
+        dataset: The schema that determines whether candle filling applies.
+        paths: The cached Parquet files to read.
+        start: The inclusive first UTC timestamp.
+        end: The exclusive final UTC timestamp.
+        gap_policy: The effective candle gap policy, if supported.
+
+    Returns:
+        SQL text and positional parameters for canonical source rows.
+    """
+    if dataset.supports_gap_policy and gap_policy in {"forward", "backward", "nan"}:
+        return _filled_query(dataset, paths, start, end, gap_policy)
+    return _raw_query(dataset, paths, start, end)
+
+
+def _result_query(
+    source_sql: str,
+    dataset: DatasetSpec,
+    interval: str | None,
+    gap_policy: str | None,
+    columns: Mapping[str, str],
+) -> str:
+    """Project raw or resampled rows according to dataset capabilities.
+
+    Args:
+        source_sql: SQL returning canonical source rows.
+        dataset: The schema describing result behavior.
+        interval: The resolved output interval, or ``None`` for raw events.
+        gap_policy: The resolved candle policy, if applicable.
+        columns: Canonical columns mapped to caller-facing labels.
+
+    Returns:
+        SQL returning the final ordered public projection.
+    """
+    if interval is None:
+        return f"SELECT {_projection(columns)} FROM ({source_sql}) ORDER BY {_ordering(dataset)}"
+    if interval == dataset.base_interval:
+        projection = _projection(columns, synthetic_column=True)
+        return f"SELECT {projection} FROM ({source_sql}) ORDER BY {_ordering(dataset)}"
+    assert gap_policy is not None
+    return _resampled_query(source_sql, dataset, interval, gap_policy, columns)
 
 
 def query_parquet(
@@ -451,7 +536,7 @@ def query_parquet(
     end: datetime,
     columns: Mapping[str, str],
     *,
-    gap_policy: str = "keep",
+    gap_policy: str | None = None,
     interval: str | None = None,
 ) -> pd.DataFrame:
     """Query an exact timestamp range from cached Parquet files.
@@ -472,12 +557,7 @@ def query_parquet(
     started = perf_counter()
     _validate_columns(dataset, columns)
     _validate_range(start, end)
-    policy = parse_gap_policy(gap_policy)
-    output_interval = dataset.resolve_interval(
-        dataset.base_interval if interval is None else interval
-    )
-    if output_interval is None:
-        raise ValueError("interval-less dataset querying is not implemented")
+    policy, output_interval = _query_options(dataset, gap_policy, interval)
     if not paths:
         LOGGER.info(
             "Parquet query skipped: product=%s dataset=%s paths=0 range=[%s, %s)",
@@ -488,17 +568,10 @@ def query_parquet(
         )
         return empty_frame(dataset, columns)
 
-    if policy in {"forward", "backward", "nan"}:
-        sql, parameters = _filled_query(dataset, paths, start, end, policy)
-    else:
-        sql, parameters = _raw_query(dataset, paths, start, end)
-    if output_interval == dataset.base_interval:
-        projection = _projection(columns, synthetic_column=True)
-        sql = f"SELECT {projection} FROM ({sql}) ORDER BY open_time"
-    else:
-        sql = _resampled_query(sql, dataset, output_interval, policy, columns)
+    source_sql, parameters = _source_query(dataset, paths, start, end, policy)
+    sql = _result_query(source_sql, dataset, output_interval, policy, columns)
     frame = connection.execute(sql, parameters).df()
-    _normalize_result_times(frame, columns)
+    _normalize_result_times(frame, dataset, columns)
     LOGGER.info(
         "Parquet query complete: product=%s dataset=%s paths=%d range=[%s, %s) "
         "interval=%s gap_policy=%s rows=%d elapsed=%.3fs",
