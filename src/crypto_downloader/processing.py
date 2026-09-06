@@ -80,6 +80,22 @@ def _integer(values: pd.Series, column: str) -> pd.Series:
         raise DataValidationError(f"invalid integer {column} value") from error
 
 
+def _boolean(values: pd.Series, column: str) -> pd.Series:
+    """Convert one source column into strict true-or-false values.
+
+    Args:
+        values: The source strings to convert.
+        column: The source column name used in errors.
+
+    Returns:
+        The converted boolean values.
+    """
+    result = values.astype(str).str.strip().str.lower()
+    if not result.isin({"true", "false"}).all():
+        raise DataValidationError(f"invalid boolean {column} value")
+    return result.eq("true")
+
+
 def _epoch(values: pd.Series, column: str) -> pd.Series:
     """Convert a consistently scaled millisecond or microsecond epoch column.
 
@@ -101,7 +117,9 @@ def _epoch(values: pd.Series, column: str) -> pd.Series:
     else:
         raise DataValidationError(f"invalid or mixed timestamp unit for {column}")
     try:
-        return pd.to_datetime(integers, unit=unit, utc=True, errors="raise")
+        return pd.to_datetime(integers, unit=unit, utc=True, errors="raise").astype(
+            "datetime64[us, UTC]"
+        )
     except (TypeError, ValueError, OverflowError) as error:
         raise DataValidationError(f"invalid {column} value") from error
 
@@ -136,6 +154,37 @@ def _normalize_spot_klines(frame: pd.DataFrame, dataset: DatasetSpec) -> pd.Data
         dataset.name,
         len(normalized),
         len(normalized.columns),
+    )
+    return normalized
+
+
+def _normalize_spot_trades(frame: pd.DataFrame, dataset: DatasetSpec) -> pd.DataFrame:
+    """Normalize one Spot trade or aggregate-trade source chunk.
+
+    Args:
+        frame: Headerless Binance rows with the declared source columns.
+        dataset: The Spot trades or aggregate-trades declaration.
+
+    Returns:
+        Canonical event rows with exact IDs, UTC timestamps, and maker side.
+    """
+    result = pd.DataFrame(index=frame.index)
+    id_column = "trade_id" if dataset.name == "trades" else "agg_trade_id"
+    result[id_column] = _integer(frame[id_column], id_column)
+    if dataset.name == "agg_trades":
+        result["first_trade_id"] = _integer(frame["first_trade_id"], "first_trade_id")
+        result["last_trade_id"] = _integer(frame["last_trade_id"], "last_trade_id")
+    result["price"] = _number(frame["price"], "price")
+    result["base_quantity"] = _number(frame["base_quantity"], "base_quantity")
+    if dataset.name == "trades":
+        result["quote_quantity"] = _number(frame["quote_quantity"], "quote_quantity")
+    else:
+        result["quote_quantity"] = result["price"] * result["base_quantity"]
+    result["event_time"] = _epoch(frame["event_time"], "event_time")
+    result["buyer_is_maker"] = _boolean(frame["is_buyer_maker"], "is_buyer_maker")
+    normalized = result.loc[:, dataset.stored_columns]
+    LOGGER.debug(
+        "Spot event chunk normalized: dataset=%s rows=%d", dataset.name, len(normalized)
     )
     return normalized
 
@@ -308,6 +357,83 @@ def _validate_spot_kline_chunk(
     return last
 
 
+def _validate_event_timestamps(
+    values: pd.Series, day: date, previous_timestamp: pd.Timestamp | None
+) -> pd.Timestamp:
+    """Validate sorted UTC event timestamps inside one source day.
+
+    Args:
+        values: The event timestamps in their source order.
+        day: The UTC archive day that must contain all events.
+        previous_timestamp: The final timestamp from the preceding CSV chunk.
+
+    Returns:
+        The final event timestamp in the chunk.
+    """
+    if values.isna().any():
+        raise DataValidationError("event_time cannot be null")
+    _require_utc(values, "event_time")
+    if not values.is_monotonic_increasing:
+        raise DataValidationError("event_time must be increasing")
+    first = values.iloc[0]
+    last = values.iloc[-1]
+    if previous_timestamp is not None and first < previous_timestamp:
+        raise DataValidationError("chunk does not follow the preceding chunk")
+    day_start = pd.Timestamp(day, tz="UTC")
+    if first < day_start or last >= day_start + pd.Timedelta(days=1):
+        raise DataValidationError("timestamps fall outside the resource day")
+    return last
+
+
+def _validate_spot_trade_rows(frame: pd.DataFrame, dataset: DatasetSpec) -> None:
+    """Validate numeric, ID, and maker-side rules for Spot event rows.
+
+    Args:
+        frame: Canonical Spot trade or aggregate-trade rows.
+        dataset: The matching Spot event dataset declaration.
+    """
+    id_column = dataset.ordering_columns[-1]
+    identifiers = frame[id_column]
+    if (identifiers < 0).any() or not identifiers.is_monotonic_increasing:
+        raise DataValidationError(f"{id_column} must be nonnegative and increasing")
+    if dataset.name == "agg_trades" and (
+        (frame["first_trade_id"] < 0).any()
+        or (frame["last_trade_id"] < frame["first_trade_id"]).any()
+    ):
+        raise DataValidationError("aggregate trade IDs are invalid")
+    values = frame[["price", "base_quantity", "quote_quantity"]]
+    if not np.isfinite(values.to_numpy(dtype="float64")).all():
+        raise DataValidationError("trade values must be finite")
+    if (frame["price"] <= 0).any():
+        raise DataValidationError("trade price must be greater than zero")
+    if (frame[["base_quantity", "quote_quantity"]] < 0).any().any():
+        raise DataValidationError("trade quantities must be nonnegative")
+    if not pd.api.types.is_bool_dtype(frame["buyer_is_maker"]):
+        raise DataValidationError("buyer_is_maker must be boolean")
+
+
+def _validate_spot_event_chunk(
+    frame: pd.DataFrame,
+    dataset: DatasetSpec,
+    day: date,
+    previous_timestamp: pd.Timestamp | None,
+) -> pd.Timestamp:
+    """Validate one canonical Spot trade-family chunk.
+
+    Args:
+        frame: Canonical event rows to validate.
+        dataset: The Spot trade or aggregate-trade declaration.
+        day: The UTC archive day that must contain all events.
+        previous_timestamp: The final timestamp from the preceding chunk.
+
+    Returns:
+        The final event timestamp in the validated chunk.
+    """
+    last = _validate_event_timestamps(frame["event_time"], day, previous_timestamp)
+    _validate_spot_trade_rows(frame, dataset)
+    return last
+
+
 type Normalizer = Callable[[pd.DataFrame, DatasetSpec], pd.DataFrame]
 type Validator = Callable[
     [pd.DataFrame, DatasetSpec, date, pd.Timestamp | None], pd.Timestamp
@@ -315,9 +441,13 @@ type Validator = Callable[
 
 _NORMALIZERS: dict[tuple[str, str], Normalizer] = {
     ("spot", "klines"): _normalize_spot_klines,
+    ("spot", "trades"): _normalize_spot_trades,
+    ("spot", "agg_trades"): _normalize_spot_trades,
 }
 _VALIDATORS: dict[tuple[str, str], Validator] = {
     ("spot", "klines"): _validate_spot_kline_chunk,
+    ("spot", "trades"): _validate_spot_event_chunk,
+    ("spot", "agg_trades"): _validate_spot_event_chunk,
 }
 
 

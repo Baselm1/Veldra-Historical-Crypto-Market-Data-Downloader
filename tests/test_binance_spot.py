@@ -406,6 +406,49 @@ def test_resource_discovery_records_dataset_metadata_and_archive_symbol() -> Non
     ]
 
 
+@pytest.mark.parametrize(
+    ("dataset", "remote_name", "filename", "timestamp_column"),
+    [
+        ("trades", "trades", "BTCUSDT-trades-2025-01-01.zip", "event_time"),
+        (
+            "agg_trades",
+            "aggTrades",
+            "BTCUSDT-aggTrades-2025-01-01.zip",
+            "event_time",
+        ),
+    ],
+)
+def test_daily_event_resource_discovery_uses_raw_dataset_layout(
+    dataset: str, remote_name: str, filename: str, timestamp_column: str
+) -> None:
+    """Confirm Spot event archives do not add a kline interval folder.
+
+    Args:
+        dataset: The public snake-case event dataset name.
+        remote_name: The exact Binance daily archive folder name.
+        filename: The expected Binance archive basename.
+        timestamp_column: The canonical event timestamp column.
+    """
+    key = ResourceKey("binance", "spot", dataset, "BTCUSDT", None)
+    prefix = f"data/spot/daily/{remote_name}/BTCUSDT/"
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        """Record the source request and return one matching object key."""
+        requests.append(request)
+        return httpx.Response(200, text=listing(keys=(f"{prefix}{filename}",)))
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        resources = Binance().resources(client, key, date(2025, 1, 1), date(2025, 1, 1))
+
+    assert len(resources) == 1
+    assert resources[0].url == f"{ARCHIVE_URL}/{prefix}{filename}"
+    assert resources[0].archive_symbol == "BTCUSDT"
+    assert resources[0].timestamp_column == timestamp_column
+    assert requests[0].url.params["prefix"] == prefix
+    assert requests[0].url.params["marker"] == f"{prefix}{filename[:-4]}"
+
+
 def test_first_resource_returns_none_when_no_archive_follows_boundary() -> None:
     """Confirm a valid empty first-page listing means no known availability."""
 
@@ -504,7 +547,7 @@ def test_daily_listing_ignores_prior_and_impossible_dates() -> None:
             ResourceKey("binance", "spot", "trades", "BTCUSDT", "1m"),
             date(2025, 1, 1),
             date(2025, 1, 2),
-            "dataset",
+            "interval",
         ),
         (
             ResourceKey("binance", "spot", "klines", "BTCUSDT", "5m"),

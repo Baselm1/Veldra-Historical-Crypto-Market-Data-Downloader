@@ -244,7 +244,6 @@ def test_unknown_and_duplicate_resolved_columns_are_rejected() -> None:
 @pytest.mark.parametrize(
     ("product", "dataset"),
     [
-        ("spot", "trades"),
         ("um", "klines"),
         ("cm", "klines"),
         ("unknown", "unknown"),

@@ -40,7 +40,7 @@ def _result(pair: str, request: Request, dataset: DatasetSpec) -> Result:
         requested_range=(request.start, request.end),
         product=request.product,
         dataset=request.dataset,
-        gap_policy=request.gap_policy or "keep",
+        gap_policy=request.gap_policy,
     )
 
 
@@ -620,7 +620,7 @@ def process_pair(
         request.product,
         request.dataset,
         market.symbol,
-        dataset.storage_interval,
+        dataset.base_interval,
     )
     active = market.status in source.active_statuses
     availability = _availability_range(

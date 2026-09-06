@@ -59,6 +59,47 @@ SPOT_KLINE_OUTPUT_INTERVALS: Columns = (
     "1mo",
 )
 
+SPOT_TRADE_SOURCE_COLUMNS: Columns = (
+    "trade_id",
+    "price",
+    "base_quantity",
+    "quote_quantity",
+    "event_time",
+    "is_buyer_maker",
+    "is_best_match",
+)
+
+SPOT_TRADE_STORED_COLUMNS: Columns = (
+    "trade_id",
+    "price",
+    "base_quantity",
+    "quote_quantity",
+    "event_time",
+    "buyer_is_maker",
+)
+
+SPOT_AGG_TRADE_SOURCE_COLUMNS: Columns = (
+    "agg_trade_id",
+    "price",
+    "base_quantity",
+    "first_trade_id",
+    "last_trade_id",
+    "event_time",
+    "is_buyer_maker",
+    "is_best_match",
+)
+
+SPOT_AGG_TRADE_STORED_COLUMNS: Columns = (
+    "agg_trade_id",
+    "first_trade_id",
+    "last_trade_id",
+    "price",
+    "base_quantity",
+    "quote_quantity",
+    "event_time",
+    "buyer_is_maker",
+)
+
 
 def _validate_header(value: str) -> None:
     """Reject an unsupported CSV header declaration.
@@ -391,8 +432,50 @@ SPOT_KLINES = DatasetSpec(
     integer_columns=("trade_count",),
 )
 
+SPOT_TRADES = DatasetSpec(
+    product="spot",
+    name="trades",
+    remote_name="trades",
+    source_columns=SPOT_TRADE_SOURCE_COLUMNS,
+    stored_columns=SPOT_TRADE_STORED_COLUMNS,
+    time_column="event_time",
+    base_interval=None,
+    output_intervals=(),
+    aliases=MappingProxyType({"id": "trade_id", "quantity": "base_quantity"}),
+    max_concurrency=8,
+    csv_header="absent",
+    schema_version=1,
+    ordering_columns=("event_time", "trade_id"),
+    timestamp_columns=("event_time",),
+    integer_columns=("trade_id",),
+    boolean_columns=("buyer_is_maker",),
+)
+
+SPOT_AGG_TRADES = DatasetSpec(
+    product="spot",
+    name="agg_trades",
+    remote_name="aggTrades",
+    source_columns=SPOT_AGG_TRADE_SOURCE_COLUMNS,
+    stored_columns=SPOT_AGG_TRADE_STORED_COLUMNS,
+    time_column="event_time",
+    base_interval=None,
+    output_intervals=(),
+    aliases=MappingProxyType({"id": "agg_trade_id", "quantity": "base_quantity"}),
+    max_concurrency=8,
+    csv_header="absent",
+    schema_version=1,
+    ordering_columns=("event_time", "agg_trade_id"),
+    timestamp_columns=("event_time",),
+    integer_columns=("agg_trade_id", "first_trade_id", "last_trade_id"),
+    boolean_columns=("buyer_is_maker",),
+)
+
 DATASETS: Mapping[tuple[str, str], DatasetSpec] = MappingProxyType(
-    {("spot", "klines"): SPOT_KLINES}
+    {
+        ("spot", "klines"): SPOT_KLINES,
+        ("spot", "trades"): SPOT_TRADES,
+        ("spot", "agg_trades"): SPOT_AGG_TRADES,
+    }
 )
 
 

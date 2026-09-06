@@ -256,7 +256,7 @@ def test_validate_chunk_requires_utc_timestamps(column: str) -> None:
 
 def test_processing_rejects_an_unsupported_dataset_spec() -> None:
     """Confirm Spot-specific processing cannot silently handle another dataset."""
-    unsupported = replace(SPOT_KLINES, name="trades")
+    unsupported = replace(SPOT_KLINES, name="not_supported")
     source = source_frame("binance_spot_klines_2024-01-01.csv")
 
     with pytest.raises(ValueError, match="normalizer"):

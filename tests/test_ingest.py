@@ -11,7 +11,12 @@ import httpx
 import pandas as pd
 import pytest
 
-from crypto_downloader.datasets import SPOT_KLINES
+from crypto_downloader.datasets import (
+    SPOT_AGG_TRADES,
+    SPOT_KLINES,
+    SPOT_TRADES,
+    DatasetSpec,
+)
 from crypto_downloader.http import ChecksumError
 from crypto_downloader.ingest import ArchiveError, _member, ingest_archive
 from crypto_downloader.models import Resource
@@ -135,6 +140,62 @@ def test_ingest_archive_reads_a_dataset_declared_csv_header(tmp_path: Path) -> N
     assert len(frame) == metadata.row_count == 2
     assert metadata.timestamp_column == "open_time"
     assert metadata.schema_version == 2
+
+
+@pytest.mark.parametrize(
+    ("dataset", "fixture", "archive_name"),
+    [
+        (
+            SPOT_TRADES,
+            "binance_spot_trades_2024-01-01.csv",
+            "BTCUSDT-trades-2024-01-01.zip",
+        ),
+        (
+            SPOT_AGG_TRADES,
+            "binance_spot_agg_trades_2025-01-01.csv",
+            "BTCUSDT-aggTrades-2025-01-01.zip",
+        ),
+    ],
+)
+def test_ingest_archive_writes_canonical_spot_event_parquet(
+    dataset: DatasetSpec, fixture: str, archive_name: str, tmp_path: Path
+) -> None:
+    """Confirm each Spot event family streams into its declared Parquet schema.
+
+    Args:
+        dataset: The declared Spot event dataset.
+        fixture: The representative daily source CSV.
+        archive_name: The matching Binance ZIP archive basename.
+        tmp_path: The isolated output directory.
+    """
+    content = (FIXTURES / fixture).read_bytes()
+    payload = archive_bytes(
+        content,
+        names=(archive_name.removesuffix(".zip") + ".csv",),
+    )
+    day = date.fromisoformat(archive_name[-14:-4])
+    resource = Resource(
+        day,
+        f"https://data.example/{archive_name}",
+        f"https://data.example/{archive_name}.CHECKSUM",
+    )
+    digest = hashlib.sha256(payload).hexdigest()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        """Serve the matching checksum or daily archive payload."""
+        if str(request.url).endswith(".CHECKSUM"):
+            return httpx.Response(200, text=f"{digest}  {archive_name}\n")
+        return httpx.Response(200, content=payload)
+
+    destination = tmp_path / f"{dataset.name}.parquet"
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        metadata = ingest_archive(client, resource, dataset, destination, chunk_rows=2)
+
+    frame = pd.read_parquet(destination)
+    assert tuple(frame.columns) == dataset.stored_columns
+    assert len(frame) == metadata.row_count == 3
+    assert metadata.timestamp_column == "event_time"
+    assert metadata.schema_version == dataset.schema_version
 
 
 def test_ingest_archive_rejects_a_wrong_declared_csv_header(tmp_path: Path) -> None:

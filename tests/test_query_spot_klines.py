@@ -8,7 +8,13 @@ import duckdb
 import pandas as pd
 import pytest
 
-from crypto_downloader.datasets import DatasetSpec, SPOT_KLINES
+from crypto_downloader.datasets import (
+    SPOT_AGG_TRADES,
+    SPOT_KLINES,
+    SPOT_TRADES,
+    DatasetSpec,
+)
+from crypto_downloader.processing import normalize_chunk
 from crypto_downloader.query import empty_frame, query_parquet
 
 
@@ -397,3 +403,54 @@ def test_empty_frame_uses_declared_raw_event_types() -> None:
     assert result["id"].dtype == "int64"
     assert result["maker"].dtype == "bool"
     assert result["price"].dtype == "float64"
+
+
+@pytest.mark.parametrize(
+    ("dataset", "fixture", "id_column"),
+    [
+        (SPOT_TRADES, "binance_spot_trades_2025-01-01.csv", "trade_id"),
+        (SPOT_AGG_TRADES, "binance_spot_agg_trades_2025-01-01.csv", "agg_trade_id"),
+    ],
+)
+def test_query_parquet_filters_canonical_spot_event_data(
+    connection: duckdb.DuckDBPyConnection,
+    tmp_path: Path,
+    dataset: DatasetSpec,
+    fixture: str,
+    id_column: str,
+) -> None:
+    """Confirm declared Spot events use exact ranges and stable ID ordering.
+
+    Args:
+        connection: The isolated DuckDB connection.
+        tmp_path: The directory used for a temporary Parquet file.
+        dataset: The declared Spot event dataset.
+        fixture: The representative microsecond source CSV.
+        id_column: The canonical event ID used for sorting.
+    """
+    source = pd.read_csv(
+        Path(__file__).parent / "fixtures" / fixture,
+        header=None,
+        names=dataset.source_columns,
+        dtype=str,
+    )
+    path = tmp_path / f"{dataset.name}.parquet"
+    normalize_chunk(source, dataset).to_parquet(path, index=False)
+    columns = {"event_time": "time", id_column: "id", "price": "price"}
+
+    result = query_parquet(
+        connection,
+        [path],
+        dataset,
+        datetime(2025, 1, 1, tzinfo=UTC),
+        datetime(2025, 1, 1, 0, 0, 0, 20_000, tzinfo=UTC),
+        columns,
+    )
+
+    assert result["id"].tolist() == (
+        [200, 201] if dataset is SPOT_TRADES else [400, 401]
+    )
+    assert result["time"].tolist() == [
+        pd.Timestamp("2025-01-01T00:00:00.010866Z"),
+        pd.Timestamp("2025-01-01T00:00:00.010866Z"),
+    ]

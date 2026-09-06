@@ -140,7 +140,7 @@ class Result:
     problems: list[Message] = field(default_factory=list)
     errors: list[Message] = field(default_factory=list)
     gaps: list[Gap] = field(default_factory=list)
-    gap_policy: str = "forward"
+    gap_policy: str | None = "forward"
     source: str = "binance"
     product: str = "spot"
     dataset: str = "klines"
