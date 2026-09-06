@@ -248,6 +248,7 @@ def _query_result(
         used_range[1],
         columns,
         gap_policy=request.gap_policy,
+        interval=request.interval,
     )
 
 

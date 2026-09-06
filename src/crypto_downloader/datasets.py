@@ -91,6 +91,10 @@ class DatasetSpec:
         """
         if not isinstance(value, str):
             raise TypeError("interval must be a string")
+        if value.endswith("s") and value[:-1].isdigit():
+            raise ValueError(
+                f"interval '{value}' is finer than stored {self.base_interval} data"
+            )
         if value not in self.output_intervals:
             supported = ", ".join(self.output_intervals)
             raise ValueError(

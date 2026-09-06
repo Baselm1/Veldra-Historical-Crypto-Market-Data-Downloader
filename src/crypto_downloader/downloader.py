@@ -126,8 +126,6 @@ class Downloader:
         )
         specification = get_dataset(request.product, request.dataset)
         specification.resolve_interval(request.interval)
-        if request.interval != specification.base_interval:
-            raise ValueError("kline resampling is not available yet")
         if request.product not in self.source.products:
             raise ValueError(
                 f"unsupported product for {self.source.code}: {request.product}"

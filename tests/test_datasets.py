@@ -101,6 +101,12 @@ def test_unsupported_output_intervals_are_rejected(interval: object) -> None:
         spot_klines().resolve_interval(interval)
 
 
+def test_finer_than_stored_intervals_explain_the_constraint() -> None:
+    """Confirm second intervals report why they cannot be returned."""
+    with pytest.raises(ValueError, match="finer than stored 1m data"):
+        spot_klines().resolve_interval("30s")
+
+
 def test_default_columns_use_the_complete_canonical_output_schema() -> None:
     """Confirm omitted column selections return every available output column."""
     spec = spot_klines()

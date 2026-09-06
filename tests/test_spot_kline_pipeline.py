@@ -540,19 +540,30 @@ def test_offline_pipeline_reports_a_missing_cached_partition(tmp_path: Path) -> 
     assert server.archive_requests == archive_requests
 
 
-def test_non_base_interval_is_rejected_before_network_access(
+def test_non_base_interval_is_resampled_through_the_complete_pipeline(
     tmp_path: Path,
 ) -> None:
-    """Confirm Phase 9 does not silently return one-minute rows as hourly data."""
+    """Confirm the public pipeline returns aggregated rather than base rows.
+
+    Args:
+        tmp_path: The isolated downloader directory.
+    """
     server = BinanceServer()
 
-    with pytest.raises(ValueError, match="resampling"):
-        downloader(tmp_path, server).get_results(
-            "BTCUSDT", "2024-01-01", "2024-01-01", interval="1h"
-        )
+    result = downloader(tmp_path, server).get_results(
+        "BTCUSDT", "2024-01-01", "2024-01-01", interval="1h"
+    )
 
-    assert server.resource_requests == 0
-    assert server.archive_requests == 0
+    assert isinstance(result, Result)
+    assert len(result.data) == 1
+    assert result.data.loc[0, "open"] == 42283.58
+    assert result.data.loc[0, "high"] == 42320.00
+    assert result.data.loc[0, "low"] == 42261.02
+    assert result.data.loc[0, "close"] == 42320.00
+    assert result.data.loc[0, "volume"] == pytest.approx(57.09503)
+    assert result.data.loc[0, "trade_count"] == 2040
+    assert server.resource_requests == 1
+    assert server.archive_requests == 1
 
 
 def test_source_product_mismatch_is_rejected_before_network_access(

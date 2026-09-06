@@ -255,7 +255,6 @@ def _filled_query(
     paths: Sequence[Path],
     start: datetime,
     end: datetime,
-    columns: Mapping[str, str],
     policy: str,
 ) -> tuple[str, list[object]]:
     """Build a DuckDB query that generates only internal daily candles.
@@ -265,7 +264,6 @@ def _filled_query(
         paths: The local daily Parquet files.
         start: The inclusive first requested timestamp.
         end: The exclusive final requested timestamp.
-        columns: Canonical columns mapped to output labels.
         policy: The forward, backward, or nan fill policy.
 
     Returns:
@@ -274,7 +272,6 @@ def _filled_query(
     _, _, step = _grid(start, end, dataset)
     time_column = _identifier(dataset.time_column)
     fields = _filled_fields(dataset, step, policy)
-    projection = _projection(columns, synthetic_column=True)
     sql = f"""
         WITH actual AS (
             SELECT epoch_us({time_column}) AS grid_time,
@@ -309,11 +306,124 @@ def _filled_query(
         ), filled AS (
             SELECT {fields} FROM neighbors
         )
-        SELECT {projection} FROM filled
+        SELECT * FROM filled
         WHERE {time_column} >= ? AND {time_column} < ?
         ORDER BY {time_column}
     """
     return sql, [[str(path) for path in paths], step, step, start, end]
+
+
+def _raw_query(
+    dataset: DatasetSpec,
+    paths: Sequence[Path],
+    start: datetime,
+    end: datetime,
+) -> tuple[str, list[object]]:
+    """Build a query exposing real stored candles with a false marker.
+
+    Args:
+        dataset: The schema describing cached rows.
+        paths: The local daily Parquet files.
+        start: The inclusive first requested timestamp.
+        end: The exclusive final requested timestamp.
+
+    Returns:
+        SQL text and its positional parameters.
+    """
+    time_column = _identifier(dataset.time_column)
+    sql = (
+        "SELECT *, false AS is_synthetic FROM read_parquet(?) "
+        f"WHERE {time_column} >= ? AND {time_column} < ?"
+    )
+    return sql, [[str(path) for path in paths], start, end]
+
+
+def _bucket_expression(interval: str) -> str:
+    """Return the UTC-aligned DuckDB expression for an output interval.
+
+    Args:
+        interval: A supported interval larger than one minute.
+
+    Returns:
+        SQL that computes the containing bucket's opening timestamp.
+    """
+    if interval == "1w":
+        return "timezone('UTC', date_trunc('week', timezone('UTC', open_time)))"
+    if interval == "1mo":
+        return "timezone('UTC', date_trunc('month', timezone('UTC', open_time)))"
+    number, suffix = (
+        (int(interval[:-1]), interval[-1])
+        if not interval.endswith("mo")
+        else (int(interval[:-2]), "mo")
+    )
+    units = {"m": "minutes", "h": "hours", "d": "days", "mo": "months"}
+    width = f"{number} {units[suffix]}"
+    return (
+        f"time_bucket(INTERVAL '{width}', open_time, "
+        "TIMESTAMPTZ '1970-01-01 00:00:00+00')"
+    )
+
+
+def _aggregate(expression: str, gap_policy: str, *, integer: bool = False) -> str:
+    """Optionally null an aggregate when its bucket contains a nan-policy gap.
+
+    Args:
+        expression: The DuckDB aggregate expression.
+        gap_policy: The missing-candle policy applied before aggregation.
+        integer: Whether the completed expression must remain a BIGINT.
+
+    Returns:
+        The aggregate with nan-gap and integer behavior applied.
+    """
+    value = (
+        f"CASE WHEN bool_or(is_synthetic) THEN NULL ELSE {expression} END"
+        if gap_policy == "nan"
+        else expression
+    )
+    return f"({value})::BIGINT" if integer else value
+
+
+def _resampled_query(
+    source_sql: str,
+    dataset: DatasetSpec,
+    interval: str,
+    gap_policy: str,
+    columns: Mapping[str, str],
+) -> str:
+    """Wrap a canonical candle query with OHLCV aggregation and projection.
+
+    Args:
+        source_sql: SQL returning canonical base candles and a synthetic marker.
+        dataset: The schema describing canonical stored columns.
+        interval: The supported output interval.
+        gap_policy: The missing-candle policy applied to base rows.
+        columns: Canonical columns mapped to output labels.
+
+    Returns:
+        DuckDB SQL returning projected resampled candles.
+    """
+    fields = [
+        f"{_bucket_expression(interval)} AS open_time",
+        f"{_aggregate('arg_min(open, open_time)', gap_policy)} AS open",
+        f"{_aggregate('max(high)', gap_policy)} AS high",
+        f"{_aggregate('min(low)', gap_policy)} AS low",
+        f"{_aggregate('arg_max(close, open_time)', gap_policy)} AS close",
+        f"{_aggregate('sum(volume)', gap_policy)} AS volume",
+        f"{_aggregate('max(close_time)', gap_policy)} AS close_time",
+        f"{_aggregate('sum(quote_volume)', gap_policy)} AS quote_volume",
+        f"{_aggregate('sum(trade_count)', gap_policy, integer=True)} AS trade_count",
+        f"{_aggregate('sum(taker_buy_base_volume)', gap_policy)} "
+        "AS taker_buy_base_volume",
+        f"{_aggregate('sum(taker_buy_quote_volume)', gap_policy)} "
+        "AS taker_buy_quote_volume",
+        "bool_or(is_synthetic) AS is_synthetic",
+    ]
+    projection = _projection(columns, synthetic_column=True)
+    return (
+        f"WITH base AS ({source_sql}), resampled AS ("
+        f"SELECT {', '.join(fields)} FROM base GROUP BY 1) "
+        f"SELECT {projection} FROM resampled ORDER BY open_time"
+    )
 
 
 def _normalize_result_times(frame: pd.DataFrame, columns: Mapping[str, str]) -> None:
@@ -339,6 +449,7 @@ def query_parquet(
     columns: Mapping[str, str],
     *,
     gap_policy: str = "keep",
+    interval: str | None = None,
 ) -> pd.DataFrame:
     """Query an exact timestamp range from cached Parquet files.
 
@@ -350,6 +461,7 @@ def query_parquet(
         end: The exclusive final UTC timestamp.
         columns: Canonical columns mapped to output labels.
         gap_policy: The behavior used for internal missing candles.
+        interval: The requested output interval or the stored base interval.
 
     Returns:
         Requested rows ordered by the dataset timestamp.
@@ -357,19 +469,21 @@ def query_parquet(
     _validate_columns(dataset, columns)
     _validate_range(start, end)
     policy = parse_gap_policy(gap_policy)
+    output_interval = dataset.resolve_interval(
+        dataset.base_interval if interval is None else interval
+    )
     if not paths:
         return empty_frame(dataset, columns)
 
     if policy in {"forward", "backward", "nan"}:
-        sql, parameters = _filled_query(dataset, paths, start, end, columns, policy)
+        sql, parameters = _filled_query(dataset, paths, start, end, policy)
     else:
-        time_column = _identifier(dataset.time_column)
-        sql = (
-            f"SELECT {_projection(columns)} FROM read_parquet(?) "
-            f"WHERE {time_column} >= ? AND {time_column} < ? "
-            f"ORDER BY {time_column}"
-        )
-        parameters = [[str(path) for path in paths], start, end]
+        sql, parameters = _raw_query(dataset, paths, start, end)
+    if output_interval == dataset.base_interval:
+        projection = _projection(columns, synthetic_column=True)
+        sql = f"SELECT {projection} FROM ({sql}) ORDER BY open_time"
+    else:
+        sql = _resampled_query(sql, dataset, output_interval, policy, columns)
     frame = connection.execute(sql, parameters).df()
     _normalize_result_times(frame, columns)
     return frame
