@@ -51,6 +51,30 @@ OUTPUT_INTERVALS = (
 )
 
 
+def minimal_snapshot(**changes: object) -> DatasetSpec:
+    """Build a valid interval-less schema with optional field overrides.
+
+    Args:
+        changes: Field values replacing the valid defaults.
+
+    Returns:
+        A compact valid dataset declaration unless an override is invalid.
+    """
+    values: dict[str, object] = {
+        "product": "spot",
+        "name": "snapshot",
+        "remote_name": "snapshot",
+        "source_columns": ("event_time", "value"),
+        "stored_columns": ("event_time", "value"),
+        "time_column": "event_time",
+        "base_interval": None,
+        "output_intervals": (),
+        "aliases": {},
+    }
+    values.update(changes)
+    return DatasetSpec(**values)  # type: ignore[arg-type]
+
+
 def spot_klines() -> DatasetSpec:
     """Return the Spot kline specification used by these tests.
 
@@ -73,9 +97,63 @@ def test_spot_kline_schema_matches_the_daily_archive_and_cache() -> None:
     assert spec.base_interval == "1m"
     assert spec.output_intervals == OUTPUT_INTERVALS
     assert spec.max_concurrency == 32
+    assert spec.csv_header == "absent"
+    assert spec.schema_version == 1
+    assert spec.supports_resampling is True
+    assert spec.supports_gap_policy is True
+    assert spec.ordering_columns == ("open_time",)
+    assert spec.needs_interval is True
+    assert spec.csv_header_row is None
+    assert spec.storage_interval == "1m"
     assert spec.output_columns == (*STORED_COLUMNS, "is_synthetic")
     assert "ignore" not in spec.stored_columns
     assert "ignore" not in spec.output_columns
+
+
+def test_interval_less_snapshot_capabilities_are_declared_without_a_subclass() -> None:
+    """Confirm a declarative spec can describe a raw header-bearing dataset."""
+    snapshot = minimal_snapshot(
+        csv_header="present",
+        schema_version=3,
+        ordering_columns=("event_time", "value"),
+    )
+
+    assert snapshot.needs_interval is False
+    assert snapshot.csv_header_row == 0
+    assert snapshot.storage_interval == "raw"
+    assert snapshot.supports_resampling is False
+    assert snapshot.supports_gap_policy is False
+    assert snapshot.output_columns == ("event_time", "value")
+
+
+@pytest.mark.parametrize(
+    ("changes", "message"),
+    [
+        ({"csv_header": "unexpected"}, "csv_header"),
+        ({"source_columns": ()}, "columns"),
+        ({"stored_columns": ()}, "columns"),
+        ({"time_column": "missing"}, "time_column"),
+        ({"base_interval": ""}, "base_interval"),
+        ({"base_interval": "1m", "output_intervals": ()}, "interval datasets"),
+        ({"output_intervals": ("1m",)}, "interval-less"),
+        ({"supports_resampling": True}, "raw datasets"),
+        ({"supports_gap_policy": True}, "raw datasets"),
+        ({"ordering_columns": ("missing",)}, "ordering columns"),
+        ({"schema_version": 0}, "schema_version"),
+        ({"schema_version": True}, "schema_version"),
+    ],
+)
+def test_invalid_dataset_capabilities_are_rejected(
+    changes: dict[str, object], message: str
+) -> None:
+    """Confirm contradictory declarative capability values fail at construction.
+
+    Args:
+        changes: The invalid fields applied to a valid raw dataset.
+        message: The fragment expected in the validation error.
+    """
+    with pytest.raises(ValueError, match=message):
+        minimal_snapshot(**changes)
 
 
 @pytest.mark.parametrize("interval", OUTPUT_INTERVALS)

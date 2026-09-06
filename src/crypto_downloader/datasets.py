@@ -4,10 +4,12 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 import logging
 from types import MappingProxyType
+from typing import Literal
 
 from .request import ColumnSelection
 
 type Columns = tuple[str, ...]
+type CsvHeader = Literal["absent", "present"]
 LOGGER = logging.getLogger(__name__)
 
 SPOT_KLINE_SOURCE_COLUMNS: Columns = (
@@ -58,6 +60,102 @@ SPOT_KLINE_OUTPUT_INTERVALS: Columns = (
 )
 
 
+def _validate_header(value: str) -> None:
+    """Reject an unsupported CSV header declaration.
+
+    Args:
+        value: The declared CSV header behavior.
+
+    Raises:
+        ValueError: If the declaration is not known.
+    """
+    if value not in {"absent", "present"}:
+        raise ValueError("dataset csv_header must be absent or present")
+
+
+def _validate_columns(
+    source_columns: Columns, stored_columns: Columns, time_column: str
+) -> None:
+    """Reject empty schemas or a primary timestamp that is not stored.
+
+    Args:
+        source_columns: The source archive columns.
+        stored_columns: The normalized Parquet columns.
+        time_column: The canonical primary timestamp column.
+
+    Raises:
+        ValueError: If the declared schema is inconsistent.
+    """
+    if not source_columns or not stored_columns:
+        raise ValueError("dataset columns cannot be empty")
+    if time_column not in stored_columns:
+        raise ValueError("dataset time_column must be stored")
+
+
+def _validate_intervals(base_interval: str | None, output_intervals: Columns) -> None:
+    """Reject contradictory interval declarations.
+
+    Args:
+        base_interval: The stored archive interval or ``None`` for raw data.
+        output_intervals: The caller-facing intervals supported by the dataset.
+
+    Raises:
+        ValueError: If interval capabilities do not agree.
+    """
+    if base_interval == "":
+        raise ValueError("dataset base_interval cannot be empty")
+    if base_interval is not None and not output_intervals:
+        raise ValueError("interval datasets must declare output intervals")
+    if base_interval is None and output_intervals:
+        raise ValueError("interval-less datasets cannot declare output intervals")
+
+
+def _validate_kline_capabilities(
+    base_interval: str | None,
+    supports_resampling: bool,
+    supports_gap_policy: bool,
+) -> None:
+    """Reject kline-only features on an interval-less dataset.
+
+    Args:
+        base_interval: The stored archive interval or ``None`` for raw data.
+        supports_resampling: Whether higher interval aggregation is supported.
+        supports_gap_policy: Whether synthetic-candle behavior is supported.
+
+    Raises:
+        ValueError: If a raw dataset declares a kline-only feature.
+    """
+    if base_interval is None and (supports_resampling or supports_gap_policy):
+        raise ValueError("raw datasets cannot support kline-only capabilities")
+
+
+def _validate_ordering(stored_columns: Columns, ordering_columns: Columns) -> None:
+    """Reject ordering columns that do not exist in the stored schema.
+
+    Args:
+        stored_columns: The normalized Parquet columns.
+        ordering_columns: The deterministic query ordering columns.
+
+    Raises:
+        ValueError: If an ordering column is not stored.
+    """
+    if any(column not in stored_columns for column in ordering_columns):
+        raise ValueError("dataset ordering columns must be stored")
+
+
+def _validate_schema_version(value: int) -> None:
+    """Reject an unusable dataset schema version.
+
+    Args:
+        value: The declared integer schema version.
+
+    Raises:
+        ValueError: If the version is not a positive integer.
+    """
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValueError("dataset schema_version must be positive")
+
+
 @dataclass(frozen=True)
 class DatasetSpec:
     """Describe one product and dataset combination."""
@@ -68,10 +166,61 @@ class DatasetSpec:
     source_columns: Columns
     stored_columns: Columns
     time_column: str
-    base_interval: str
+    base_interval: str | None
     output_intervals: Columns
     aliases: Mapping[str, str]
     max_concurrency: int = 16
+    csv_header: CsvHeader = "absent"
+    schema_version: int = 1
+    supports_resampling: bool = False
+    supports_gap_policy: bool = False
+    ordering_columns: Columns = ()
+
+    def __post_init__(self) -> None:
+        """Validate the immutable capability declaration.
+
+        Raises:
+            ValueError: If declared columns or capabilities contradict each other.
+        """
+        _validate_header(self.csv_header)
+        _validate_columns(self.source_columns, self.stored_columns, self.time_column)
+        _validate_intervals(self.base_interval, self.output_intervals)
+        _validate_kline_capabilities(
+            self.base_interval,
+            self.supports_resampling,
+            self.supports_gap_policy,
+        )
+        if not self.ordering_columns:
+            object.__setattr__(self, "ordering_columns", (self.time_column,))
+        _validate_ordering(self.stored_columns, self.ordering_columns)
+        _validate_schema_version(self.schema_version)
+
+    @property
+    def needs_interval(self) -> bool:
+        """Return whether the archive layout and request require an interval.
+
+        Returns:
+            True when this dataset has a stored base interval.
+        """
+        return self.base_interval is not None
+
+    @property
+    def csv_header_row(self) -> int | None:
+        """Return the pandas CSV header row required by the source archive.
+
+        Returns:
+            Zero for a source header or ``None`` for a headerless archive.
+        """
+        return 0 if self.csv_header == "present" else None
+
+    @property
+    def storage_interval(self) -> str:
+        """Return a safe local path label for interval and raw datasets.
+
+        Returns:
+            The base interval or ``raw`` for interval-less datasets.
+        """
+        return self.base_interval if self.base_interval is not None else "raw"
 
     @property
     def output_columns(self) -> Columns:
@@ -80,7 +229,8 @@ class DatasetSpec:
         Returns:
             The canonical stored columns plus generated result columns.
         """
-        return (*self.stored_columns, "is_synthetic")
+        generated = ("is_synthetic",) if self.supports_gap_policy else ()
+        return (*self.stored_columns, *generated)
 
     def resolve_interval(self, value: object) -> str:
         """Validate an output interval against this dataset.
@@ -140,6 +290,11 @@ SPOT_KLINES = DatasetSpec(
     output_intervals=SPOT_KLINE_OUTPUT_INTERVALS,
     aliases=MappingProxyType({"base_volume": "volume"}),
     max_concurrency=32,
+    csv_header="absent",
+    schema_version=1,
+    supports_resampling=True,
+    supports_gap_policy=True,
+    ordering_columns=("open_time",),
 )
 
 DATASETS: Mapping[tuple[str, str], DatasetSpec] = MappingProxyType(

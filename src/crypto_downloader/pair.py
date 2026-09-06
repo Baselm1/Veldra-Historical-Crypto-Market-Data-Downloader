@@ -616,7 +616,7 @@ def process_pair(
         request.product,
         request.dataset,
         market.symbol,
-        dataset.base_interval,
+        dataset.storage_interval,
     )
     active = market.status in source.active_statuses
     availability = _availability_range(
