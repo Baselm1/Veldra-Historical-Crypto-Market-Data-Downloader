@@ -41,6 +41,7 @@ def ingested() -> IngestedResource:
         archive_sha256="a" * 64,
         parquet_sha256="b" * 64,
         parquet_size=1234,
+        parquet_mtime_ns=987654321,
         row_count=2,
         first_timestamp=datetime(2025, 1, 1, tzinfo=UTC),
         last_timestamp=datetime(2025, 1, 1, 0, 1, tzinfo=UTC),
@@ -287,6 +288,7 @@ def test_ready_resource_retains_all_integrity_metadata(
     assert found.parquet_path == path
     assert found.parquet_sha256 == metadata.parquet_sha256
     assert found.parquet_size == metadata.parquet_size
+    assert found.parquet_mtime_ns == metadata.parquet_mtime_ns
     assert found.row_count == metadata.row_count
     assert found.first_timestamp == metadata.first_timestamp
     assert found.last_timestamp == metadata.last_timestamp
@@ -324,6 +326,7 @@ def test_failed_resource_clears_stale_cache_metadata(
     assert found.parquet_path is None
     assert found.parquet_sha256 is None
     assert found.parquet_size is None
+    assert found.parquet_mtime_ns is None
     assert found.row_count is None
     assert found.first_timestamp is None
     assert found.last_timestamp is None

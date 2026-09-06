@@ -47,6 +47,7 @@ class Resource:
     parquet_path: Path | None = None
     parquet_sha256: str | None = None
     parquet_size: int | None = None
+    parquet_mtime_ns: int | None = None
     row_count: int | None = None
     first_timestamp: datetime | None = None
     last_timestamp: datetime | None = None
@@ -61,6 +62,7 @@ class IngestedResource:
     archive_sha256: str
     parquet_sha256: str
     parquet_size: int
+    parquet_mtime_ns: int
     row_count: int
     first_timestamp: datetime
     last_timestamp: datetime

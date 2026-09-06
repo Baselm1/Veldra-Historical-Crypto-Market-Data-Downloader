@@ -149,6 +149,7 @@ class Catalog:
                 parquet_path VARCHAR,
                 parquet_sha256 VARCHAR,
                 parquet_size BIGINT,
+                parquet_mtime_ns BIGINT,
                 row_count BIGINT,
                 first_timestamp TIMESTAMP,
                 last_timestamp TIMESTAMP,
@@ -333,7 +334,7 @@ class Catalog:
         rows = self.connection.execute(
             """
             SELECT day, url, checksum_url, status, archive_sha256,
-                   parquet_path, parquet_sha256, parquet_size, row_count,
+                   parquet_path, parquet_sha256, parquet_size, parquet_mtime_ns, row_count,
                    first_timestamp, last_timestamp, error, last_attempt_at
             FROM resources
             WHERE source = ? AND product = ? AND dataset = ?
@@ -353,11 +354,12 @@ class Catalog:
                 parquet_path=Path(row[5]) if row[5] is not None else None,
                 parquet_sha256=row[6],
                 parquet_size=row[7],
-                row_count=row[8],
-                first_timestamp=_utc_timestamp(row[9]),
-                last_timestamp=_utc_timestamp(row[10]),
-                error=row[11],
-                last_attempt_at=_utc_timestamp(row[12]),
+                parquet_mtime_ns=row[8],
+                row_count=row[9],
+                first_timestamp=_utc_timestamp(row[10]),
+                last_timestamp=_utc_timestamp(row[11]),
+                error=row[12],
+                last_attempt_at=_utc_timestamp(row[13]),
             )
             for row in rows
         ]
@@ -385,6 +387,7 @@ class Catalog:
                 parquet_path = ?,
                 parquet_sha256 = ?,
                 parquet_size = ?,
+                parquet_mtime_ns = ?,
                 row_count = ?,
                 first_timestamp = ?,
                 last_timestamp = ?,
@@ -399,6 +402,7 @@ class Catalog:
                 str(parquet_path),
                 metadata.parquet_sha256,
                 metadata.parquet_size,
+                metadata.parquet_mtime_ns,
                 metadata.row_count,
                 _database_timestamp(metadata.first_timestamp),
                 _database_timestamp(metadata.last_timestamp),
@@ -425,6 +429,7 @@ class Catalog:
                 parquet_path = NULL,
                 parquet_sha256 = NULL,
                 parquet_size = NULL,
+                parquet_mtime_ns = NULL,
                 row_count = NULL,
                 first_timestamp = NULL,
                 last_timestamp = NULL,

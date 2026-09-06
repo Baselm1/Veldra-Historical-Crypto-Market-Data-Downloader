@@ -2,6 +2,7 @@
 
 from collections.abc import Iterator, Mapping
 from datetime import date
+from pathlib import Path
 import re
 from urllib.parse import quote
 import xml.etree.ElementTree as ElementTree
@@ -9,7 +10,9 @@ import xml.etree.ElementTree as ElementTree
 import httpx
 
 from ..http import get
-from ..models import Market, Resource, ResourceKey
+from ..datasets import DatasetSpec
+from ..ingest import ingest_archive
+from ..models import IngestedResource, Market, Resource, ResourceKey
 from ..request import normalize_pair
 
 EXCHANGE_INFO_URL = "https://api.binance.com/api/v3/exchangeInfo"
@@ -128,6 +131,34 @@ class Binance:
             if past_end:
                 break
         return [found[day] for day in sorted(found)]
+
+    def ingest(
+        self,
+        client: httpx.Client,
+        resource: Resource,
+        dataset: DatasetSpec,
+        destination: Path,
+    ) -> IngestedResource:
+        """Convert one Binance archive into a verified Parquet file.
+
+        Args:
+            client: The HTTPX client used for Binance requests.
+            resource: The daily archive to ingest.
+            dataset: The schema used to interpret source rows.
+            destination: The final Parquet path.
+
+        Returns:
+            Integrity metadata for the completed Parquet file.
+        """
+        return ingest_archive(
+            client,
+            resource,
+            dataset,
+            destination,
+            timeout=self.timeout,
+            retries=self.retries,
+            backoff=self.backoff,
+        )
 
     @staticmethod
     def _exchange_markets(payload: object) -> dict[str, Market]:
