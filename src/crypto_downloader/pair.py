@@ -4,14 +4,15 @@ from datetime import UTC, date, datetime, time, timedelta
 from difflib import get_close_matches
 from pathlib import Path
 
+import duckdb
 import httpx
 
 from .catalog import Catalog
 from .cache import cache_resources
 from .datasets import DatasetSpec
 from .discovery import discover_resources, requested_days
-from .models import Market, Message, Resource, ResourceKey, Result
-from .query import empty_frame, query_parquet
+from .models import Market, Message, MissingCandlesError, Resource, ResourceKey, Result
+from .query import empty_frame, missing_ranges, query_parquet
 from .request import Request, normalize_pair
 from .source import Source
 
@@ -34,6 +35,7 @@ def _result(pair: str, request: Request, dataset: DatasetSpec) -> Result:
         requested_range=(request.start, request.end),
         product=request.product,
         dataset=request.dataset,
+        gap_policy=request.gap_policy,
     )
 
 
@@ -199,6 +201,56 @@ def _resources_in_range(
     return [resource for resource in resources if first <= resource.day <= last]
 
 
+def _query_result(
+    result: Result,
+    connection: duckdb.DuckDBPyConnection,
+    paths: list[Path],
+    dataset: DatasetSpec,
+    request: Request,
+    used_range: tuple[datetime, datetime],
+    source_code: str,
+) -> None:
+    """Detect gaps and populate one result from cached Parquet files.
+
+    Args:
+        result: The pair result to populate in place.
+        connection: The DuckDB connection used for queries.
+        paths: The valid local daily Parquet files.
+        dataset: The schema describing cached rows.
+        request: The validated caller request.
+        used_range: The cleaned inclusive-start, exclusive-end range.
+        source_code: The source identifier used in diagnostics.
+    """
+    result.gaps = missing_ranges(
+        connection,
+        paths,
+        dataset,
+        used_range[0],
+        used_range[1],
+    )
+    if result.gaps:
+        missing = sum(gap.count for gap in result.gaps)
+        result.problems.append(
+            Message(
+                "missing_candles",
+                f"{source_code} omitted {missing} candle(s) across "
+                f"{len(result.gaps)} internal gap(s).",
+            )
+        )
+        if request.gap_policy == "raise":
+            raise MissingCandlesError(result.pair, result.gaps)
+    columns = dataset.resolve_columns(request.columns)
+    result.data = query_parquet(
+        connection,
+        paths,
+        dataset,
+        used_range[0],
+        used_range[1],
+        columns,
+        gap_policy=request.gap_policy,
+    )
+
+
 def process_pair(
     source: Source,
     catalog: Catalog,
@@ -238,6 +290,7 @@ def process_pair(
         The pair's data and structured outcome report.
     """
     result = _result(pair, request, dataset)
+    result.source = source.code
     market, pair_error = _resolve_market(pair, markets)
     if market is None:
         if pair_error is None:
@@ -303,16 +356,18 @@ def process_pair(
     if not coverage.paths:
         return result
 
-    columns = dataset.resolve_columns(request.columns)
     try:
-        result.data = query_parquet(
+        _query_result(
+            result,
             catalog.connection,
             coverage.paths,
             dataset,
-            used_range[0],
-            used_range[1],
-            columns,
+            request,
+            used_range,
+            source.code,
         )
+    except MissingCandlesError:
+        raise
     except Exception as error:
         result.errors.append(Message("query_failed", str(error)))
         return result

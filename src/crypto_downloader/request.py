@@ -9,6 +9,7 @@ import pandas as pd
 
 type TimeRange = tuple[datetime, datetime]
 type ColumnSelection = dict[str, str] | None
+GAP_POLICIES = frozenset({"forward", "backward", "nan", "keep", "raise"})
 UTC = timezone.utc
 DATE_PATTERN = re.compile(r"\d{4}-\d{2}-\d{2}")
 IDENTIFIER_PATTERN = re.compile(r"[a-z][a-z0-9_]*")
@@ -284,6 +285,23 @@ def parse_columns(value: object) -> ColumnSelection:
     raise TypeError("desired_columns must be a list or a column-to-label dictionary")
 
 
+def parse_gap_policy(value: object) -> str:
+    """Validate a missing-candle policy.
+
+    Args:
+        value: The proposed policy name.
+
+    Returns:
+        A supported lowercase policy.
+    """
+    if not isinstance(value, str):
+        raise TypeError("gap_policy must be a string")
+    if value not in GAP_POLICIES:
+        supported = ", ".join(sorted(GAP_POLICIES))
+        raise ValueError(f"gap_policy must be one of: {supported}")
+    return value
+
+
 @dataclass(frozen=True)
 class Request:
     """Hold one validated source-independent downloader request."""
@@ -296,6 +314,7 @@ class Request:
     columns: ColumnSelection
     product: str = "spot"
     dataset: str = "klines"
+    gap_policy: str = "forward"
 
     @classmethod
     def parse(
@@ -309,6 +328,7 @@ class Request:
         base_interval: object = "1m",
         product: object = "spot",
         dataset: object = "klines",
+        gap_policy: object = "forward",
     ) -> "Request":
         """Validate caller values and create a request.
 
@@ -321,6 +341,7 @@ class Request:
             base_interval: The interval used when no output interval is supplied.
             product: The lowercase source product identifier.
             dataset: The lowercase dataset identifier.
+            gap_policy: The behavior used for internal missing candles.
 
         Returns:
             A validated source-independent request.
@@ -331,6 +352,7 @@ class Request:
         parsed_dataset = parse_identifier(dataset, name="dataset")
         parsed_interval = parse_interval(interval, default=base_interval)
         columns = parse_columns(desired_columns)
+        parsed_gap_policy = parse_gap_policy(gap_policy)
         return cls(
             pairs=parsed_pairs,
             single=single,
@@ -340,4 +362,5 @@ class Request:
             columns=columns,
             product=parsed_product,
             dataset=parsed_dataset,
+            gap_policy=parsed_gap_policy,
         )

@@ -95,6 +95,7 @@ class Downloader:
         desired_columns: object = None,
         refresh: bool = False,
         offline: bool = False,
+        gap_policy: object = "forward",
     ) -> Result | list[Result]:
         """Return data and structured reports for requested pairs.
 
@@ -108,6 +109,7 @@ class Downloader:
             desired_columns: Optional selected and renamed columns.
             refresh: Whether to repeat complete resource discovery.
             offline: Whether to use only cataloged markets and cached files.
+            gap_policy: The behavior used for internal missing candles.
 
         Returns:
             One result for string input or an ordered result list.
@@ -120,6 +122,7 @@ class Downloader:
             dataset=dataset,
             interval=interval,
             desired_columns=desired_columns,
+            gap_policy=gap_policy,
         )
         specification = get_dataset(request.product, request.dataset)
         specification.resolve_interval(request.interval)
@@ -182,6 +185,7 @@ class Downloader:
         desired_columns: object = None,
         refresh: bool = False,
         offline: bool = False,
+        gap_policy: object = "forward",
     ) -> pd.DataFrame | list[pd.DataFrame]:
         """Return only DataFrames for requested pairs.
 
@@ -195,6 +199,7 @@ class Downloader:
             desired_columns: Optional selected and renamed columns.
             refresh: Whether to repeat complete resource discovery.
             offline: Whether to use only cataloged markets and cached files.
+            gap_policy: The behavior used for internal missing candles.
 
         Returns:
             One DataFrame for string input or an ordered DataFrame list.
@@ -209,6 +214,7 @@ class Downloader:
             desired_columns=desired_columns,
             refresh=refresh,
             offline=offline,
+            gap_policy=gap_policy,
         )
         if isinstance(results, Result):
             return results.frame()
@@ -232,6 +238,7 @@ def get_results(
     discovery_tail_days: int = 7,
     refresh: bool = False,
     offline: bool = False,
+    gap_policy: object = "forward",
 ) -> Result | list[Result]:
     """Create a downloader and return requested data with reports.
 
@@ -251,6 +258,7 @@ def get_results(
         discovery_tail_days: Recent active-market days rediscovered per request.
         refresh: Whether to repeat complete resource discovery.
         offline: Whether to use only cataloged markets and cached files.
+        gap_policy: The behavior used for internal missing candles.
 
     Returns:
         One result for string input or an ordered result list.
@@ -272,6 +280,7 @@ def get_results(
         desired_columns=desired_columns,
         refresh=refresh,
         offline=offline,
+        gap_policy=gap_policy,
     )
 
 
@@ -292,6 +301,7 @@ def get_data(
     discovery_tail_days: int = 7,
     refresh: bool = False,
     offline: bool = False,
+    gap_policy: object = "forward",
 ) -> pd.DataFrame | list[pd.DataFrame]:
     """Create a downloader and return only requested DataFrames.
 
@@ -311,6 +321,7 @@ def get_data(
         discovery_tail_days: Recent active-market days rediscovered per request.
         refresh: Whether to repeat complete resource discovery.
         offline: Whether to use only cataloged markets and cached files.
+        gap_policy: The behavior used for internal missing candles.
 
     Returns:
         One DataFrame for string input or an ordered DataFrame list.
@@ -332,6 +343,7 @@ def get_data(
         desired_columns=desired_columns,
         refresh=refresh,
         offline=offline,
+        gap_policy=gap_policy,
     )
 
 
