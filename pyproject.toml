@@ -22,6 +22,7 @@ dev = [
     "mypy>=1,<2",
     "pytest>=9,<10",
     "pytest-cov>=7,<8",
+    "pytest-xdist>=3,<4",
     "radon>=6,<7",
 ]
 
@@ -38,6 +39,8 @@ pythonpath = ["src"]
 addopts = [
     "--strict-config",
     "--strict-markers",
+    "-n",
+    "8",
     "--cov=crypto_downloader",
     "--cov-branch",
     "--cov-report=term-missing",
