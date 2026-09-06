@@ -96,12 +96,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--earliest-date", default="2020-01-01", help="earliest discovery date"
     )
-    parser.add_argument("--max-workers", type=int, default=16, help="download workers")
+    parser.add_argument("--max-workers", type=int, default=32, help="download workers")
     parser.add_argument(
         "--discovery-tail-days",
         type=int,
         default=7,
         help="recent active-market days to rescan",
+    )
+    parser.add_argument(
+        "--market-refresh-hours",
+        type=float,
+        default=24.0,
+        help="hours to reuse cached market metadata",
     )
     parser.add_argument(
         "--gap-policy",
@@ -142,6 +148,7 @@ def _run(parser: argparse.ArgumentParser, arguments: argparse.Namespace) -> int:
             earliest_date=arguments.earliest_date,
             max_workers=arguments.max_workers,
             discovery_tail_days=arguments.discovery_tail_days,
+            market_refresh_hours=arguments.market_refresh_hours,
             refresh=arguments.refresh,
             offline=arguments.offline,
             gap_policy=arguments.gap_policy,

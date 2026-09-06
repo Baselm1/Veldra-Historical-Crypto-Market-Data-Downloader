@@ -276,7 +276,8 @@ def test_downloader_completes_and_reuses_one_spot_kline_day(
     assert first.data["price"].tolist() == [42298.61, 42320.0]
     pd.testing.assert_frame_equal(first.data, second.data)
     assert server.archive_requests == 1
-    assert server.resource_requests == 2
+    assert server.resource_requests == 1
+    assert server.market_requests == 1
 
     expected = parquet_path(tmp_path, KEY, DAY)
     assert expected.is_file()
@@ -591,6 +592,7 @@ def test_downloader_defaults_to_the_binance_source(tmp_path: Path) -> None:
 
     assert isinstance(service.source, Binance)
     assert service.earliest_date == date(2020, 1, 1)
+    assert service.max_workers == 32
 
 
 @pytest.mark.parametrize(
@@ -600,6 +602,8 @@ def test_downloader_defaults_to_the_binance_source(tmp_path: Path) -> None:
         ("max_workers", True),
         ("discovery_tail_days", -1),
         ("discovery_tail_days", 1.5),
+        ("market_refresh_hours", 0),
+        ("market_refresh_hours", True),
     ],
 )
 def test_downloader_rejects_invalid_durability_settings(

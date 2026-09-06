@@ -61,8 +61,8 @@ def catalog() -> Iterator[Catalog]:
     connection.close()
 
 
-def test_catalog_creates_only_the_three_metadata_tables(catalog: Catalog) -> None:
-    """Confirm a new catalog creates the planned schema and uses UTC."""
+def test_catalog_creates_the_metadata_tables_and_uses_utc(catalog: Catalog) -> None:
+    """Confirm a new catalog creates its planned schema and uses UTC."""
     tables = {
         row[0]
         for row in catalog.connection.execute(
@@ -71,7 +71,7 @@ def test_catalog_creates_only_the_three_metadata_tables(catalog: Catalog) -> Non
         ).fetchall()
     }
 
-    assert tables == {"markets", "resources", "discoveries"}
+    assert tables == {"markets", "resources", "discoveries", "discovery_segments"}
     timezone = catalog.connection.execute(
         "SELECT current_setting('TimeZone')"
     ).fetchone()
@@ -125,6 +125,21 @@ def test_market_snapshot_accepts_archive_only_symbols_without_asset_metadata(
     assert catalog.markets("binance", "spot") == [archived]
 
 
+def test_market_snapshot_records_a_refresh_timestamp(catalog: Catalog) -> None:
+    """Confirm market metadata records when its complete snapshot was refreshed."""
+    assert catalog.market_snapshot_at("binance", "spot") is None
+
+    catalog.save_markets(
+        "binance",
+        "spot",
+        [Market("BTCUSDT", "BTCUSDT", "BTC", "USDT", "TRADING")],
+    )
+
+    refreshed_at = catalog.market_snapshot_at("binance", "spot")
+    assert refreshed_at is not None
+    assert refreshed_at.tzinfo == UTC
+
+
 @pytest.mark.parametrize(
     "markets",
     [
@@ -170,6 +185,14 @@ def test_discovery_stores_sorted_resources_and_inclusive_boundaries(
         resource(3, "three"),
     ]
     assert catalog.resources(KEY, date(2025, 1, 2), date(2025, 1, 2)) == []
+    assert catalog.resource_bounds(KEY) == (date(2025, 1, 1), date(2025, 1, 3))
+
+
+def test_resource_bounds_are_absent_without_discovered_files(catalog: Catalog) -> None:
+    """Confirm empty discovery coverage does not invent availability bounds."""
+    catalog.save_discovery(KEY, date(2025, 1, 1), date(2025, 1, 2), [])
+
+    assert catalog.resource_bounds(KEY) is None
 
 
 def test_empty_discovery_still_records_the_completed_range(catalog: Catalog) -> None:
@@ -178,6 +201,34 @@ def test_empty_discovery_still_records_the_completed_range(catalog: Catalog) -> 
 
     assert catalog.discovery_range(KEY) == (date(2025, 1, 1), date(2025, 1, 2))
     assert catalog.resources(KEY, date(2025, 1, 1), date(2025, 1, 2)) == []
+
+
+def test_disjoint_discoveries_remain_distinct_coverage_segments(
+    catalog: Catalog,
+) -> None:
+    """Confirm skipped dates are not hidden inside aggregate discovery bounds."""
+    catalog.save_discovery(KEY, date(2025, 1, 1), date(2025, 1, 2), [resource(1)])
+    catalog.save_discovery(KEY, date(2025, 1, 8), date(2025, 1, 9), [resource(8)])
+
+    assert catalog.discovery_range(KEY) == (date(2025, 1, 1), date(2025, 1, 9))
+    assert catalog.discovery_ranges(KEY) == [
+        (date(2025, 1, 1), date(2025, 1, 2)),
+        (date(2025, 1, 8), date(2025, 1, 9)),
+    ]
+
+
+def test_disjoint_discovery_segments_survive_catalog_reopening(tmp_path: Path) -> None:
+    """Confirm compatibility migration never replaces real segments with bounds."""
+    path = tmp_path / "catalog.duckdb"
+    with open_catalog(path) as catalog:
+        catalog.save_discovery(KEY, date(2025, 1, 1), date(2025, 1, 2), [resource(1)])
+        catalog.save_discovery(KEY, date(2025, 1, 8), date(2025, 1, 9), [resource(8)])
+
+    with open_catalog(path) as catalog:
+        assert catalog.discovery_ranges(KEY) == [
+            (date(2025, 1, 1), date(2025, 1, 2)),
+            (date(2025, 1, 8), date(2025, 1, 9)),
+        ]
 
 
 def test_repeated_discovery_expands_bounds_and_preserves_cache_state(

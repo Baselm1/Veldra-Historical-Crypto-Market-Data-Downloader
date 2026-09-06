@@ -2,6 +2,8 @@
 
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
+from threading import Lock
+from time import sleep
 
 import httpx
 import pandas as pd
@@ -10,6 +12,7 @@ import pytest
 import crypto_downloader.downloader as downloader_module
 from crypto_downloader.datasets import DatasetSpec
 from crypto_downloader.downloader import Downloader
+from crypto_downloader.catalog import open_catalog
 from crypto_downloader.models import (
     IngestedResource,
     Market,
@@ -34,16 +37,25 @@ class RangeSource:
         self,
         markets: list[Market],
         days: dict[str, list[date]],
+        *,
+        delay: float = 0.0,
     ) -> None:
         """Store market metadata and available archive days.
 
         Args:
             markets: The complete market snapshot returned to the downloader.
             days: Available daily resources indexed by native symbol.
+            delay: Optional source latency used to observe pair concurrency.
         """
         self.market_rows = markets
         self.days = days
+        self.delay = delay
+        self.market_calls = 0
+        self.first_calls: list[tuple[str, date, date]] = []
         self.resource_calls: list[tuple[str, date, date]] = []
+        self.active_calls = 0
+        self.peak_calls = 0
+        self._call_lock = Lock()
 
     def markets(self, client: httpx.Client, product: str) -> list[Market]:
         """Return the configured market snapshot.
@@ -55,7 +67,36 @@ class RangeSource:
         Returns:
             A copy of the configured markets.
         """
+        self.market_calls += 1
         return self.market_rows.copy()
+
+    def first_resource(
+        self,
+        client: httpx.Client,
+        key: ResourceKey,
+        start_day: date,
+        end_day: date,
+    ) -> Resource | None:
+        """Return the first configured resource inside a broad range.
+
+        Args:
+            client: The unused HTTPX client.
+            key: The requested source dataset identity.
+            start_day: The earliest acceptable archive day.
+            end_day: The latest acceptable archive day.
+
+        Returns:
+            The first matching resource, or ``None`` when none exists.
+        """
+        self.first_calls.append((key.symbol, start_day, end_day))
+        self._pause()
+        matching = [
+            day for day in self.days.get(key.symbol, []) if start_day <= day <= end_day
+        ]
+        if not matching:
+            return None
+        day = min(matching)
+        return Resource(day, f"memory://{key.symbol}/{day}.zip", "memory://checksum")
 
     def resources(
         self,
@@ -76,11 +117,24 @@ class RangeSource:
             Available daily resources ordered by date.
         """
         self.resource_calls.append((key.symbol, start_day, end_day))
+        self._pause()
         return [
             Resource(day, f"memory://{key.symbol}/{day}.zip", "memory://checksum")
             for day in self.days.get(key.symbol, [])
             if start_day <= day <= end_day
         ]
+
+    def _pause(self) -> None:
+        """Apply configured latency while recording concurrent source calls."""
+        with self._call_lock:
+            self.active_calls += 1
+            self.peak_calls = max(self.peak_calls, self.active_calls)
+        try:
+            if self.delay:
+                sleep(self.delay)
+        finally:
+            with self._call_lock:
+                self.active_calls -= 1
 
     def ingest(
         self,
@@ -261,7 +315,8 @@ def test_start_is_trimmed_to_global_and_pair_availability(tmp_path: Path) -> Non
     assert [warning.code for warning in result.warnings] == ["start_trimmed"]
     assert "BTCUSDT" in result.warnings[0].message
     assert "2020-01-02" in result.warnings[0].message
-    assert source.resource_calls == [("BTCUSDT", date(2020, 1, 1), date(2025, 1, 4))]
+    assert source.first_calls == [("BTCUSDT", date(2020, 1, 1), date(2025, 1, 4))]
+    assert source.resource_calls == []
 
 
 def test_active_market_end_is_trimmed_to_yesterday_boundary(tmp_path: Path) -> None:
@@ -403,8 +458,10 @@ def test_multiple_pairs_keep_order_ranges_and_independent_failures(
     assert [problem.date for problem in results[2].problems] == [date(2024, 1, 2)]
 
 
-def test_pair_status_controls_incremental_rediscovery(tmp_path: Path) -> None:
-    """Confirm active pairs rescan their tail while inactive pairs reuse discovery.
+def test_historical_requests_reuse_discovery_for_every_market_status(
+    tmp_path: Path,
+) -> None:
+    """Confirm immutable historical ranges do not rescan active or inactive pairs.
 
     Args:
         tmp_path: The isolated downloader directory.
@@ -422,7 +479,94 @@ def test_pair_status_controls_incremental_rediscovery(tmp_path: Path) -> None:
 
     downloader.get_results(["BTCUSDT", "ETHUSDT"], "2024-01-01", "2024-01-01")
 
-    assert source.resource_calls == [("BTCUSDT", date(2024, 12, 29), date(2025, 1, 4))]
+    assert source.resource_calls == []
+
+
+def test_active_recent_request_rescans_only_its_mutable_tail(tmp_path: Path) -> None:
+    """Confirm an active pair revisits recent requested days only."""
+    source = RangeSource(
+        [market("BTCUSDT")],
+        {"BTCUSDT": [date(2025, 1, day) for day in (2, 3, 4)]},
+    )
+    downloader = service(tmp_path, source)
+    downloader.get_results("BTCUSDT", "2025-01-02", "2025-01-04")
+    source.resource_calls.clear()
+
+    downloader.get_results("BTCUSDT", "2025-01-02", "2025-01-04")
+
+    assert source.resource_calls == [("BTCUSDT", date(2025, 1, 2), date(2025, 1, 4))]
+
+
+def test_active_discovery_is_limited_to_the_cleaned_request(tmp_path: Path) -> None:
+    """Confirm an active pair does not catalogue every day since 2020."""
+    source = RangeSource(
+        [market("BTCUSDT")],
+        {
+            "BTCUSDT": [
+                date(2020, 1, 1),
+                date(2024, 6, 1),
+                date(2024, 6, 2),
+            ]
+        },
+    )
+
+    result = one_result(
+        service(tmp_path, source).get_results("BTCUSDT", "2024-06-01", "2024-06-02")
+    )
+
+    assert result.complete
+    assert source.first_calls == [("BTCUSDT", date(2020, 1, 1), date(2025, 1, 4))]
+    assert source.resource_calls == [("BTCUSDT", date(2024, 6, 1), date(2024, 6, 2))]
+
+
+def test_fresh_market_snapshot_is_reused_until_refresh_is_requested(
+    tmp_path: Path,
+) -> None:
+    """Confirm archive market folders are not crawled on every online request."""
+    source = RangeSource([market("BTCUSDT")], {"BTCUSDT": [date(2024, 1, 1)]})
+    downloader = service(tmp_path, source)
+
+    downloader.get_results("BTCUSDT", "2024-01-01", "2024-01-01")
+    downloader.get_results("BTCUSDT", "2024-01-01", "2024-01-01")
+    downloader.get_results("BTCUSDT", "2024-01-01", "2024-01-01", refresh=True)
+
+    assert source.market_calls == 2
+
+
+def test_stale_market_snapshot_is_refreshed_automatically(tmp_path: Path) -> None:
+    """Confirm expired market metadata is replaced before pair resolution."""
+    source = RangeSource([market("BTCUSDT")], {"BTCUSDT": [date(2024, 1, 1)]})
+    downloader = service(tmp_path, source)
+    downloader.get_results("BTCUSDT", "2024-01-01", "2024-01-01")
+    with open_catalog(tmp_path / "catalog.duckdb") as catalog:
+        catalog.connection.execute(
+            "UPDATE markets SET refreshed_at = TIMESTAMP '2000-01-01'"
+        )
+
+    downloader.get_results("BTCUSDT", "2024-01-01", "2024-01-01")
+
+    assert source.market_calls == 2
+
+
+def test_multiple_pair_workflows_run_concurrently_and_preserve_order(
+    tmp_path: Path,
+) -> None:
+    """Confirm independent pairs overlap source work without reordering results."""
+    symbols = ["BTCUSDT", "ETHUSDT", "ADAUSDT"]
+    source = RangeSource(
+        [market(symbol) for symbol in symbols],
+        {symbol: [date(2020, 1, 1), date(2024, 1, 1)] for symbol in symbols},
+        delay=0.05,
+    )
+
+    results = service(tmp_path, source).get_results(
+        symbols, "2024-01-01", "2024-01-01", progress=False
+    )
+
+    assert isinstance(results, list)
+    assert [result.pair for result in results] == symbols
+    assert all(result.complete for result in results)
+    assert source.peak_calls >= 2
 
 
 @pytest.mark.parametrize(

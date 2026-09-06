@@ -29,7 +29,7 @@ class Binance:
     code: str = "binance"
     products: tuple[str, ...] = ("spot",)
     active_statuses: frozenset[str] = frozenset({"TRADING"})
-    max_concurrency: int = 16
+    max_concurrency: int = 32
 
     def __init__(
         self,
@@ -154,6 +154,40 @@ class Binance:
             len(resources),
         )
         return resources
+
+    def first_resource(
+        self,
+        client: httpx.Client,
+        key: ResourceKey,
+        start_day: date,
+        end_day: date,
+    ) -> Resource | None:
+        """Return the first Binance daily archive on or after a boundary.
+
+        Args:
+            client: The HTTPX client used for Binance requests.
+            key: The requested Binance dataset identity.
+            start_day: The earliest acceptable archive day.
+            end_day: The latest acceptable archive day.
+
+        Returns:
+            The first matching daily archive, or ``None`` when none exists.
+        """
+        self._validate_resource_request(key, start_day, end_day)
+        prefix = f"{SPOT_KLINES_PREFIX}{key.symbol}/{key.interval}/"
+        stem = f"{key.symbol}-{key.interval}-"
+        marker = f"{prefix}{stem}{start_day.isoformat()}"
+        pattern = re.compile(re.escape(prefix + stem) + r"(\d{4}-\d{2}-\d{2})\.zip")
+        for keys, _ in self._pages(client, prefix, marker=marker, max_keys=2):
+            for object_key in keys:
+                day = self._resource_day(object_key, pattern)
+                if day is None or day < start_day:
+                    continue
+                if day > end_day:
+                    return None
+                url = f"{ARCHIVE_URL}/{quote(object_key, safe='/')}"
+                return Resource(day, url, f"{url}.CHECKSUM")
+        return None
 
     def ingest(
         self,
@@ -288,6 +322,7 @@ class Binance:
         *,
         delimiter: str | None = None,
         marker: str | None = None,
+        max_keys: int | None = None,
     ) -> Iterator[tuple[list[str], list[str]]]:
         """Yield every valid page from one bucket listing.
 
@@ -296,6 +331,7 @@ class Binance:
             prefix: The object prefix to list.
             delimiter: The optional folder delimiter.
             marker: The optional key after which listing should begin.
+            max_keys: The optional maximum objects returned per page.
 
         Yields:
             Object keys and common folder prefixes from each page.
@@ -307,6 +343,8 @@ class Binance:
                 params["delimiter"] = delimiter
             if marker is not None:
                 params["marker"] = marker
+            if max_keys is not None:
+                params["max-keys"] = str(max_keys)
             root = self._listing_root(self._get(client, BUCKET_URL, params).content)
             keys, prefixes, truncated, next_marker = self._listing_values(root)
             LOGGER.debug(

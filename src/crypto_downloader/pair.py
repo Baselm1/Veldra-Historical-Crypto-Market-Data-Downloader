@@ -123,30 +123,123 @@ def _missing_resources(
 
 
 def _availability(
-    resources: list[Resource],
-    market: Market,
-    active_statuses: frozenset[str],
+    bounds: tuple[date, date] | None,
+    active: bool,
     today: date,
 ) -> tuple[datetime, datetime] | None:
-    """Return daily source bounds around discovered resources.
+    """Return timestamp bounds around known daily resource days.
 
     Args:
-        resources: The discovered resources to bound.
-        market: The resolved source market.
-        active_statuses: Source-native statuses considered active.
+        bounds: The inclusive first and last known resource days.
+        active: Whether today's date is the dynamic exclusive end.
         today: The current UTC date used as the active exclusive end.
 
     Returns:
         The inclusive start and exclusive end, or ``None`` when empty.
     """
-    if not resources:
+    if bounds is None:
         return None
-    first = min(resource.day for resource in resources)
-    if market.status in active_statuses:
-        last = today
-    else:
-        last = max(resource.day for resource in resources) + timedelta(days=1)
+    first, last_resource = bounds
+    last = today if active else last_resource + timedelta(days=1)
     return datetime.combine(first, time.min, UTC), datetime.combine(last, time.min, UTC)
+
+
+def _availability_range(
+    source: Source,
+    catalog: Catalog,
+    client: httpx.Client,
+    key: ResourceKey,
+    earliest_date: date,
+    today: date,
+    result: Result,
+    reporter: Reporter,
+    *,
+    active: bool,
+    refresh: bool,
+    offline: bool,
+    tail_days: int,
+) -> tuple[datetime, datetime] | None:
+    """Resolve pair bounds without listing active-market history.
+
+    Args:
+        source: The source strategy used for discovery.
+        catalog: The metadata catalog containing known resources.
+        client: The HTTPX client used for source requests.
+        key: The requested source dataset identity.
+        earliest_date: The first configured archive date.
+        today: The current UTC day and exclusive active boundary.
+        result: The result receiving discovery failures.
+        reporter: The optional Rich activity reporter.
+        active: Whether the market can receive new daily files.
+        refresh: Whether source metadata must be refreshed.
+        offline: Whether source access is forbidden.
+        tail_days: The recent active-market rediscovery window.
+
+    Returns:
+        The known timestamp bounds, or ``None`` when no files exist.
+    """
+    broad_start = datetime.combine(earliest_date, time.min, UTC)
+    broad_end = datetime.combine(today, time.min, UTC)
+    if not active:
+        resources = _discover(
+            source,
+            catalog,
+            client,
+            key,
+            broad_start,
+            broad_end,
+            result,
+            reporter,
+            active=False,
+            refresh=refresh,
+            offline=offline,
+            tail_days=tail_days,
+        )
+        if resources is None:
+            return None
+        return _availability(catalog.resource_bounds(key), False, today)
+
+    bounds = catalog.resource_bounds(key)
+    if bounds is None and not offline:
+        try:
+            with reporter.status(f"Finding the first {key.symbol} daily file"):
+                first = source.first_resource(
+                    client,
+                    key,
+                    earliest_date,
+                    today - timedelta(days=1),
+                )
+            if first is not None:
+                catalog.save_discovery(key, first.day, first.day, [first])
+                bounds = (first.day, first.day)
+        except Exception as error:
+            LOGGER.exception("Earliest resource discovery failed: key=%s", key)
+            result.errors.append(Message("discovery_failed", str(error)))
+            return None
+    return _availability(bounds, True, today)
+
+
+def _recent_active_range(
+    active: bool,
+    used_range: tuple[datetime, datetime],
+    today: date,
+    tail_days: int,
+) -> bool:
+    """Return whether a request overlaps mutable active-market days.
+
+    Args:
+        active: Whether the market can receive new daily resources.
+        used_range: The cleaned timestamp range.
+        today: The current UTC day.
+        tail_days: The number of recent days that may change.
+
+    Returns:
+        True only when recent active resources should be relisted.
+    """
+    if not active:
+        return False
+    _first, last = requested_days(*used_range)
+    return last >= today - timedelta(days=tail_days)
 
 
 def _clean_range(
@@ -525,16 +618,14 @@ def process_pair(
         market.symbol,
         dataset.base_interval,
     )
-    discovery_start = datetime.combine(earliest_date, time.min, UTC)
-    discovery_end = datetime.combine(today, time.min, UTC)
     active = market.status in source.active_statuses
-    resources = _discover(
+    availability = _availability_range(
         source,
         catalog,
         client,
         key,
-        discovery_start,
-        discovery_end,
+        earliest_date,
+        today,
         result,
         display,
         active=active,
@@ -542,12 +633,8 @@ def process_pair(
         offline=offline,
         tail_days=discovery_tail_days,
     )
-    if resources is None:
+    if result.errors:
         return _finish(result, display, started)
-    noun = "file" if len(resources) == 1 else "files"
-    display.info(f"{market.symbol}: found {len(resources):,} daily {noun}")
-
-    availability = _availability(resources, market, source.active_statuses, today)
     result.available_range = availability
     if availability is None:
         result.errors.append(
@@ -561,6 +648,24 @@ def process_pair(
     if used_range is None:
         return _finish(result, display, started)
     result.used_range = used_range
+    resources = _discover(
+        source,
+        catalog,
+        client,
+        key,
+        used_range[0],
+        used_range[1],
+        result,
+        display,
+        active=_recent_active_range(active, used_range, today, discovery_tail_days),
+        refresh=refresh,
+        offline=offline,
+        tail_days=discovery_tail_days,
+    )
+    if resources is None:
+        return _finish(result, display, started)
+    noun = "file" if len(resources) == 1 else "files"
+    display.info(f"{market.symbol}: found {len(resources):,} daily {noun}")
     requested_resources = _resources_in_range(resources, *used_range)
     result.problems.extend(_missing_resources(requested_resources, *used_range))
     coverage = cache_resources(

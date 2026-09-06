@@ -139,6 +139,7 @@ SPOT_KLINES = DatasetSpec(
     base_interval="1m",
     output_intervals=SPOT_KLINE_OUTPUT_INTERVALS,
     aliases=MappingProxyType({"base_volume": "volume"}),
+    max_concurrency=32,
 )
 
 DATASETS: Mapping[tuple[str, str], DatasetSpec] = MappingProxyType(

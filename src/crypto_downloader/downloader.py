@@ -1,18 +1,21 @@
 """Coordinate public cryptocurrency data requests."""
 
 import asyncio
-from datetime import UTC, date, datetime, time
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import ExitStack
+from datetime import UTC, date, datetime, time, timedelta
 import logging
+import math
 from pathlib import Path
 from time import perf_counter
 
 import httpx
 import pandas as pd
 
-from .catalog import catalog_lock, open_catalog
-from .datasets import get_dataset
+from .catalog import Catalog, catalog_lock, open_catalog
+from .datasets import DatasetSpec, get_dataset
 from .display import Reporter
-from .models import Result
+from .models import Market, Result
 from .pair import process_pair
 from .request import Request
 from .request import parse_timestamp
@@ -30,6 +33,15 @@ def utc_today() -> date:
         The current date at UTC.
     """
     return datetime.now(UTC).date()
+
+
+def utc_now() -> datetime:
+    """Return the current UTC timestamp.
+
+    Returns:
+        The current timezone-aware UTC timestamp.
+    """
+    return datetime.now(UTC)
 
 
 def _history_date(value: object) -> date:
@@ -50,6 +62,231 @@ def _history_date(value: object) -> date:
     return parsed.date()
 
 
+def _source_limit(source: Source, max_workers: int) -> int:
+    """Return the effective source-wide concurrency limit.
+
+    Args:
+        source: The source whose optional concurrency limit applies.
+        max_workers: The caller's validated concurrency limit.
+
+    Returns:
+        The lower caller and source concurrency limit.
+    """
+    source_limit = getattr(source, "max_concurrency", max_workers)
+    if (
+        isinstance(source_limit, bool)
+        or not isinstance(source_limit, int)
+        or source_limit < 1
+    ):
+        raise ValueError("source max_concurrency must be a positive integer")
+    return min(max_workers, source_limit)
+
+
+def _load_markets(
+    source: Source,
+    catalog: Catalog,
+    client: httpx.Client,
+    product: str,
+    reporter: Reporter,
+    *,
+    refresh: bool,
+    offline: bool,
+    refresh_hours: float,
+) -> list[Market]:
+    """Load cached markets or refresh a stale source snapshot.
+
+    Args:
+        source: The source serving market metadata.
+        catalog: The catalog containing the cached snapshot.
+        client: The HTTPX client used for source requests.
+        product: The requested source product.
+        reporter: The optional Rich activity reporter.
+        refresh: Whether the caller requires fresh metadata now.
+        offline: Whether all source access is forbidden.
+        refresh_hours: Hours a market snapshot remains fresh.
+
+    Returns:
+        The complete market snapshot used by the request.
+    """
+    markets = catalog.markets(source.code, product)
+    snapshot = catalog.market_snapshot_at(source.code, product)
+    cutoff = utc_now() - timedelta(hours=refresh_hours)
+    fresh = bool(markets) and snapshot is not None and snapshot >= cutoff
+    should_refresh = not offline and (refresh or not fresh)
+    if should_refresh:
+        with reporter.status(f"Refreshing {source.code.title()} {product} markets"):
+            markets = source.markets(client, product)
+        catalog.save_markets(source.code, product, markets)
+        LOGGER.info(
+            "Market snapshot refreshed: source=%s product=%s markets=%d",
+            source.code,
+            product,
+            len(markets),
+        )
+        reporter.market_summary(markets, refreshed=True)
+        return markets
+    if not markets:
+        raise RuntimeError("offline mode requires cached market metadata")
+    LOGGER.info(
+        "Market snapshot loaded from cache: source=%s product=%s markets=%d age=%s",
+        source.code,
+        product,
+        len(markets),
+        utc_now() - snapshot if snapshot is not None else None,
+    )
+    reporter.market_summary(markets, refreshed=False)
+    return markets
+
+
+def _run_pair(
+    source: Source,
+    catalog: Catalog,
+    client: httpx.Client,
+    data_dir: Path,
+    markets: list[Market],
+    pair: str,
+    request: Request,
+    dataset: DatasetSpec,
+    earliest_date: date,
+    today: date,
+    *,
+    refresh: bool,
+    offline: bool,
+    discovery_tail_days: int,
+    max_workers: int,
+    reporter: Reporter,
+) -> Result:
+    """Run one pair against its dedicated catalog connection.
+
+    Args:
+        source: The source serving the pair.
+        catalog: The pair's catalog connection.
+        client: The shared source HTTP client.
+        data_dir: The root downloader data directory.
+        markets: The current market snapshot.
+        pair: The caller's original pair spelling.
+        request: The validated shared request.
+        dataset: The requested dataset schema.
+        earliest_date: The configured global history boundary.
+        today: The current UTC day.
+        refresh: Whether source metadata should be refreshed.
+        offline: Whether source access is forbidden.
+        discovery_tail_days: Recent active-market days to revisit.
+        max_workers: Daily ingestion workers assigned to this pair.
+        reporter: The optional Rich activity reporter.
+
+    Returns:
+        The pair's data and structured diagnostics.
+    """
+    return process_pair(
+        source,
+        catalog,
+        client,
+        data_dir,
+        markets,
+        pair,
+        request,
+        dataset,
+        earliest_date,
+        today,
+        refresh=refresh,
+        offline=offline,
+        discovery_tail_days=discovery_tail_days,
+        max_workers=max_workers,
+        reporter=reporter,
+    )
+
+
+def _process_pairs(
+    source: Source,
+    catalog_path: Path,
+    client: httpx.Client,
+    data_dir: Path,
+    markets: list[Market],
+    request: Request,
+    dataset: DatasetSpec,
+    earliest_date: date,
+    today: date,
+    *,
+    refresh: bool,
+    offline: bool,
+    discovery_tail_days: int,
+    max_workers: int,
+    reporter: Reporter,
+) -> list[Result]:
+    """Run distinct pair workflows concurrently within one source budget.
+
+    Args:
+        source: The source serving every requested pair.
+        catalog_path: The shared catalog database path.
+        client: The shared source HTTP client.
+        data_dir: The root downloader data directory.
+        markets: The current market snapshot.
+        request: The validated shared request.
+        dataset: The requested dataset schema.
+        earliest_date: The configured global history boundary.
+        today: The current UTC day.
+        refresh: Whether source metadata should be refreshed.
+        offline: Whether source access is forbidden.
+        discovery_tail_days: Recent active-market days to revisit.
+        max_workers: The total source-wide concurrency budget.
+        reporter: The optional Rich activity reporter.
+
+    Returns:
+        Results in the caller's original pair order.
+    """
+    unique_pairs = list(dict.fromkeys(request.pairs))
+    pair_workers = min(len(unique_pairs), max_workers)
+    ingestion_workers = max(1, max_workers // pair_workers)
+    LOGGER.info(
+        "Pair workflows planned: pairs=%d workers=%d ingestion_workers_per_pair=%d",
+        len(unique_pairs),
+        pair_workers,
+        ingestion_workers,
+    )
+    with ExitStack() as stack:
+        catalogs = [
+            stack.enter_context(open_catalog(catalog_path)) for _ in unique_pairs
+        ]
+        arguments = list(zip(catalogs, unique_pairs))
+
+        def run(argument: tuple[Catalog, str]) -> Result:
+            """Run one catalog and pair tuple.
+
+            Args:
+                argument: The dedicated catalog and requested pair.
+
+            Returns:
+                The completed pair result.
+            """
+            catalog, pair = argument
+            return _run_pair(
+                source,
+                catalog,
+                client,
+                data_dir,
+                markets,
+                pair,
+                request,
+                dataset,
+                earliest_date,
+                today,
+                refresh=refresh,
+                offline=offline,
+                discovery_tail_days=discovery_tail_days,
+                max_workers=ingestion_workers,
+                reporter=reporter,
+            )
+
+        if pair_workers == 1:
+            unique_results = [run(arguments[0])]
+        else:
+            with ThreadPoolExecutor(max_workers=pair_workers) as executor:
+                unique_results = list(executor.map(run, arguments))
+    by_pair = dict(zip(unique_pairs, unique_results))
+    return [by_pair[pair] for pair in request.pairs]
+
+
 class Downloader:
     """Provide reusable downloader paths, source, and HTTP settings."""
 
@@ -60,8 +297,9 @@ class Downloader:
         source: Source | None = None,
         transport: httpx.BaseTransport | None = None,
         earliest_date: object = date(2020, 1, 1),
-        max_workers: int = 16,
+        max_workers: int = 32,
         discovery_tail_days: int = 7,
+        market_refresh_hours: float = 24.0,
     ) -> None:
         """Create a reusable imported downloader service.
 
@@ -72,6 +310,7 @@ class Downloader:
             earliest_date: The first daily archive date considered by discovery.
             max_workers: The maximum concurrent daily archive downloads.
             discovery_tail_days: Recent active-market days rediscovered per request.
+            market_refresh_hours: Hours before market metadata is refreshed again.
         """
         if not isinstance(data_dir, (str, Path)):
             raise TypeError("data_dir must be a path")
@@ -86,6 +325,9 @@ class Downloader:
         self.max_workers = _positive_integer(max_workers, "max_workers")
         self.discovery_tail_days = _positive_integer(
             discovery_tail_days, "discovery_tail_days"
+        )
+        self.market_refresh_hours = _positive_number(
+            market_refresh_hours, "market_refresh_hours"
         )
 
     def get_results(
@@ -167,60 +409,44 @@ class Downloader:
             refresh,
             offline,
         )
+        source_limit = _source_limit(self.source, self.max_workers)
+        limits = httpx.Limits(
+            max_connections=source_limit,
+            max_keepalive_connections=source_limit,
+        )
         with catalog_lock(catalog_path):
-            with (
-                open_catalog(catalog_path) as catalog,
-                httpx.Client(
-                    transport=self.transport,
-                    follow_redirects=True,
-                ) as client,
-            ):
-                markets = catalog.markets(self.source.code, request.product)
-                if not offline:
-                    with reporter.status(
-                        f"Refreshing {self.source.code.title()} "
-                        f"{request.product} markets"
-                    ):
-                        markets = self.source.markets(client, request.product)
-                    catalog.save_markets(self.source.code, request.product, markets)
-                    LOGGER.info(
-                        "Market snapshot refreshed: source=%s product=%s markets=%d",
-                        self.source.code,
-                        request.product,
-                        len(markets),
-                    )
-                    reporter.market_summary(markets, refreshed=True)
-                elif not markets:
-                    raise RuntimeError("offline mode requires cached market metadata")
-                else:
-                    LOGGER.info(
-                        "Market snapshot loaded from cache: source=%s product=%s "
-                        "markets=%d",
-                        self.source.code,
-                        request.product,
-                        len(markets),
-                    )
-                    reporter.market_summary(markets, refreshed=False)
-                results = [
-                    process_pair(
+            with httpx.Client(
+                transport=self.transport,
+                follow_redirects=True,
+                limits=limits,
+            ) as client:
+                with open_catalog(catalog_path) as catalog:
+                    markets = _load_markets(
                         self.source,
                         catalog,
                         client,
-                        self.data_dir,
-                        markets,
-                        pair,
-                        request,
-                        specification,
-                        self.earliest_date,
-                        utc_today(),
+                        request.product,
+                        reporter,
                         refresh=refresh,
                         offline=offline,
-                        discovery_tail_days=self.discovery_tail_days,
-                        max_workers=self.max_workers,
-                        reporter=reporter,
+                        refresh_hours=self.market_refresh_hours,
                     )
-                    for pair in request.pairs
-                ]
+                results = _process_pairs(
+                    self.source,
+                    catalog_path,
+                    client,
+                    self.data_dir,
+                    markets,
+                    request,
+                    specification,
+                    self.earliest_date,
+                    utc_today(),
+                    refresh=refresh,
+                    offline=offline,
+                    discovery_tail_days=self.discovery_tail_days,
+                    max_workers=source_limit,
+                    reporter=reporter,
+                )
         LOGGER.info(
             "Request complete: source=%s product=%s dataset=%s pairs=%d "
             "elapsed=%.3fs",
@@ -345,8 +571,9 @@ def get_results(
     source: Source | None = None,
     transport: httpx.BaseTransport | None = None,
     earliest_date: object = date(2020, 1, 1),
-    max_workers: int = 16,
+    max_workers: int = 32,
     discovery_tail_days: int = 7,
+    market_refresh_hours: float = 24.0,
     refresh: bool = False,
     offline: bool = False,
     gap_policy: object = "forward",
@@ -368,6 +595,7 @@ def get_results(
         earliest_date: The first daily archive date considered by discovery.
         max_workers: The maximum concurrent daily archive downloads.
         discovery_tail_days: Recent active-market days rediscovered per request.
+        market_refresh_hours: Hours before market metadata is refreshed again.
         refresh: Whether to repeat complete resource discovery.
         offline: Whether to use only cataloged markets and cached files.
         gap_policy: The behavior used for internal missing candles.
@@ -383,6 +611,7 @@ def get_results(
         earliest_date=earliest_date,
         max_workers=max_workers,
         discovery_tail_days=discovery_tail_days,
+        market_refresh_hours=market_refresh_hours,
     ).get_results(
         pairs,
         starting_date,
@@ -411,8 +640,9 @@ def get_data(
     source: Source | None = None,
     transport: httpx.BaseTransport | None = None,
     earliest_date: object = date(2020, 1, 1),
-    max_workers: int = 16,
+    max_workers: int = 32,
     discovery_tail_days: int = 7,
+    market_refresh_hours: float = 24.0,
     refresh: bool = False,
     offline: bool = False,
     gap_policy: object = "forward",
@@ -434,6 +664,7 @@ def get_data(
         earliest_date: The first daily archive date considered by discovery.
         max_workers: The maximum concurrent daily archive downloads.
         discovery_tail_days: Recent active-market days rediscovered per request.
+        market_refresh_hours: Hours before market metadata is refreshed again.
         refresh: Whether to repeat complete resource discovery.
         offline: Whether to use only cataloged markets and cached files.
         gap_policy: The behavior used for internal missing candles.
@@ -449,6 +680,7 @@ def get_data(
         earliest_date=earliest_date,
         max_workers=max_workers,
         discovery_tail_days=discovery_tail_days,
+        market_refresh_hours=market_refresh_hours,
     ).get_data(
         pairs,
         starting_date,
@@ -477,8 +709,9 @@ async def aget_data(
     source: Source | None = None,
     transport: httpx.BaseTransport | None = None,
     earliest_date: object = date(2020, 1, 1),
-    max_workers: int = 16,
+    max_workers: int = 32,
     discovery_tail_days: int = 7,
+    market_refresh_hours: float = 24.0,
     refresh: bool = False,
     offline: bool = False,
     gap_policy: object = "forward",
@@ -500,6 +733,7 @@ async def aget_data(
         earliest_date: The first daily archive date considered by discovery.
         max_workers: The maximum concurrent daily archive downloads.
         discovery_tail_days: Recent active-market days rediscovered per request.
+        market_refresh_hours: Hours before market metadata is refreshed again.
         refresh: Whether to repeat complete resource discovery.
         offline: Whether to use only cataloged markets and cached files.
         gap_policy: The behavior used for internal missing candles.
@@ -515,6 +749,7 @@ async def aget_data(
         earliest_date=earliest_date,
         max_workers=max_workers,
         discovery_tail_days=discovery_tail_days,
+        market_refresh_hours=market_refresh_hours,
     ).aget_data(
         pairs,
         starting_date,
@@ -545,6 +780,24 @@ def _positive_integer(value: object, name: str) -> int:
     if value < 1:
         raise ValueError(f"{name} must be positive")
     return value
+
+
+def _positive_number(value: object, name: str) -> float:
+    """Validate one positive finite numeric setting.
+
+    Args:
+        value: The proposed setting value.
+        name: The setting name used in errors.
+
+    Returns:
+        The validated floating-point value.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise TypeError(f"{name} must be a number")
+    converted = float(value)
+    if converted <= 0 or not math.isfinite(converted):
+        raise ValueError(f"{name} must be positive and finite")
+    return converted
 
 
 def _boolean(value: object, name: str) -> bool:

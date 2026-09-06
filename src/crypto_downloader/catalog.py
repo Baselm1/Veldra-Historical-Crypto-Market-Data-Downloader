@@ -8,6 +8,7 @@ from pathlib import Path
 from threading import RLock
 
 import duckdb
+import pandas as pd
 
 from .models import IngestedResource, Market, Resource, ResourceKey
 
@@ -144,7 +145,7 @@ class Catalog:
         self._create_schema()
 
     def _create_schema(self) -> None:
-        """Create the three metadata tables when they do not exist."""
+        """Create metadata tables and migrate older catalogs when needed."""
         self.connection.execute("""
             CREATE TABLE IF NOT EXISTS markets (
                 source VARCHAR NOT NULL,
@@ -154,6 +155,7 @@ class Catalog:
                 base_asset VARCHAR,
                 quote_asset VARCHAR,
                 status VARCHAR,
+                refreshed_at TIMESTAMP,
                 PRIMARY KEY (source, product, symbol)
             );
 
@@ -191,6 +193,40 @@ class Catalog:
                 scanned_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
                 PRIMARY KEY (source, product, dataset, symbol, interval)
             );
+
+            CREATE TABLE IF NOT EXISTS discovery_segments (
+                source VARCHAR NOT NULL,
+                product VARCHAR NOT NULL,
+                dataset VARCHAR NOT NULL,
+                symbol VARCHAR NOT NULL,
+                interval VARCHAR NOT NULL,
+                start_day DATE NOT NULL,
+                end_day DATE NOT NULL,
+                scanned_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
+                PRIMARY KEY (
+                    source, product, dataset, symbol, interval,
+                    start_day, end_day
+                )
+            );
+            """)
+        self.connection.execute(
+            "ALTER TABLE markets ADD COLUMN IF NOT EXISTS refreshed_at TIMESTAMP"
+        )
+        self.connection.execute("""
+            INSERT INTO discovery_segments
+            SELECT d.source, d.product, d.dataset, d.symbol, d.interval,
+                   d.start_day, d.end_day, d.scanned_at
+            FROM discoveries AS d
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM discovery_segments AS s
+                WHERE s.source = d.source
+                  AND s.product = d.product
+                  AND s.dataset = d.dataset
+                  AND s.symbol = d.symbol
+                  AND s.interval = d.interval
+            )
+            ON CONFLICT DO NOTHING
             """)
 
     @contextmanager
@@ -226,6 +262,26 @@ class Catalog:
         ).fetchall()
         return [Market(*row) for row in rows]
 
+    def market_snapshot_at(self, source: str, product: str) -> datetime | None:
+        """Return when one complete market snapshot was last stored.
+
+        Args:
+            source: The source identifier.
+            product: The product identifier.
+
+        Returns:
+            The UTC refresh timestamp, or ``None`` without a current snapshot.
+        """
+        row = self.connection.execute(
+            """
+            SELECT max(refreshed_at)
+            FROM markets
+            WHERE source = ? AND product = ?
+            """,
+            [source, product],
+        ).fetchone()
+        return _utc_timestamp(row[0]) if row is not None else None
+
     def save_markets(
         self, source: str, product: str, markets: Sequence[Market]
     ) -> None:
@@ -249,22 +305,43 @@ class Catalog:
             )
             for market in markets
         ]
-        with self._transaction():
-            self.connection.execute(
-                "UPDATE markets SET status = NULL WHERE source = ? AND product = ?",
-                [source, product],
-            )
-            self.connection.executemany(
-                """
-                INSERT INTO markets VALUES (?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT (source, product, symbol) DO UPDATE SET
-                    normalized_symbol = excluded.normalized_symbol,
-                    base_asset = excluded.base_asset,
-                    quote_asset = excluded.quote_asset,
-                    status = excluded.status
-                """,
-                rows,
-            )
+        frame = pd.DataFrame.from_records(
+            rows,
+            columns=(
+                "source",
+                "product",
+                "symbol",
+                "normalized_symbol",
+                "base_asset",
+                "quote_asset",
+                "status",
+            ),
+        )
+        self.connection.register("incoming_markets", frame)
+        try:
+            with self._transaction():
+                self.connection.execute(
+                    "UPDATE markets SET status = NULL "
+                    "WHERE source = ? AND product = ?",
+                    [source, product],
+                )
+                self.connection.execute("""
+                    INSERT INTO markets (
+                        source, product, symbol, normalized_symbol,
+                        base_asset, quote_asset, status, refreshed_at
+                    )
+                    SELECT source, product, symbol, normalized_symbol,
+                           base_asset, quote_asset, status, current_timestamp
+                    FROM incoming_markets
+                    ON CONFLICT (source, product, symbol) DO UPDATE SET
+                        normalized_symbol = excluded.normalized_symbol,
+                        base_asset = excluded.base_asset,
+                        quote_asset = excluded.quote_asset,
+                        status = excluded.status,
+                        refreshed_at = excluded.refreshed_at
+                    """)
+        finally:
+            self.connection.unregister("incoming_markets")
         LOGGER.debug(
             "Market snapshot stored: source=%s product=%s markets=%d",
             source,
@@ -292,6 +369,49 @@ class Catalog:
         ).fetchone()
         return (row[0], row[1]) if row is not None else None
 
+    def discovery_ranges(self, key: ResourceKey) -> list[tuple[date, date]]:
+        """Return every distinct day range already searched for a resource key.
+
+        Args:
+            key: The dataset identity whose discovery coverage is needed.
+
+        Returns:
+            Ordered inclusive ranges that were actually searched.
+        """
+        rows = self.connection.execute(
+            """
+            SELECT start_day, end_day
+            FROM discovery_segments
+            WHERE source = ? AND product = ? AND dataset = ?
+              AND symbol = ? AND interval = ?
+            ORDER BY start_day, end_day
+            """,
+            _key_values(key),
+        ).fetchall()
+        return [(row[0], row[1]) for row in rows]
+
+    def resource_bounds(self, key: ResourceKey) -> tuple[date, date] | None:
+        """Return the earliest and latest discovered resource days.
+
+        Args:
+            key: The dataset identity whose availability is needed.
+
+        Returns:
+            The inclusive resource bounds, or ``None`` without known files.
+        """
+        row = self.connection.execute(
+            """
+            SELECT min(day), max(day)
+            FROM resources
+            WHERE source = ? AND product = ? AND dataset = ?
+              AND symbol = ? AND interval = ?
+            """,
+            _key_values(key),
+        ).fetchone()
+        if row is None or row[0] is None or row[1] is None:
+            return None
+        return row[0], row[1]
+
     def save_discovery(
         self,
         key: ResourceKey,
@@ -313,24 +433,40 @@ class Catalog:
             (*key_values, resource.day, resource.url, resource.checksum_url)
             for resource in resources
         ]
-        with self._transaction():
-            if rows:
-                self.connection.executemany(
-                    """
+        frame = pd.DataFrame.from_records(
+            rows,
+            columns=(
+                "source",
+                "product",
+                "dataset",
+                "symbol",
+                "interval",
+                "day",
+                "url",
+                "checksum_url",
+            ),
+        )
+        if rows:
+            self.connection.register("incoming_resources", frame)
+        try:
+            with self._transaction():
+                if rows:
+                    self.connection.execute("""
                     INSERT INTO resources (
                         source, product, dataset, symbol, interval, day,
                         url, checksum_url
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    )
+                    SELECT source, product, dataset, symbol, interval, day,
+                           url, checksum_url
+                    FROM incoming_resources
                     ON CONFLICT (
                         source, product, dataset, symbol, interval, day
                     ) DO UPDATE SET
                         url = excluded.url,
                         checksum_url = excluded.checksum_url
-                    """,
-                    rows,
-                )
-            self.connection.execute(
-                """
+                    """)
+                self.connection.execute(
+                    """
                 INSERT INTO discoveries (
                     source, product, dataset, symbol, interval,
                     start_day, end_day
@@ -341,9 +477,25 @@ class Catalog:
                     start_day = LEAST(discoveries.start_day, excluded.start_day),
                     end_day = GREATEST(discoveries.end_day, excluded.end_day),
                     scanned_at = excluded.scanned_at
-                """,
-                [*key_values, start_day, end_day],
-            )
+                    """,
+                    [*key_values, start_day, end_day],
+                )
+                self.connection.execute(
+                    """
+                    INSERT INTO discovery_segments (
+                        source, product, dataset, symbol, interval,
+                        start_day, end_day
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT (
+                        source, product, dataset, symbol, interval,
+                        start_day, end_day
+                    ) DO UPDATE SET scanned_at = excluded.scanned_at
+                    """,
+                    [*key_values, start_day, end_day],
+                )
+        finally:
+            if rows:
+                self.connection.unregister("incoming_resources")
         LOGGER.debug(
             "Discovery stored: key=%s range=[%s, %s] resources=%d",
             key,

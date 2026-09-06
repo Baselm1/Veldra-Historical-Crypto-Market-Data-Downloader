@@ -104,6 +104,7 @@ def test_module_async_adapter_constructs_and_forwards_downloader_settings(
             data_dir=tmp_path,
             max_workers=7,
             discovery_tail_days=3,
+            market_refresh_hours=6,
             interval="4h",
             gap_policy="keep",
             refresh=True,
@@ -115,6 +116,7 @@ def test_module_async_adapter_constructs_and_forwards_downloader_settings(
     assert calls[0][0].data_dir == tmp_path.resolve()
     assert calls[0][0].max_workers == 7
     assert calls[0][0].discovery_tail_days == 3
+    assert calls[0][0].market_refresh_hours == 6
     assert calls[0][1][0] == ["BTCUSDT", "ETHUSDT"]
     assert calls[0][2] == {
         "product": "spot",

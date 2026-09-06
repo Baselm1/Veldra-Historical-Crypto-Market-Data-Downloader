@@ -77,23 +77,23 @@ def discover_resources(
     start_day, end_day = requested_days(start, end)
     if tail_days < 1:
         raise ValueError("tail_days must be positive")
-    checkpoint = catalog.discovery_range(key)
+    checkpoints = catalog.discovery_ranges(key)
     scan_ranges = _scan_ranges(
         start_day,
         end_day,
-        checkpoint,
+        checkpoints,
         active=active,
         refresh=refresh,
         offline=offline,
         tail_days=tail_days,
     )
     LOGGER.debug(
-        "Resource discovery planned: key=%s requested=[%s, %s] checkpoint=%s "
+        "Resource discovery planned: key=%s requested=[%s, %s] checkpoints=%s "
         "scans=%s active=%s refresh=%s offline=%s",
         key,
         start_day,
         end_day,
-        checkpoint,
+        checkpoints,
         scan_ranges,
         active,
         refresh,
@@ -123,7 +123,7 @@ def discover_resources(
 def _scan_ranges(
     start_day: date,
     end_day: date,
-    checkpoint: tuple[date, date] | None,
+    checkpoints: list[tuple[date, date]],
     *,
     active: bool,
     refresh: bool,
@@ -135,7 +135,7 @@ def _scan_ranges(
     Args:
         start_day: The first day whose availability is needed.
         end_day: The last day whose availability is needed.
-        checkpoint: The inclusive range already searched, when available.
+        checkpoints: The inclusive ranges already searched.
         active: Whether recent listings may still change.
         refresh: Whether the caller requested a complete rescan.
         offline: Whether source access is forbidden.
@@ -146,19 +146,44 @@ def _scan_ranges(
     """
     if offline:
         return []
-    if refresh or checkpoint is None:
+    if refresh or not checkpoints:
         return [(start_day, end_day)]
 
-    scanned_start, scanned_end = checkpoint
-    ranges: list[tuple[date, date]] = []
-    if start_day < scanned_start:
-        ranges.append((start_day, min(end_day, scanned_start - timedelta(days=1))))
-    if end_day > scanned_end:
-        ranges.append((max(start_day, scanned_end + timedelta(days=1)), end_day))
+    ranges = _uncovered_ranges(start_day, end_day, checkpoints)
     if active:
         tail_start = max(start_day, end_day - timedelta(days=tail_days - 1))
         ranges.append((tail_start, end_day))
     return _merge_ranges(ranges)
+
+
+def _uncovered_ranges(
+    start_day: date,
+    end_day: date,
+    checkpoints: list[tuple[date, date]],
+) -> list[tuple[date, date]]:
+    """Return gaps inside a requested range after completed scans.
+
+    Args:
+        start_day: The first requested day.
+        end_day: The last requested day.
+        checkpoints: The inclusive ranges already searched.
+
+    Returns:
+        Ordered inclusive ranges that have never been searched.
+    """
+    cursor = start_day
+    gaps: list[tuple[date, date]] = []
+    for covered_start, covered_end in _merge_ranges(checkpoints):
+        if covered_end < cursor or covered_start > end_day:
+            continue
+        if covered_start > cursor:
+            gaps.append((cursor, min(end_day, covered_start - timedelta(days=1))))
+        cursor = max(cursor, covered_end + timedelta(days=1))
+        if cursor > end_day:
+            break
+    if cursor <= end_day:
+        gaps.append((cursor, end_day))
+    return gaps
 
 
 def _merge_ranges(ranges: list[tuple[date, date]]) -> list[tuple[date, date]]:

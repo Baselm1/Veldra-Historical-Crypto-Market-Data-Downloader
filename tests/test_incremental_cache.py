@@ -73,6 +73,28 @@ class DurableSource:
         self.resource_calls.append((start_day, end_day))
         return [resource(day) for day in days(start_day, end_day)]
 
+    def first_resource(
+        self,
+        client: httpx.Client,
+        key: ResourceKey,
+        start_day: date,
+        end_day: date,
+    ) -> Resource | None:
+        """Return the first deterministic resource in a valid range.
+
+        Args:
+            client: The unused HTTP client.
+            key: The unused resource identity.
+            start_day: The earliest acceptable archive day.
+            end_day: The latest acceptable archive day.
+
+        Returns:
+            The first daily resource when the range is nonempty.
+        """
+        if start_day > end_day:
+            return None
+        return resource(start_day)
+
     def ingest(
         self,
         client: httpx.Client,
@@ -216,6 +238,28 @@ def test_discovery_scans_only_uncovered_checkpoint_edges() -> None:
         (date(2025, 1, 1), date(2025, 1, 2)),
         (date(2025, 1, 8), date(2025, 1, 10)),
     ]
+
+
+def test_discovery_scans_a_gap_between_disjoint_completed_ranges() -> None:
+    """Confirm a skipped middle range remains eligible for later discovery."""
+    source = DurableSource()
+    store = catalog()
+    store.save_discovery(
+        KEY,
+        date(2025, 1, 1),
+        date(2025, 1, 2),
+        [resource(day) for day in days(date(2025, 1, 1), date(2025, 1, 2))],
+    )
+    store.save_discovery(
+        KEY,
+        date(2025, 1, 8),
+        date(2025, 1, 10),
+        [resource(day) for day in days(date(2025, 1, 8), date(2025, 1, 10))],
+    )
+
+    discover_resources(source, store, httpx.Client(), KEY, START, END, active=False)
+
+    assert source.resource_calls == [(date(2025, 1, 3), date(2025, 1, 7))]
 
 
 def test_active_tail_merges_with_a_newer_uncovered_range() -> None:

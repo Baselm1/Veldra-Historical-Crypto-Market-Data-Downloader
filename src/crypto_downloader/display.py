@@ -5,6 +5,7 @@ from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from datetime import UTC, date, datetime
 import logging
+from threading import RLock
 
 from rich.console import Console
 from rich.progress import (
@@ -15,6 +16,7 @@ from rich.progress import (
     TextColumn,
     TimeElapsedColumn,
 )
+from rich.progress import TaskID
 from rich.table import Table
 from rich.text import Text
 
@@ -72,7 +74,51 @@ class Reporter:
             raise TypeError("enabled must be a Boolean")
         self.enabled = enabled
         self.console = console if console is not None else Console(stderr=True)
+        self._progress_lock = RLock()
+        self._progress: Progress | None = None
+        self._progress_users = 0
         LOGGER.debug("Rich reporter created: enabled=%s", enabled)
+
+    def _start_task(
+        self, description: str, total: int | None
+    ) -> tuple[Progress, TaskID]:
+        """Start one task on the reporter's shared live display.
+
+        Args:
+            description: The task text shown to the caller.
+            total: The optional number of work items.
+
+        Returns:
+            The shared progress display and new task identifier.
+        """
+        with self._progress_lock:
+            if self._progress is None:
+                self._progress = Progress(
+                    SpinnerColumn(),
+                    TextColumn("{task.description}"),
+                    BarColumn(),
+                    MofNCompleteColumn(),
+                    TimeElapsedColumn(),
+                    console=self.console,
+                )
+                self._progress.start()
+            self._progress_users += 1
+            task = self._progress.add_task(description, total=total)
+            return self._progress, task
+
+    def _finish_task(self, progress: Progress, task: TaskID) -> None:
+        """Finish one shared progress task and stop an unused display.
+
+        Args:
+            progress: The shared progress display containing the task.
+            task: The completed task identifier.
+        """
+        with self._progress_lock:
+            progress.update(task, completed=progress.tasks[task].total)
+            self._progress_users -= 1
+            if self._progress_users == 0:
+                progress.stop()
+                self._progress = None
 
     def _line(self, marker: str, style: str, message: str) -> None:
         """Show one styled line when reporting is enabled.
@@ -173,8 +219,11 @@ class Reporter:
             yield
             return
         LOGGER.debug("Rich status started: %s", message)
-        with self.console.status(Text(message), spinner="dots"):
+        progress, task = self._start_task(message, None)
+        try:
             yield
+        finally:
+            self._finish_task(progress, task)
         LOGGER.debug("Rich status finished: %s", message)
 
     @contextmanager
@@ -197,32 +246,31 @@ class Reporter:
         LOGGER.debug(
             "Rich download progress started: symbol=%s total=%d", symbol, total
         )
-        progress = Progress(
-            SpinnerColumn(),
-            TextColumn("{task.description}"),
-            BarColumn(),
-            MofNCompleteColumn(),
-            TimeElapsedColumn(),
-            console=self.console,
-        )
-        with progress:
-            task = progress.add_task(f"{symbol}: downloading daily files", total=total)
+        progress, task = self._start_task(f"{symbol}: downloading daily files", total)
 
-            def advance(day: date, succeeded: bool) -> None:
-                """Advance the display after one daily-file attempt.
+        def advance(day: date, succeeded: bool) -> None:
+            """Advance the display after one daily-file attempt.
 
-                Args:
-                    day: The daily resource date.
-                    succeeded: Whether the file entered the cache.
-                """
-                state = "cached" if succeeded else "failed"
+            Args:
+                day: The daily resource date.
+                succeeded: Whether the file entered the cache.
+            """
+            state = "cached" if succeeded else "failed"
+            with self._progress_lock:
                 progress.update(
                     task,
                     description=f"{symbol} {day.isoformat()} {state}",
                     advance=1,
                 )
 
+        try:
             yield advance
+        finally:
+            with self._progress_lock:
+                current = progress.tasks[task]
+                if current.completed < total:
+                    progress.update(task, completed=total)
+            self._finish_task(progress, task)
         LOGGER.debug("Rich download progress finished: symbol=%s", symbol)
 
 

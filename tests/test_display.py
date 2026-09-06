@@ -1,8 +1,10 @@
 """Test optional Rich activity and shared result rendering."""
 
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, date, datetime, timedelta, timezone
 from io import StringIO
 import logging
+from threading import Barrier
 
 import pandas as pd
 import pytest
@@ -204,6 +206,29 @@ def test_status_and_download_progress_are_visible(
     assert "Rich status finished: Refreshing markets" in caplog.messages
     assert "BTCUSDT 2025-01-02 failed" in output
     assert "2/2" in output
+
+
+def test_reporter_allows_concurrent_pair_progress() -> None:
+    """Confirm parallel pair tasks can share one Rich live display."""
+    console, stream = output_console(color=True)
+    reporter = Reporter(console=console)
+    barrier = Barrier(2)
+
+    def work(symbol: str) -> None:
+        """Hold two status tasks open at the same time.
+
+        Args:
+            symbol: The pair shown by this concurrent task.
+        """
+        with reporter.status(f"Discovering {symbol}"):
+            barrier.wait()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        list(executor.map(work, ("BTCUSDT", "ETHUSDT")))
+
+    output = stream.getvalue()
+    assert "Discovering BTCUSDT" in output
+    assert "Discovering ETHUSDT" in output
 
 
 def test_disabled_reporter_is_completely_silent_but_runs_wrapped_work() -> None:

@@ -72,6 +72,7 @@ def test_spot_kline_schema_matches_the_daily_archive_and_cache() -> None:
     assert spec.time_column == "open_time"
     assert spec.base_interval == "1m"
     assert spec.output_intervals == OUTPUT_INTERVALS
+    assert spec.max_concurrency == 32
     assert spec.output_columns == (*STORED_COLUMNS, "is_synthetic")
     assert "ignore" not in spec.stored_columns
     assert "ignore" not in spec.output_columns

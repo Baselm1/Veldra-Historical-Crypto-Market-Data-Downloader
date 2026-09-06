@@ -49,6 +49,26 @@ class Source(Protocol):
         """
         pass
 
+    def first_resource(
+        self,
+        client: httpx.Client,
+        key: ResourceKey,
+        start_day: date,
+        end_day: date,
+    ) -> Resource | None:
+        """Return the first daily resource inside a broad date range.
+
+        Args:
+            client: The HTTPX client used for source requests.
+            key: The requested source dataset identity.
+            start_day: The earliest acceptable source day.
+            end_day: The latest acceptable source day.
+
+        Returns:
+            The first resource, or ``None`` when the source has no matching file.
+        """
+        pass
+
     def ingest(
         self,
         client: httpx.Client,

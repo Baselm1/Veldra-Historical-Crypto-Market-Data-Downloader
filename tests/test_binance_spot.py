@@ -90,17 +90,18 @@ def test_binance_declares_only_the_current_spot_scope() -> None:
     assert source.timeout == 12.0
     assert source.retries == 2
     assert source.backoff == 0.25
+    assert source.max_concurrency == 32
 
 
-def test_source_contract_remains_limited_to_three_operations() -> None:
-    """Confirm sources expose discovery and ingestion without orchestration."""
+def test_source_contract_remains_limited_to_four_operations() -> None:
+    """Confirm sources expose bounded discovery and ingestion without orchestration."""
     operations = {
         name
         for name, value in vars(Source).items()
         if callable(value) and not name.startswith("_")
     }
 
-    assert operations == {"markets", "resources", "ingest"}
+    assert operations == {"markets", "first_resource", "resources", "ingest"}
 
 
 def test_market_discovery_preserves_native_metadata_and_merges_archive_only() -> None:
@@ -308,6 +309,52 @@ def test_pagination_cycle_is_rejected() -> None:
             Binance().markets(client, "spot")
 
     assert bucket_calls == 2
+
+
+def test_first_resource_uses_a_small_forward_listing() -> None:
+    """Confirm earliest availability needs one bounded bucket request."""
+    prefix = f"{SPOT_KLINES_PREFIX}BTCUSDT/1m/"
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        """Return the first available ZIP and its checksum object."""
+        requests.append(request)
+        return httpx.Response(
+            200,
+            text=listing(
+                keys=(
+                    f"{prefix}BTCUSDT-1m-2022-03-04.zip",
+                    f"{prefix}BTCUSDT-1m-2022-03-04.zip.CHECKSUM",
+                )
+            ),
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        resource = Binance().first_resource(
+            client, KEY, date(2020, 1, 1), date(2025, 1, 1)
+        )
+
+    assert resource is not None
+    assert resource.day == date(2022, 3, 4)
+    assert resource.checksum_url == f"{resource.url}.CHECKSUM"
+    assert len(requests) == 1
+    assert requests[0].url.params["max-keys"] == "2"
+    assert requests[0].url.params["marker"].endswith("BTCUSDT-1m-2020-01-01")
+
+
+def test_first_resource_returns_none_when_no_archive_follows_boundary() -> None:
+    """Confirm a valid empty first-page listing means no known availability."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        """Return one complete empty listing."""
+        return httpx.Response(200, text=listing())
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        resource = Binance().first_resource(
+            client, KEY, date(2020, 1, 1), date(2025, 1, 1)
+        )
+
+    assert resource is None
 
 
 def test_daily_resource_discovery_paginates_filters_and_stops_after_end() -> None:
