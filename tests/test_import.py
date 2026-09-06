@@ -7,4 +7,12 @@ def test_package_can_be_imported() -> None:
     """Confirm that Python can import the package and find its public exports."""
     package = import_module("crypto_downloader")
 
-    assert package.__all__ == ("Gap", "Message", "MissingCandlesError", "Result")
+    assert package.__all__ == (
+        "Downloader",
+        "Gap",
+        "Message",
+        "MissingCandlesError",
+        "Result",
+        "get_data",
+        "get_results",
+    )

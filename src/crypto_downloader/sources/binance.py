@@ -24,9 +24,9 @@ SPOT_KLINES_PREFIX = "data/spot/daily/klines/"
 class Binance:
     """Discover metadata from Binance and its public archive bucket."""
 
-    code = "binance"
-    products = ("spot",)
-    active_statuses = frozenset({"TRADING"})
+    code: str = "binance"
+    products: tuple[str, ...] = ("spot",)
+    active_statuses: frozenset[str] = frozenset({"TRADING"})
 
     def __init__(
         self,
