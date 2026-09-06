@@ -3,6 +3,7 @@
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime
+from pathlib import Path
 
 import pandas as pd
 
@@ -10,6 +11,59 @@ TimeRange = tuple[datetime, datetime]
 type JsonValue = (
     str | int | float | bool | None | list[JsonValue] | dict[str, JsonValue]
 )
+
+
+@dataclass(frozen=True)
+class Market:
+    """Describe one market reported by a source."""
+
+    symbol: str
+    normalized_symbol: str
+    base_asset: str | None = None
+    quote_asset: str | None = None
+    status: str | None = None
+
+
+@dataclass(frozen=True)
+class ResourceKey:
+    """Identify one source, product, dataset, symbol, and interval."""
+
+    source: str
+    product: str
+    dataset: str
+    symbol: str
+    interval: str
+
+
+@dataclass(frozen=True)
+class Resource:
+    """Describe one discovered daily archive and its local cache state."""
+
+    day: date
+    url: str
+    checksum_url: str
+    status: str = "discovered"
+    archive_sha256: str | None = None
+    parquet_path: Path | None = None
+    parquet_sha256: str | None = None
+    parquet_size: int | None = None
+    row_count: int | None = None
+    first_timestamp: datetime | None = None
+    last_timestamp: datetime | None = None
+    error: str | None = None
+    last_attempt_at: datetime | None = None
+
+
+@dataclass(frozen=True)
+class IngestedResource:
+    """Describe a verified Parquet file produced from one archive."""
+
+    archive_sha256: str
+    parquet_sha256: str
+    parquet_size: int
+    row_count: int
+    first_timestamp: datetime
+    last_timestamp: datetime
 
 
 @dataclass(frozen=True)
