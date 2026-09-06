@@ -208,6 +208,24 @@ def test_duplicate_exchange_symbol_is_rejected() -> None:
             Binance().markets(client, "spot")
 
 
+def test_non_ascii_exchange_symbols_are_ignored_without_rejecting_snapshot() -> None:
+    """Confirm unsupported Unicode symbols do not invalidate normal markets."""
+    payload = exchange_info()
+    symbols = cast(list[object], payload["symbols"])
+    symbols.append(
+        {
+            "symbol": "币安人生USDT",
+            "baseAsset": "币安人生",
+            "quoteAsset": "USDT",
+            "status": "TRADING",
+        }
+    )
+
+    markets = Binance._exchange_markets(payload)
+
+    assert [market.symbol for market in markets.values()] == ["BTCUSDT", "XRPTUSD"]
+
+
 def test_unsupported_market_product_fails_without_http() -> None:
     """Confirm this phase cannot accidentally request futures metadata."""
     calls = 0

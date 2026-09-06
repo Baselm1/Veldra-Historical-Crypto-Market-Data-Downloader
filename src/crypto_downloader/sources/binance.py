@@ -200,26 +200,31 @@ class Binance:
         markets: dict[str, Market] = {}
         for row in rows:
             market = Binance._exchange_market(row)
+            if market is None:
+                continue
             if market.symbol in markets:
                 raise ValueError("exchangeInfo contains a duplicate symbol")
             markets[market.symbol] = market
         return markets
 
     @staticmethod
-    def _exchange_market(value: object) -> Market:
-        """Parse one required Spot market from exchange-info.
+    def _exchange_market(value: object) -> Market | None:
+        """Parse one supported Spot market from exchange-info.
 
         Args:
             value: The decoded market object.
 
         Returns:
-            The validated market metadata.
+            The validated market metadata, or ``None`` for a non-ASCII symbol.
         """
         if not isinstance(value, dict):
             raise ValueError("exchangeInfo contains an invalid market")
         symbol = Binance._required_text(value, "symbol")
-        if re.fullmatch(r"[A-Za-z0-9_]+", symbol) is None:
+        if not all(character.isalnum() or character == "_" for character in symbol):
             raise ValueError("exchangeInfo contains an unsafe symbol")
+        if not symbol.isascii():
+            LOGGER.debug("Ignoring unsupported non-ASCII Binance symbol: %s", symbol)
+            return None
         return Market(
             symbol=symbol,
             normalized_symbol=normalize_pair(symbol),
