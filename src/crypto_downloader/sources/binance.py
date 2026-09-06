@@ -27,6 +27,7 @@ class Binance:
     code: str = "binance"
     products: tuple[str, ...] = ("spot",)
     active_statuses: frozenset[str] = frozenset({"TRADING"})
+    max_concurrency: int = 16
 
     def __init__(
         self,

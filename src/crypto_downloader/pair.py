@@ -210,6 +210,11 @@ def process_pair(
     dataset: DatasetSpec,
     earliest_date: date,
     today: date,
+    *,
+    refresh: bool = False,
+    offline: bool = False,
+    discovery_tail_days: int = 7,
+    max_workers: int = 16,
 ) -> Result:
     """Discover, cache, and query one requested market.
 
@@ -224,6 +229,10 @@ def process_pair(
         dataset: The requested dataset schema.
         earliest_date: The first daily archive date allowed by configuration.
         today: The current UTC date and exclusive active-market boundary.
+        refresh: Whether to repeat complete resource discovery.
+        offline: Whether source access and downloads must be skipped.
+        discovery_tail_days: The recent active-market days to rediscover.
+        max_workers: The maximum concurrent daily archive ingestions.
 
     Returns:
         The pair's data and structured outcome report.
@@ -246,9 +255,19 @@ def process_pair(
     )
     discovery_start = datetime.combine(earliest_date, time.min, UTC)
     discovery_end = datetime.combine(today, time.min, UTC)
+    active = market.status in source.active_statuses
     try:
         resources = discover_resources(
-            source, catalog, client, key, discovery_start, discovery_end
+            source,
+            catalog,
+            client,
+            key,
+            discovery_start,
+            discovery_end,
+            active=active,
+            refresh=refresh,
+            offline=offline,
+            tail_days=discovery_tail_days,
         )
     except Exception as error:
         result.errors.append(Message("discovery_failed", str(error)))
@@ -270,7 +289,15 @@ def process_pair(
     requested_resources = _resources_in_range(resources, *used_range)
     result.problems.extend(_missing_resources(requested_resources, *used_range))
     coverage = cache_resources(
-        source, catalog, client, key, dataset, requested_resources, data_dir
+        source,
+        catalog,
+        client,
+        key,
+        dataset,
+        requested_resources,
+        data_dir,
+        offline=offline,
+        max_workers=max_workers,
     )
     result.problems.extend(coverage.problems)
     if not coverage.paths:

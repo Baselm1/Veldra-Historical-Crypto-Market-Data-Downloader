@@ -403,6 +403,28 @@ def test_multiple_pairs_keep_order_ranges_and_independent_failures(
     assert [problem.date for problem in results[2].problems] == [date(2024, 1, 2)]
 
 
+def test_pair_status_controls_incremental_rediscovery(tmp_path: Path) -> None:
+    """Confirm active pairs rescan their tail while inactive pairs reuse discovery.
+
+    Args:
+        tmp_path: The isolated downloader directory.
+    """
+    source = RangeSource(
+        [market("BTCUSDT"), Market("ETHUSDT", "ETHUSDT", "ETH", "USDT", "BREAK")],
+        {
+            "BTCUSDT": [date(2024, 1, 1)],
+            "ETHUSDT": [date(2024, 1, 1)],
+        },
+    )
+    downloader = service(tmp_path, source)
+    downloader.get_results(["BTCUSDT", "ETHUSDT"], "2024-01-01", "2024-01-01")
+    source.resource_calls.clear()
+
+    downloader.get_results(["BTCUSDT", "ETHUSDT"], "2024-01-01", "2024-01-01")
+
+    assert source.resource_calls == [("BTCUSDT", date(2024, 12, 29), date(2025, 1, 4))]
+
+
 @pytest.mark.parametrize(
     "earliest",
     [

@@ -69,6 +69,7 @@ class DatasetSpec:
     base_interval: str
     output_intervals: Columns
     aliases: Mapping[str, str]
+    max_concurrency: int = 16
 
     @property
     def output_columns(self) -> Columns:

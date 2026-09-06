@@ -48,6 +48,11 @@ def discover_resources(
     key: ResourceKey,
     start: datetime,
     end: datetime,
+    *,
+    active: bool = True,
+    refresh: bool = False,
+    offline: bool = False,
+    tail_days: int = 7,
 ) -> list[Resource]:
     """Discover and persist resources overlapping one request.
 
@@ -58,12 +63,89 @@ def discover_resources(
         key: The requested source dataset identity.
         start: The inclusive first requested timestamp.
         end: The exclusive final requested timestamp.
+        active: Whether recent source listings may still change.
+        refresh: Whether to rescan the complete range explicitly.
+        offline: Whether all source access must be skipped.
+        tail_days: The number of recent active-market days to rescan.
 
     Returns:
         All cataloged resources in the requested daily range.
     """
     start_day, end_day = requested_days(start, end)
-    resources = source.resources(client, key, start_day, end_day)
-    _validate_resources(resources, start_day, end_day)
-    catalog.save_discovery(key, start_day, end_day, resources)
+    if tail_days < 1:
+        raise ValueError("tail_days must be positive")
+    checkpoint = catalog.discovery_range(key)
+    for scan_start, scan_end in _scan_ranges(
+        start_day,
+        end_day,
+        checkpoint,
+        active=active,
+        refresh=refresh,
+        offline=offline,
+        tail_days=tail_days,
+    ):
+        resources = source.resources(client, key, scan_start, scan_end)
+        _validate_resources(resources, scan_start, scan_end)
+        catalog.save_discovery(key, scan_start, scan_end, resources)
     return catalog.resources(key, start_day, end_day)
+
+
+def _scan_ranges(
+    start_day: date,
+    end_day: date,
+    checkpoint: tuple[date, date] | None,
+    *,
+    active: bool,
+    refresh: bool,
+    offline: bool,
+    tail_days: int,
+) -> list[tuple[date, date]]:
+    """Return inclusive source ranges that still require discovery.
+
+    Args:
+        start_day: The first day whose availability is needed.
+        end_day: The last day whose availability is needed.
+        checkpoint: The inclusive range already searched, when available.
+        active: Whether recent listings may still change.
+        refresh: Whether the caller requested a complete rescan.
+        offline: Whether source access is forbidden.
+        tail_days: The recent active-market window to revisit.
+
+    Returns:
+        Ordered, merged inclusive ranges requiring source access.
+    """
+    if offline:
+        return []
+    if refresh or checkpoint is None:
+        return [(start_day, end_day)]
+
+    scanned_start, scanned_end = checkpoint
+    ranges: list[tuple[date, date]] = []
+    if start_day < scanned_start:
+        ranges.append((start_day, min(end_day, scanned_start - timedelta(days=1))))
+    if end_day > scanned_end:
+        ranges.append((max(start_day, scanned_end + timedelta(days=1)), end_day))
+    if active:
+        tail_start = max(start_day, end_day - timedelta(days=tail_days - 1))
+        ranges.append((tail_start, end_day))
+    return _merge_ranges(ranges)
+
+
+def _merge_ranges(ranges: list[tuple[date, date]]) -> list[tuple[date, date]]:
+    """Merge overlapping or adjacent inclusive date ranges.
+
+    Args:
+        ranges: The candidate inclusive date ranges.
+
+    Returns:
+        Ordered non-overlapping ranges.
+    """
+    merged: list[tuple[date, date]] = []
+    for start_day, end_day in sorted(ranges):
+        if start_day > end_day:
+            continue
+        if merged and start_day <= merged[-1][1] + timedelta(days=1):
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end_day))
+        else:
+            merged.append((start_day, end_day))
+    return merged

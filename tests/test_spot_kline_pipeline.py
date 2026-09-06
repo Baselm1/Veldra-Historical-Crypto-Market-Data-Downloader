@@ -12,6 +12,7 @@ import pandas as pd
 import pytest
 
 import crypto_downloader as crypto
+import crypto_downloader.pair as pair_module
 from crypto_downloader.cache import parquet_path, valid_cached_path
 from crypto_downloader.catalog import open_catalog
 from crypto_downloader.discovery import _validate_resources, requested_days
@@ -80,6 +81,7 @@ class BinanceServer:
         self.payload = archive_bytes()
         self.archive_requests = 0
         self.resource_requests = 0
+        self.market_requests = 0
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         """Return the mocked response for one Binance request.
@@ -92,6 +94,7 @@ class BinanceServer:
         """
         host = request.url.host
         if host == "api.binance.com":
+            self.market_requests += 1
             return httpx.Response(
                 200,
                 json={
@@ -415,8 +418,12 @@ def test_malformed_discovery_returns_a_pair_error(tmp_path: Path) -> None:
     assert result.data.empty
 
 
-def test_corrupt_reused_parquet_returns_a_query_error(tmp_path: Path) -> None:
-    """Confirm an unreadable reused file remains a structured pair failure."""
+def test_corrupt_reused_parquet_is_detected_and_rebuilt(tmp_path: Path) -> None:
+    """Confirm an unreadable reused file is replaced from its verified archive.
+
+    Args:
+        tmp_path: The isolated downloader directory.
+    """
     server = BinanceServer()
     service = downloader(tmp_path, server)
     first = service.get_results("BTCUSDT", "2024-01-01", "2024-01-01")
@@ -429,8 +436,108 @@ def test_corrupt_reused_parquet_returns_a_query_error(tmp_path: Path) -> None:
     result = service.get_results("BTCUSDT", "2024-01-01", "2024-01-01")
 
     assert isinstance(result, Result)
+    assert result.complete
+    assert len(result.data) == 2
+    assert server.archive_requests == 2
+
+
+def test_query_failure_remains_an_isolated_result_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Confirm an unexpected DuckDB failure does not escape the pair result.
+
+    Args:
+        tmp_path: The isolated downloader directory.
+        monkeypatch: The fixture replacing the Parquet query operation.
+    """
+    server = BinanceServer()
+
+    def fail_query(*args: object, **kwargs: object) -> pd.DataFrame:
+        """Raise one representative query failure.
+
+        Args:
+            args: Unused positional query arguments.
+            kwargs: Unused keyword query arguments.
+
+        Returns:
+            This function always raises instead of returning a frame.
+        """
+        raise RuntimeError("database unavailable")
+
+    monkeypatch.setattr(pair_module, "query_parquet", fail_query)
+    result = downloader(tmp_path, server).get_results(
+        "BTCUSDT", "2024-01-01", "2024-01-01"
+    )
+
+    assert isinstance(result, Result)
     assert [error.code for error in result.errors] == ["query_failed"]
     assert result.data.empty
+
+
+def test_offline_pipeline_reuses_markets_listings_and_parquet(tmp_path: Path) -> None:
+    """Confirm a fully cached request performs no source HTTP requests offline.
+
+    Args:
+        tmp_path: The isolated downloader directory.
+    """
+    server = BinanceServer()
+    service = downloader(tmp_path, server)
+    online = service.get_results("BTCUSDT", "2024-01-01", "2024-01-01")
+    counts = (
+        server.market_requests,
+        server.resource_requests,
+        server.archive_requests,
+    )
+
+    offline = service.get_results("BTCUSDT", "2024-01-01", "2024-01-01", offline=True)
+
+    assert isinstance(online, Result)
+    assert isinstance(offline, Result)
+    assert offline.complete
+    pd.testing.assert_frame_equal(offline.data, online.data)
+    assert counts == (
+        server.market_requests,
+        server.resource_requests,
+        server.archive_requests,
+    )
+
+
+def test_offline_pipeline_requires_cached_market_metadata(tmp_path: Path) -> None:
+    """Confirm offline mode explains why an unused data directory cannot run.
+
+    Args:
+        tmp_path: The isolated downloader directory.
+    """
+    server = BinanceServer()
+
+    with pytest.raises(RuntimeError, match="cached market metadata"):
+        downloader(tmp_path, server).get_results(
+            "BTCUSDT", "2024-01-01", "2024-01-01", offline=True
+        )
+
+    assert server.market_requests == 0
+    assert server.resource_requests == 0
+    assert server.archive_requests == 0
+
+
+def test_offline_pipeline_reports_a_missing_cached_partition(tmp_path: Path) -> None:
+    """Confirm offline mode does not repair a deleted local partition.
+
+    Args:
+        tmp_path: The isolated downloader directory.
+    """
+    server = BinanceServer()
+    service = downloader(tmp_path, server)
+    service.get_results("BTCUSDT", "2024-01-01", "2024-01-01")
+    parquet_path(tmp_path, KEY, DAY).unlink()
+    archive_requests = server.archive_requests
+
+    result = service.get_results("BTCUSDT", "2024-01-01", "2024-01-01", offline=True)
+
+    assert isinstance(result, Result)
+    assert [problem.code for problem in result.problems] == ["offline_missing"]
+    assert result.data.empty
+    assert server.archive_requests == archive_requests
 
 
 def test_non_base_interval_is_rejected_before_network_access(
@@ -472,6 +579,70 @@ def test_downloader_defaults_to_the_binance_source(tmp_path: Path) -> None:
 
     assert isinstance(service.source, Binance)
     assert service.earliest_date == date(2020, 1, 1)
+
+
+@pytest.mark.parametrize(
+    ("setting", "value"),
+    [
+        ("max_workers", 0),
+        ("max_workers", True),
+        ("discovery_tail_days", -1),
+        ("discovery_tail_days", 1.5),
+    ],
+)
+def test_downloader_rejects_invalid_durability_settings(
+    tmp_path: Path, setting: str, value: object
+) -> None:
+    """Confirm concurrency and tail settings must be positive integers.
+
+    Args:
+        tmp_path: The isolated downloader directory.
+        setting: The invalid constructor setting.
+        value: The proposed invalid value.
+    """
+    with pytest.raises((TypeError, ValueError), match=setting):
+        Downloader(tmp_path, **{setting: value})  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(("option", "value"), [("refresh", 1), ("offline", "yes")])
+def test_downloader_rejects_nonboolean_durability_options(
+    tmp_path: Path, option: str, value: object
+) -> None:
+    """Confirm refresh and offline request flags require actual Booleans.
+
+    Args:
+        tmp_path: The isolated downloader directory.
+        option: The invalid request option.
+        value: The proposed invalid value.
+    """
+    server = BinanceServer()
+    with pytest.raises(TypeError, match=option):
+        if option == "refresh":
+            downloader(tmp_path, server).get_results(
+                "BTCUSDT", "2024-01-01", "2024-01-01", refresh=value  # type: ignore[arg-type]
+            )
+        else:
+            downloader(tmp_path, server).get_results(
+                "BTCUSDT", "2024-01-01", "2024-01-01", offline=value  # type: ignore[arg-type]
+            )
+
+
+def test_refresh_and_offline_cannot_be_requested_together(tmp_path: Path) -> None:
+    """Confirm contradictory source-access modes fail before network access.
+
+    Args:
+        tmp_path: The isolated downloader directory.
+    """
+    server = BinanceServer()
+    with pytest.raises(ValueError, match="refresh and offline"):
+        downloader(tmp_path, server).get_results(
+            "BTCUSDT",
+            "2024-01-01",
+            "2024-01-01",
+            refresh=True,
+            offline=True,
+        )
+    assert server.market_requests == 0
 
 
 @pytest.mark.parametrize("data_dir", ["", "   ", 1, None])

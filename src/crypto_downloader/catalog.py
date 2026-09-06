@@ -4,10 +4,13 @@ from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from datetime import UTC, date, datetime
 from pathlib import Path
+from threading import RLock
 
 import duckdb
 
 from .models import IngestedResource, Market, Resource, ResourceKey
+
+_CATALOG_LOCKS = tuple(RLock() for _ in range(64))
 
 
 def _key_values(key: ResourceKey) -> tuple[str, str, str, str, str]:
@@ -106,6 +109,21 @@ def open_catalog(path: Path) -> Iterator[Catalog]:
         yield Catalog(connection)
     finally:
         connection.close()
+
+
+@contextmanager
+def catalog_lock(path: Path) -> Iterator[None]:
+    """Prevent overlapping in-process work against one catalog path.
+
+    Args:
+        path: The catalog database path identifying the shared pipeline.
+
+    Yields:
+        Control after the matching process-local lock is acquired.
+    """
+    lock = _CATALOG_LOCKS[hash(path.resolve()) % len(_CATALOG_LOCKS)]
+    with lock:
+        yield
 
 
 class Catalog:
