@@ -1,3 +1,5 @@
 """Provide tools for downloading and querying historical cryptocurrency data."""
 
-__all__: tuple[str, ...] = ()
+from .models import Gap, Message, MissingCandlesError, Result
+
+__all__: tuple[str, ...] = ("Gap", "Message", "MissingCandlesError", "Result")

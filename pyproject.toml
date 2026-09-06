@@ -49,6 +49,10 @@ python_version = "3.14"
 strict = true
 warn_unused_ignores = true
 
+[[tool.mypy.overrides]]
+module = ["pandas", "pandas.*"]
+ignore_missing_imports = true
+
 [tool.coverage.run]
 branch = true
 source = ["crypto_downloader"]
