@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+  <IsTruncated>true</IsTruncated>
+  <NextMarker>data/spot/daily/klines/BTCUSDT/</NextMarker>
+  <CommonPrefixes><Prefix>data/spot/daily/klines/BTCUSDT/</Prefix></CommonPrefixes>
+  <CommonPrefixes><Prefix>data/spot/daily/klines/a/b/</Prefix></CommonPrefixes>
+  <CommonPrefixes><Prefix>data/spot/monthly/klines/WRONG/</Prefix></CommonPrefixes>
+</ListBucketResult>

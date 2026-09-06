@@ -1,0 +1,461 @@
+"""Test Binance Spot market and daily kline discovery."""
+
+from copy import deepcopy
+from datetime import date
+import json
+from pathlib import Path
+from typing import cast
+
+import httpx
+import pytest
+
+from crypto_downloader.models import Market, ResourceKey
+from crypto_downloader.source import Source
+from crypto_downloader.sources.binance import (
+    ARCHIVE_URL,
+    BUCKET_URL,
+    EXCHANGE_INFO_URL,
+    SPOT_KLINES_PREFIX,
+    Binance,
+)
+
+FIXTURES = Path(__file__).parent / "fixtures"
+KEY = ResourceKey("binance", "spot", "klines", "BTCUSDT", "1m")
+
+
+def fixture_text(name: str) -> str:
+    """Read one UTF-8 Binance response fixture.
+
+    Args:
+        name: The fixture filename.
+
+    Returns:
+        The fixture contents.
+    """
+    return (FIXTURES / name).read_text(encoding="utf-8")
+
+
+def exchange_info() -> dict[str, object]:
+    """Return a fresh copy of the Spot exchange-info fixture.
+
+    Returns:
+        The parsed exchange-info response.
+    """
+    return cast(
+        dict[str, object],
+        json.loads(fixture_text("binance_spot_exchange_info.json")),
+    )
+
+
+def listing(
+    *,
+    keys: tuple[str, ...] = (),
+    prefixes: tuple[str, ...] = (),
+    truncated: str = "false",
+    marker: str | None = None,
+    namespace: bool = True,
+) -> str:
+    """Build a small S3-style XML listing.
+
+    Args:
+        keys: Object keys placed in the listing.
+        prefixes: Common folder prefixes placed in the listing.
+        truncated: The literal pagination value.
+        marker: The optional marker for the next page.
+        namespace: Whether to include the normal S3 XML namespace.
+
+    Returns:
+        The complete XML listing text.
+    """
+    xmlns = ' xmlns="http://s3.amazonaws.com/doc/2006-03-01/"' if namespace else ""
+    next_marker = f"<NextMarker>{marker}</NextMarker>" if marker is not None else ""
+    contents = "".join(f"<Contents><Key>{key}</Key></Contents>" for key in keys)
+    folders = "".join(
+        f"<CommonPrefixes><Prefix>{prefix}</Prefix></CommonPrefixes>"
+        for prefix in prefixes
+    )
+    return (
+        f"<ListBucketResult{xmlns}><IsTruncated>{truncated}</IsTruncated>"
+        f"{next_marker}{contents}{folders}</ListBucketResult>"
+    )
+
+
+def test_binance_declares_only_the_current_spot_scope() -> None:
+    """Confirm the first source advertises only Binance Spot support."""
+    source = Binance(timeout=12.0, retries=2, backoff=0.25)
+
+    assert source.code == "binance"
+    assert source.products == ("spot",)
+    assert source.active_statuses == frozenset({"TRADING"})
+    assert source.timeout == 12.0
+    assert source.retries == 2
+    assert source.backoff == 0.25
+
+
+def test_source_contract_remains_limited_to_three_operations() -> None:
+    """Confirm sources expose discovery and ingestion without orchestration."""
+    operations = {
+        name
+        for name, value in vars(Source).items()
+        if callable(value) and not name.startswith("_")
+    }
+
+    assert operations == {"markets", "resources", "ingest"}
+
+
+def test_market_discovery_preserves_native_metadata_and_merges_archive_only() -> None:
+    """Confirm Spot metadata and symbol folders form one sorted snapshot."""
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        """Return exchange metadata and two symbol-folder pages."""
+        requests.append(request)
+        if str(request.url).startswith(EXCHANGE_INFO_URL):
+            return httpx.Response(200, json=exchange_info())
+        marker = request.url.params.get("marker")
+        filename = (
+            "binance_spot_symbols_page_2.xml"
+            if marker is not None
+            else "binance_spot_symbols_page_1.xml"
+        )
+        return httpx.Response(200, text=fixture_text(filename))
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        markets = Binance(timeout=9.0).markets(client, "spot")
+
+    assert markets == [
+        Market("BTCUSDT", "BTCUSDT", "BTC", "USDT", "TRADING"),
+        Market("OLDUSDT", "OLDUSDT"),
+        Market("XRPTUSD", "XRPTUSD", "XRP", "TUSD", "BREAK"),
+    ]
+    assert len(requests) == 3
+    assert requests[0].url.params["showPermissionSets"] == "false"
+    assert all(
+        set(request.extensions["timeout"].values()) == {9.0} for request in requests
+    )
+    for request in requests[1:]:
+        assert str(request.url).startswith(BUCKET_URL)
+        assert request.url.params["prefix"] == SPOT_KLINES_PREFIX
+        assert request.url.params["delimiter"] == "/"
+    assert requests[2].url.params["marker"] == f"{SPOT_KLINES_PREFIX}BTCUSDT/"
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {},
+        [],
+        {"symbols": []},
+        {"symbols": [None]},
+        {"symbols": [{"symbol": "BTCUSDT"}]},
+        {
+            "symbols": [
+                {
+                    "symbol": "../BTCUSDT",
+                    "baseAsset": "BTC",
+                    "quoteAsset": "USDT",
+                    "status": "TRADING",
+                }
+            ]
+        },
+    ],
+)
+def test_invalid_exchange_info_fails_before_archive_listing(payload: object) -> None:
+    """Confirm malformed market snapshots are never stored as valid metadata.
+
+    Args:
+        payload: The malformed exchange-info response.
+    """
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        """Count and return the malformed exchange response."""
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200, json=payload)
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(ValueError, match="exchangeInfo"):
+            Binance().markets(client, "spot")
+
+    assert calls == 1
+
+
+def test_invalid_json_exchange_info_fails_before_archive_listing() -> None:
+    """Confirm a non-JSON exchange response cannot become an empty snapshot."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        """Return a response that is not JSON."""
+        return httpx.Response(200, text="not json")
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(ValueError):
+            Binance().markets(client, "spot")
+
+
+def test_duplicate_exchange_symbol_is_rejected() -> None:
+    """Confirm duplicate native symbols make the snapshot invalid."""
+    payload = exchange_info()
+    symbols = cast(list[object], payload["symbols"])
+    symbols.append(deepcopy(symbols[0]))
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        """Return exchange metadata containing a duplicate symbol."""
+        return httpx.Response(200, json=payload)
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(ValueError, match="duplicate"):
+            Binance().markets(client, "spot")
+
+
+def test_unsupported_market_product_fails_without_http() -> None:
+    """Confirm this phase cannot accidentally request futures metadata."""
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        """Count any unexpected request."""
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200)
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(ValueError, match="product"):
+            Binance().markets(client, "um")
+
+    assert calls == 0
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "not xml",
+        "<Error/>",
+        "<ListBucketResult/>",
+        listing(truncated="maybe"),
+    ],
+)
+def test_malformed_symbol_listing_is_not_treated_as_empty(body: str) -> None:
+    """Confirm malformed archive metadata aborts market discovery.
+
+    Args:
+        body: The invalid bucket response body.
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        """Return valid exchange metadata followed by malformed XML."""
+        if str(request.url).startswith(EXCHANGE_INFO_URL):
+            return httpx.Response(200, json=exchange_info())
+        return httpx.Response(200, text=body)
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(ValueError, match="listing"):
+            Binance().markets(client, "spot")
+
+
+def test_truncated_listing_without_new_marker_is_rejected() -> None:
+    """Confirm pagination cannot silently stop or loop without progress."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        """Return an empty truncated page after valid exchange metadata."""
+        if str(request.url).startswith(EXCHANGE_INFO_URL):
+            return httpx.Response(200, json=exchange_info())
+        return httpx.Response(200, text=listing(truncated="true"))
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(ValueError, match="marker"):
+            Binance().markets(client, "spot")
+
+
+def test_pagination_cycle_is_rejected() -> None:
+    """Confirm a repeated server marker cannot create an infinite loop."""
+    bucket_calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        """Return two truncated pages with the same next marker."""
+        nonlocal bucket_calls
+        if str(request.url).startswith(EXCHANGE_INFO_URL):
+            return httpx.Response(200, json=exchange_info())
+        bucket_calls += 1
+        return httpx.Response(
+            200,
+            text=listing(
+                prefixes=(f"{SPOT_KLINES_PREFIX}BTCUSDT/",),
+                truncated="true",
+                marker="same-marker",
+            ),
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(ValueError, match="marker"):
+            Binance().markets(client, "spot")
+
+    assert bucket_calls == 2
+
+
+def test_daily_resource_discovery_paginates_filters_and_stops_after_end() -> None:
+    """Confirm only exact daily ZIPs inside the requested range are returned."""
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        """Return two realistic daily archive pages."""
+        requests.append(request)
+        filename = (
+            "binance_spot_klines_page_1.xml"
+            if len(requests) == 1
+            else "binance_spot_klines_page_2.xml"
+        )
+        return httpx.Response(200, text=fixture_text(filename))
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        resources = Binance().resources(client, KEY, date(2025, 1, 1), date(2025, 1, 2))
+
+    assert [resource.day for resource in resources] == [
+        date(2025, 1, 1),
+        date(2025, 1, 2),
+    ]
+    assert resources[0].url == (
+        f"{ARCHIVE_URL}/data/spot/daily/klines/BTCUSDT/1m/" "BTCUSDT-1m-2025-01-01.zip"
+    )
+    assert resources[0].checksum_url == f"{resources[0].url}.CHECKSUM"
+    assert len(requests) == 2
+    prefix = f"{SPOT_KLINES_PREFIX}BTCUSDT/1m/"
+    assert requests[0].url.params["prefix"] == prefix
+    assert requests[0].url.params["marker"] == f"{prefix}BTCUSDT-1m-2025-01-01"
+    assert requests[1].url.params["marker"].endswith("BTCUSDT-1m-invalid.zip")
+
+
+def test_daily_listing_without_files_returns_empty_result() -> None:
+    """Confirm a valid empty listing reports no available daily resources."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        """Return one complete bucket page without objects."""
+        return httpx.Response(200, text=listing(namespace=False))
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        assert (
+            Binance().resources(client, KEY, date(2025, 1, 1), date(2025, 1, 2)) == []
+        )
+
+
+def test_daily_listing_ignores_prior_and_impossible_dates() -> None:
+    """Confirm malformed servers cannot leak invalid or earlier archive days."""
+    prefix = f"{SPOT_KLINES_PREFIX}BTCUSDT/1m/"
+    keys = (
+        f"{prefix}BTCUSDT-1m-2025-01-01.zip",
+        f"{prefix}BTCUSDT-1m-2025-99-99.zip",
+        f"{prefix}BTCUSDT-1m-2025-01-02.zip",
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        """Return prior, impossible, and requested archive dates."""
+        return httpx.Response(200, text=listing(keys=keys))
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        resources = Binance().resources(client, KEY, date(2025, 1, 2), date(2025, 1, 2))
+
+    assert [resource.day for resource in resources] == [date(2025, 1, 2)]
+
+
+@pytest.mark.parametrize(
+    ("key", "start_day", "end_day", "message"),
+    [
+        (
+            ResourceKey("other", "spot", "klines", "BTCUSDT", "1m"),
+            date(2025, 1, 1),
+            date(2025, 1, 2),
+            "source",
+        ),
+        (
+            ResourceKey("binance", "um", "klines", "BTCUSDT", "1m"),
+            date(2025, 1, 1),
+            date(2025, 1, 2),
+            "product",
+        ),
+        (
+            ResourceKey("binance", "spot", "trades", "BTCUSDT", "1m"),
+            date(2025, 1, 1),
+            date(2025, 1, 2),
+            "dataset",
+        ),
+        (
+            ResourceKey("binance", "spot", "klines", "BTCUSDT", "5m"),
+            date(2025, 1, 1),
+            date(2025, 1, 2),
+            "interval",
+        ),
+        (
+            ResourceKey("binance", "spot", "klines", "../BTC", "1m"),
+            date(2025, 1, 1),
+            date(2025, 1, 2),
+            "symbol",
+        ),
+        (
+            KEY,
+            date(2025, 1, 2),
+            date(2025, 1, 1),
+            "range",
+        ),
+    ],
+)
+def test_invalid_resource_request_fails_without_http(
+    key: ResourceKey, start_day: date, end_day: date, message: str
+) -> None:
+    """Confirm unsupported or unsafe resource requests never reach the network.
+
+    Args:
+        key: The invalid resource identity.
+        start_day: The proposed first archive day.
+        end_day: The proposed last archive day.
+        message: The invalid field named in the expected error.
+    """
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        """Count any unexpected request."""
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200)
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(ValueError, match=message):
+            Binance().resources(client, key, start_day, end_day)
+
+    assert calls == 0
+
+
+@pytest.mark.parametrize("body", ["bad", "<Error/>", "<ListBucketResult/>"])
+def test_malformed_daily_listing_is_not_treated_as_no_files(body: str) -> None:
+    """Confirm invalid resource XML remains distinguishable from no files.
+
+    Args:
+        body: The malformed bucket response.
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        """Return malformed XML for a daily archive request."""
+        return httpx.Response(200, text=body)
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(ValueError, match="listing"):
+            Binance().resources(client, KEY, date(2025, 1, 1), date(2025, 1, 2))
+
+
+def test_binance_metadata_uses_shared_http_retries() -> None:
+    """Confirm Binance discovery delegates temporary failures to the HTTP layer."""
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        """Throttle once and then return a complete empty market archive."""
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return httpx.Response(503)
+        if str(request.url).startswith(EXCHANGE_INFO_URL):
+            return httpx.Response(200, json=exchange_info())
+        return httpx.Response(200, text=listing())
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        markets = Binance(retries=1, backoff=0).markets(client, "spot")
+
+    assert len(markets) == 2
+    assert calls == 3

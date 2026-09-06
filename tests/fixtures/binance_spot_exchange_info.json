@@ -1,0 +1,26 @@
+{
+  "timezone": "UTC",
+  "serverTime": 1735689600000,
+  "rateLimits": [
+    {
+      "rateLimitType": "REQUEST_WEIGHT",
+      "interval": "MINUTE",
+      "intervalNum": 1,
+      "limit": 6000
+    }
+  ],
+  "symbols": [
+    {
+      "symbol": "BTCUSDT",
+      "status": "TRADING",
+      "baseAsset": "BTC",
+      "quoteAsset": "USDT"
+    },
+    {
+      "symbol": "XRPTUSD",
+      "status": "BREAK",
+      "baseAsset": "XRP",
+      "quoteAsset": "TUSD"
+    }
+  ]
+}
