@@ -1,28 +1,18 @@
-"""Download and display one day of Binance Spot candles."""
+"""Download a small Spot kline range and render its structured results."""
 
 import crypto_downloader as crypto
 
 
 def main() -> None:
-    """Request Bitcoin Spot klines and print the result report."""
-    result = crypto.get_results(
-        "BTCUSDT",
+    """Run one small imported-library example."""
+    results = crypto.get_results(
+        ["BTCUSDT", "ETHUSDT", "NOTREALPAIR"],
         "2025-01-01",
-        "2025-01-01",
+        "2025-01-03",
+        interval="1h",
         desired_columns=["open_time", "open", "high", "low", "close", "volume"],
     )
-    if isinstance(result, list):
-        raise RuntimeError("single-pair input unexpectedly returned multiple results")
-    print(result.data.head())
-    print(
-        {
-            "pair": result.pair,
-            "complete": result.complete,
-            "warnings": result.warnings,
-            "problems": result.problems,
-            "errors": result.errors,
-        }
-    )
+    crypto.render_results(results)
 
 
 if __name__ == "__main__":

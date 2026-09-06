@@ -3,6 +3,7 @@
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from datetime import UTC, date, datetime
+import logging
 from pathlib import Path
 from threading import RLock
 
@@ -11,6 +12,7 @@ import duckdb
 from .models import IngestedResource, Market, Resource, ResourceKey
 
 _CATALOG_LOCKS = tuple(RLock() for _ in range(64))
+LOGGER = logging.getLogger(__name__)
 
 
 def _key_values(key: ResourceKey) -> tuple[str, str, str, str, str]:
@@ -104,11 +106,13 @@ def open_catalog(path: Path) -> Iterator[Catalog]:
         A catalog connected to the requested database.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
+    LOGGER.debug("Opening DuckDB catalog: path=%s", path)
     connection = duckdb.connect(str(path))
     try:
         yield Catalog(connection)
     finally:
         connection.close()
+        LOGGER.debug("Closed DuckDB catalog: path=%s", path)
 
 
 @contextmanager
@@ -261,6 +265,12 @@ class Catalog:
                 """,
                 rows,
             )
+        LOGGER.debug(
+            "Market snapshot stored: source=%s product=%s markets=%d",
+            source,
+            product,
+            len(markets),
+        )
 
     def discovery_range(self, key: ResourceKey) -> tuple[date, date] | None:
         """Return the inclusive days already searched for one resource key.
@@ -334,6 +344,13 @@ class Catalog:
                 """,
                 [*key_values, start_day, end_day],
             )
+        LOGGER.debug(
+            "Discovery stored: key=%s range=[%s, %s] resources=%d",
+            key,
+            start_day,
+            end_day,
+            len(resources),
+        )
 
     def resources(
         self, key: ResourceKey, start_day: date, end_day: date
@@ -430,6 +447,7 @@ class Catalog:
         ).fetchone()
         if row is None:
             raise KeyError(f"resource {day.isoformat()} was not discovered")
+        LOGGER.debug("Resource marked ready: key=%s day=%s", key, day)
 
     def mark_failed(self, key: ResourceKey, day: date, error: str) -> None:
         """Record a failed daily resource attempt.
@@ -461,3 +479,4 @@ class Catalog:
         ).fetchone()
         if row is None:
             raise KeyError(f"resource {day.isoformat()} was not discovered")
+        LOGGER.debug("Resource marked failed: key=%s day=%s error=%s", key, day, error)

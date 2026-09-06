@@ -4,6 +4,7 @@ from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 import hashlib
+import logging
 import math
 from pathlib import Path
 import re
@@ -15,6 +16,7 @@ import httpx
 from .models import Resource
 
 RETRYABLE_STATUS_CODES = frozenset({408, 429, 500, 502, 503, 504})
+LOGGER = logging.getLogger(__name__)
 
 
 class ChecksumError(ValueError):
@@ -128,8 +130,21 @@ def _retry[Result](
             ):
                 raise
             if attempt == retries:
+                LOGGER.error(
+                    "HTTP operation exhausted retries: attempts=%d error=%s",
+                    attempt + 1,
+                    error,
+                )
                 raise
-            time.sleep(retry_delay(response, attempt, backoff))
+            delay = retry_delay(response, attempt, backoff)
+            LOGGER.warning(
+                "Retrying HTTP operation: attempt=%d/%d delay=%.3fs error=%s",
+                attempt + 1,
+                retries + 1,
+                delay,
+                error,
+            )
+            time.sleep(delay)
     raise RuntimeError("retry loop ended without a result")
 
 
@@ -165,6 +180,12 @@ def get(
         """
         response = client.get(url, params=params, timeout=timeout)
         response.raise_for_status()
+        LOGGER.debug(
+            "HTTP GET complete: url=%s status=%d bytes=%d",
+            response.url,
+            response.status_code,
+            len(response.content),
+        )
         return response
 
     return _retry(request, retries=retries, backoff=backoff)
@@ -270,6 +291,13 @@ def download(
             if actual != expected:
                 raise ChecksumError(f"SHA-256 mismatch for {resource.url}")
             partial.replace(destination)
+            LOGGER.info(
+                "Verified download complete: url=%s bytes=%d sha256=%s path=%s",
+                resource.url,
+                size,
+                actual,
+                destination,
+            )
             return actual
         except BaseException:
             partial.unlink(missing_ok=True)

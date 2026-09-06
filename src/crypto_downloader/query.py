@@ -2,7 +2,9 @@
 
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
+import logging
 from pathlib import Path
+from time import perf_counter
 
 import duckdb
 import pandas as pd
@@ -12,6 +14,7 @@ from .models import Gap
 from .request import parse_gap_policy
 
 EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
+LOGGER = logging.getLogger(__name__)
 
 
 def _microseconds(value: datetime) -> int:
@@ -466,6 +469,7 @@ def query_parquet(
     Returns:
         Requested rows ordered by the dataset timestamp.
     """
+    started = perf_counter()
     _validate_columns(dataset, columns)
     _validate_range(start, end)
     policy = parse_gap_policy(gap_policy)
@@ -473,6 +477,13 @@ def query_parquet(
         dataset.base_interval if interval is None else interval
     )
     if not paths:
+        LOGGER.info(
+            "Parquet query skipped: product=%s dataset=%s paths=0 range=[%s, %s)",
+            dataset.product,
+            dataset.name,
+            start,
+            end,
+        )
         return empty_frame(dataset, columns)
 
     if policy in {"forward", "backward", "nan"}:
@@ -486,4 +497,17 @@ def query_parquet(
         sql = _resampled_query(sql, dataset, output_interval, policy, columns)
     frame = connection.execute(sql, parameters).df()
     _normalize_result_times(frame, columns)
+    LOGGER.info(
+        "Parquet query complete: product=%s dataset=%s paths=%d range=[%s, %s) "
+        "interval=%s gap_policy=%s rows=%d elapsed=%.3fs",
+        dataset.product,
+        dataset.name,
+        len(paths),
+        start,
+        end,
+        output_interval,
+        policy,
+        len(frame),
+        perf_counter() - started,
+    )
     return frame

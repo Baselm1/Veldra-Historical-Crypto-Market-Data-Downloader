@@ -3,6 +3,7 @@
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime
+import logging
 from pathlib import Path
 
 import pandas as pd
@@ -11,6 +12,7 @@ TimeRange = tuple[datetime, datetime]
 type JsonValue = (
     str | int | float | bool | None | list[JsonValue] | dict[str, JsonValue]
 )
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -103,6 +105,12 @@ class MissingCandlesError(RuntimeError):
         self.pair = pair
         self.gaps = tuple(gaps)
         missing = sum(gap.count for gap in gaps)
+        LOGGER.error(
+            "Strict missing-candle policy failed: pair=%s gaps=%d candles=%d",
+            pair,
+            len(gaps),
+            missing,
+        )
         super().__init__(
             f"{pair} is missing {missing} source candles across {len(gaps)} gaps"
         )
@@ -142,6 +150,17 @@ class Result:
             The result's DataFrame with its report in ``attrs["download"]``.
         """
         self.data.attrs["download"] = result_report(self)
+        LOGGER.debug(
+            "Result report attached: pair=%s rows=%d complete=%s warnings=%d "
+            "problems=%d errors=%d gaps=%d",
+            self.pair,
+            len(self.data),
+            self.complete,
+            len(self.warnings),
+            len(self.problems),
+            len(self.errors),
+            len(self.gaps),
+        )
         return self.data
 
 

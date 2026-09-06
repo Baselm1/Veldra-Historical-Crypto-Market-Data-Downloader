@@ -2,12 +2,15 @@
 
 from datetime import date
 import hashlib
+import logging
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
 from .datasets import DatasetSpec
+
+LOGGER = logging.getLogger(__name__)
 
 
 class DataValidationError(ValueError):
@@ -130,7 +133,15 @@ def normalize_chunk(frame: pd.DataFrame, dataset: DatasetSpec) -> pd.DataFrame:
     result["taker_buy_quote_volume"] = _number(
         frame["taker_buy_quote_volume"], "taker_buy_quote_volume"
     )
-    return result.loc[:, dataset.stored_columns]
+    normalized = result.loc[:, dataset.stored_columns]
+    LOGGER.debug(
+        "Source chunk normalized: product=%s dataset=%s rows=%d columns=%d",
+        dataset.product,
+        dataset.name,
+        len(normalized),
+        len(normalized.columns),
+    )
+    return normalized
 
 
 def _validate_timestamps(
@@ -297,4 +308,12 @@ def validate_chunk(
     last = _validate_timestamps(frame, dataset, day, previous_timestamp)
     _validate_numbers(frame, dataset)
     _validate_ohlc(frame)
+    LOGGER.debug(
+        "Data chunk validated: product=%s dataset=%s day=%s rows=%d last=%s",
+        dataset.product,
+        dataset.name,
+        day,
+        len(frame),
+        last,
+    )
     return last

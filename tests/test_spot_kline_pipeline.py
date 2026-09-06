@@ -3,6 +3,7 @@
 from datetime import UTC, date, datetime
 import hashlib
 from io import BytesIO
+import logging
 import os
 from pathlib import Path
 import zipfile
@@ -636,6 +637,122 @@ def test_downloader_rejects_nonboolean_durability_options(
             downloader(tmp_path, server).get_results(
                 "BTCUSDT", "2024-01-01", "2024-01-01", offline=value  # type: ignore[arg-type]
             )
+
+
+def test_progress_false_silences_all_rich_pipeline_output(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Confirm imported callers can completely disable interactive output.
+
+    Args:
+        tmp_path: The isolated downloader directory.
+        capsys: Pytest's captured output streams.
+    """
+    server = BinanceServer()
+
+    downloader(tmp_path, server).get_results(
+        "BTCUSDT", "2024-01-01", "2024-01-01", progress=False
+    )
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == ""
+
+
+def test_enabled_progress_explains_the_complete_pipeline(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Confirm an interactive request reports each useful stage.
+
+    Args:
+        tmp_path: The isolated downloader directory.
+        capsys: Pytest's captured output streams.
+    """
+    server = BinanceServer()
+
+    downloader(tmp_path, server).get_results("BTCUSDT", "2024-01-01", "2024-01-01")
+
+    output = capsys.readouterr().err
+    assert "INFO Binance spot klines: 1 pair" in output
+    assert "OK Markets refreshed: 1 pair (1 TRADING)" in output
+    assert "INFO BTCUSDT: matched BTC/USDT; status TRADING" in output
+    assert "INFO BTCUSDT: found 1 daily file" in output
+    assert "INFO BTCUSDT: 1 daily file | 0 cached, 1 to download" in output
+    assert "BTCUSDT 2024-01-01 cached" in output
+    assert "OK BTCUSDT: returned 2 rows" in output
+
+
+def test_cached_pipeline_reports_that_no_download_is_needed(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Confirm repeat requests clearly identify reusable local files.
+
+    Args:
+        tmp_path: The isolated downloader directory.
+        capsys: Pytest's captured output streams.
+    """
+    server = BinanceServer()
+    service = downloader(tmp_path, server)
+    service.get_results("BTCUSDT", "2024-01-01", "2024-01-01", progress=False)
+    capsys.readouterr()
+
+    service.get_results("BTCUSDT", "2024-01-01", "2024-01-01")
+
+    output = capsys.readouterr().err
+    assert "INFO BTCUSDT: 1 daily file | 1 cached, 0 to download" in output
+    assert "OK BTCUSDT: returned 2 rows" in output
+
+
+def test_pipeline_emits_standard_logs_without_configuring_root_logging(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Confirm applications can capture library diagnostics with their own setup.
+
+    Args:
+        tmp_path: The isolated downloader directory.
+        caplog: Pytest's captured standard log records.
+    """
+    root = logging.getLogger()
+    handlers = tuple(root.handlers)
+    level = root.level
+    server = BinanceServer()
+
+    with caplog.at_level(logging.DEBUG, logger="crypto_downloader"):
+        downloader(tmp_path, server).get_results(
+            "BTCUSDT", "2024-01-01", "2024-01-01", progress=False
+        )
+
+    assert tuple(root.handlers) == handlers
+    assert root.level == level
+    assert any("Request started" in message for message in caplog.messages)
+    assert any("Market snapshot refreshed" in message for message in caplog.messages)
+    assert any("Resource discovery complete" in message for message in caplog.messages)
+    assert any("Daily resource cached" in message for message in caplog.messages)
+    assert any("Parquet query complete" in message for message in caplog.messages)
+    assert any("Request complete" in message for message in caplog.messages)
+
+
+@pytest.mark.parametrize("progress", [None, 1, "yes"])
+def test_pipeline_rejects_non_boolean_progress_values_before_network_access(
+    tmp_path: Path, progress: object
+) -> None:
+    """Confirm interactive output requires an explicit Boolean switch.
+
+    Args:
+        tmp_path: The isolated downloader directory.
+        progress: The invalid progress option.
+    """
+    server = BinanceServer()
+
+    with pytest.raises(TypeError, match="progress"):
+        downloader(tmp_path, server).get_results(
+            "BTCUSDT",
+            "2024-01-01",
+            "2024-01-01",
+            progress=progress,  # type: ignore[arg-type]
+        )
+
+    assert server.market_requests == 0
 
 
 def test_refresh_and_offline_cannot_be_requested_together(tmp_path: Path) -> None:

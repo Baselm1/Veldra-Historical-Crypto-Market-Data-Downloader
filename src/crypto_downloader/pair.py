@@ -2,7 +2,9 @@
 
 from datetime import UTC, date, datetime, time, timedelta
 from difflib import get_close_matches
+import logging
 from pathlib import Path
+from time import perf_counter
 
 import duckdb
 import httpx
@@ -10,11 +12,14 @@ import httpx
 from .catalog import Catalog
 from .cache import cache_resources
 from .datasets import DatasetSpec
+from .display import Reporter, format_range, format_time
 from .discovery import discover_resources, requested_days
 from .models import Market, Message, MissingCandlesError, Resource, ResourceKey, Result
 from .query import empty_frame, missing_ranges, query_parquet
 from .request import Request, normalize_pair
 from .source import Source
+
+LOGGER = logging.getLogger(__name__)
 
 
 def _result(pair: str, request: Request, dataset: DatasetSpec) -> Result:
@@ -148,6 +153,7 @@ def _clean_range(
     result: Result,
     request: Request,
     availability: tuple[datetime, datetime],
+    reporter: Reporter,
 ) -> tuple[datetime, datetime] | None:
     """Trim a request to known pair availability and report each edge.
 
@@ -155,6 +161,7 @@ def _clean_range(
         result: The pair result receiving boundary warnings.
         request: The original validated request.
         availability: The pair's inclusive start and exclusive end.
+        reporter: The optional Rich activity reporter.
 
     Returns:
         The usable range, or ``None`` when no timestamps overlap.
@@ -168,6 +175,9 @@ def _clean_range(
                 f"Earliest available date for {result.pair} is {availability[0].date()}.",
             )
         )
+        reporter.warning(
+            f"{result.pair}: start trimmed to {format_time(availability[0])}"
+        )
     if end != request.end:
         result.warnings.append(
             Message(
@@ -176,9 +186,15 @@ def _clean_range(
                 f"{availability[1].date()} (exclusive).",
             )
         )
+        reporter.warning(
+            f"{result.pair}: end trimmed to {format_time(availability[1])}"
+        )
     if start >= end:
         result.warnings.append(
             Message("no_overlap", "The request does not overlap available data.")
+        )
+        reporter.warning(
+            f"{result.pair}: requested dates do not overlap known availability"
         )
         return None
     return start, end
@@ -209,6 +225,7 @@ def _query_result(
     request: Request,
     used_range: tuple[datetime, datetime],
     source_code: str,
+    reporter: Reporter,
 ) -> None:
     """Detect gaps and populate one result from cached Parquet files.
 
@@ -220,6 +237,7 @@ def _query_result(
         request: The validated caller request.
         used_range: The cleaned inclusive-start, exclusive-end range.
         source_code: The source identifier used in diagnostics.
+        reporter: The optional Rich activity reporter.
     """
     result.gaps = missing_ranges(
         connection,
@@ -237,6 +255,17 @@ def _query_result(
                 f"{len(result.gaps)} internal gap(s).",
             )
         )
+        reporter.warning(
+            f"{result.pair}: {missing:,} missing candle(s) across "
+            f"{len(result.gaps):,} internal gap(s); policy {request.gap_policy}"
+        )
+        LOGGER.warning(
+            "Missing source candles: pair=%s count=%d gaps=%d policy=%s",
+            result.pair,
+            missing,
+            len(result.gaps),
+            request.gap_policy,
+        )
         if request.gap_policy == "raise":
             raise MissingCandlesError(result.pair, result.gaps)
     columns = dataset.resolve_columns(request.columns)
@@ -250,6 +279,188 @@ def _query_result(
         gap_policy=request.gap_policy,
         interval=request.interval,
     )
+
+
+def _finish(result: Result, reporter: Reporter, started: float) -> Result:
+    """Report and return one completed or isolated pair outcome.
+
+    Args:
+        result: The pair result being completed.
+        reporter: The optional Rich activity reporter.
+        started: The monotonic start time for the pair workflow.
+
+    Returns:
+        The unchanged pair result.
+    """
+    if result.errors:
+        reporter.error(f"{result.pair}: {result.errors[-1].message}")
+    elif result.complete:
+        reporter.success(f"{result.pair}: returned {len(result.data):,} rows")
+    else:
+        reporter.warning(
+            f"{result.pair}: returned {len(result.data):,} rows with "
+            f"{len(result.problems):,} problem(s) and "
+            f"{len(result.warnings):,} warning(s)"
+        )
+    LOGGER.info(
+        "Pair complete: pair=%s rows=%d complete=%s warnings=%d problems=%d "
+        "errors=%d elapsed=%.3fs",
+        result.pair,
+        len(result.data),
+        result.complete,
+        len(result.warnings),
+        len(result.problems),
+        len(result.errors),
+        perf_counter() - started,
+    )
+    return result
+
+
+def _match_market(
+    pair: str,
+    markets: list[Market],
+    result: Result,
+    reporter: Reporter,
+) -> Market | None:
+    """Resolve and report one requested source market.
+
+    Args:
+        pair: The caller's pair spelling.
+        markets: The current source market snapshot.
+        result: The pair result receiving resolution errors.
+        reporter: The optional Rich activity reporter.
+
+    Returns:
+        The unique market, or ``None`` after a structured resolution error.
+    """
+    market, error = _resolve_market(pair, markets)
+    if market is None:
+        if error is None:
+            raise RuntimeError("pair resolution returned no market or error")
+        result.errors.append(error)
+        LOGGER.warning(
+            "Pair resolution failed: pair=%s code=%s suggestions=%s",
+            pair,
+            error.code,
+            error.suggestions,
+        )
+        return None
+    assets = (
+        f"{market.base_asset}/{market.quote_asset}"
+        if market.base_asset and market.quote_asset
+        else "assets unavailable"
+    )
+    reporter.info(
+        f"{market.symbol}: matched {assets}; status {market.status or 'unknown'}"
+    )
+    LOGGER.debug(
+        "Pair resolved: requested=%s symbol=%s base=%s quote=%s status=%s",
+        pair,
+        market.symbol,
+        market.base_asset,
+        market.quote_asset,
+        market.status,
+    )
+    return market
+
+
+def _discover(
+    source: Source,
+    catalog: Catalog,
+    client: httpx.Client,
+    key: ResourceKey,
+    start: datetime,
+    end: datetime,
+    result: Result,
+    reporter: Reporter,
+    *,
+    active: bool,
+    refresh: bool,
+    offline: bool,
+    tail_days: int,
+) -> list[Resource] | None:
+    """Discover one pair's resources while isolating source failures.
+
+    Args:
+        source: The source strategy used for discovery.
+        catalog: The metadata catalog receiving discovered resources.
+        client: The HTTPX client used for source requests.
+        key: The requested source dataset identity.
+        start: The inclusive discovery start.
+        end: The exclusive discovery end.
+        result: The result receiving a discovery error.
+        reporter: The optional Rich activity reporter.
+        active: Whether recent source files may still change.
+        refresh: Whether to repeat complete discovery.
+        offline: Whether source access must be skipped.
+        tail_days: The recent active-market days to revisit.
+
+    Returns:
+        The known resources, or ``None`` after an isolated failure.
+    """
+    try:
+        with reporter.status(f"Discovering {key.symbol} daily files"):
+            return discover_resources(
+                source,
+                catalog,
+                client,
+                key,
+                start,
+                end,
+                active=active,
+                refresh=refresh,
+                offline=offline,
+                tail_days=tail_days,
+            )
+    except Exception as error:
+        LOGGER.exception("Resource discovery failed: key=%s", key)
+        result.errors.append(Message("discovery_failed", str(error)))
+        return None
+
+
+def _populate_query(
+    result: Result,
+    catalog: Catalog,
+    paths: list[Path],
+    dataset: DatasetSpec,
+    request: Request,
+    used_range: tuple[datetime, datetime],
+    source_code: str,
+    reporter: Reporter,
+) -> bool:
+    """Populate one result while isolating non-policy query failures.
+
+    Args:
+        result: The pair result to populate.
+        catalog: The catalog providing the DuckDB connection.
+        paths: The usable daily Parquet files.
+        dataset: The requested dataset schema.
+        request: The validated caller request.
+        used_range: The cleaned query range.
+        source_code: The source identifier used in diagnostics.
+        reporter: The optional Rich activity reporter.
+
+    Returns:
+        True when querying completed, otherwise False.
+    """
+    try:
+        _query_result(
+            result,
+            catalog.connection,
+            paths,
+            dataset,
+            request,
+            used_range,
+            source_code,
+            reporter,
+        )
+        return True
+    except MissingCandlesError:
+        raise
+    except Exception as error:
+        LOGGER.exception("Parquet query failed: pair=%s", result.pair)
+        result.errors.append(Message("query_failed", str(error)))
+        return False
 
 
 def process_pair(
@@ -268,6 +479,7 @@ def process_pair(
     offline: bool = False,
     discovery_tail_days: int = 7,
     max_workers: int = 16,
+    reporter: Reporter | None = None,
 ) -> Result:
     """Discover, cache, and query one requested market.
 
@@ -286,18 +498,24 @@ def process_pair(
         offline: Whether source access and downloads must be skipped.
         discovery_tail_days: The recent active-market days to rediscover.
         max_workers: The maximum concurrent daily archive ingestions.
+        reporter: The optional Rich activity reporter.
 
     Returns:
         The pair's data and structured outcome report.
     """
+    started = perf_counter()
+    display = reporter or Reporter(False)
     result = _result(pair, request, dataset)
     result.source = source.code
-    market, pair_error = _resolve_market(pair, markets)
+    LOGGER.debug(
+        "Pair processing started: pair=%s product=%s dataset=%s",
+        pair,
+        request.product,
+        request.dataset,
+    )
+    market = _match_market(pair, markets, result, display)
     if market is None:
-        if pair_error is None:
-            raise RuntimeError("pair resolution returned no market or error")
-        result.errors.append(pair_error)
-        return result
+        return _finish(result, display, started)
 
     result.pair = market.symbol
     key = ResourceKey(
@@ -310,22 +528,24 @@ def process_pair(
     discovery_start = datetime.combine(earliest_date, time.min, UTC)
     discovery_end = datetime.combine(today, time.min, UTC)
     active = market.status in source.active_statuses
-    try:
-        resources = discover_resources(
-            source,
-            catalog,
-            client,
-            key,
-            discovery_start,
-            discovery_end,
-            active=active,
-            refresh=refresh,
-            offline=offline,
-            tail_days=discovery_tail_days,
-        )
-    except Exception as error:
-        result.errors.append(Message("discovery_failed", str(error)))
-        return result
+    resources = _discover(
+        source,
+        catalog,
+        client,
+        key,
+        discovery_start,
+        discovery_end,
+        result,
+        display,
+        active=active,
+        refresh=refresh,
+        offline=offline,
+        tail_days=discovery_tail_days,
+    )
+    if resources is None:
+        return _finish(result, display, started)
+    noun = "file" if len(resources) == 1 else "files"
+    display.info(f"{market.symbol}: found {len(resources):,} daily {noun}")
 
     availability = _availability(resources, market, source.active_statuses, today)
     result.available_range = availability
@@ -335,10 +555,11 @@ def process_pair(
                 "no_availability", f"No daily files are available for {result.pair}."
             )
         )
-        return result
-    used_range = _clean_range(result, request, availability)
+        return _finish(result, display, started)
+    display.info(f"{market.symbol}: known availability {format_range(availability)}")
+    used_range = _clean_range(result, request, availability, display)
     if used_range is None:
-        return result
+        return _finish(result, display, started)
     result.used_range = used_range
     requested_resources = _resources_in_range(resources, *used_range)
     result.problems.extend(_missing_resources(requested_resources, *used_range))
@@ -352,24 +573,21 @@ def process_pair(
         data_dir,
         offline=offline,
         max_workers=max_workers,
+        reporter=display,
     )
     result.problems.extend(coverage.problems)
     if not coverage.paths:
-        return result
+        return _finish(result, display, started)
 
-    try:
-        _query_result(
-            result,
-            catalog.connection,
-            coverage.paths,
-            dataset,
-            request,
-            used_range,
-            source.code,
-        )
-    except MissingCandlesError:
-        raise
-    except Exception as error:
-        result.errors.append(Message("query_failed", str(error)))
-        return result
-    return result
+    if not _populate_query(
+        result,
+        catalog,
+        coverage.paths,
+        dataset,
+        request,
+        used_range,
+        source.code,
+        display,
+    ):
+        return _finish(result, display, started)
+    return _finish(result, display, started)

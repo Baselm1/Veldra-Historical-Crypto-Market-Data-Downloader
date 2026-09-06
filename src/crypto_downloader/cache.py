@@ -3,15 +3,19 @@
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import date
+import logging
 from pathlib import Path
 
 import httpx
 
 from .catalog import Catalog
 from .datasets import DatasetSpec
+from .display import Reporter
 from .models import IngestedResource, Message, Resource, ResourceKey
 from .processing import file_sha256
 from .source import Source
+
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass
@@ -61,21 +65,38 @@ def valid_cached_path(resource: Resource) -> Path | None:
         or resource.parquet_size is None
         or resource.parquet_mtime_ns is None
     ):
+        LOGGER.debug(
+            "Cached resource unavailable: day=%s status=%s path=%s size=%s mtime=%s",
+            resource.day,
+            resource.status,
+            path,
+            resource.parquet_size,
+            resource.parquet_mtime_ns,
+        )
         return None
     try:
         stat = path.stat()
-    except OSError:
+    except OSError as error:
+        LOGGER.debug("Cached resource cannot be read: path=%s error=%s", path, error)
         return None
     expected = resource.parquet_size, resource.parquet_mtime_ns
     if (stat.st_size, stat.st_mtime_ns) != expected:
+        LOGGER.debug(
+            "Cached resource metadata changed: path=%s expected=%s actual=%s",
+            path,
+            expected,
+            (stat.st_size, stat.st_mtime_ns),
+        )
         return None
     try:
         valid_hash = (
             resource.parquet_sha256 is None
             or file_sha256(path) == resource.parquet_sha256
         )
-    except OSError:
+    except OSError as error:
+        LOGGER.debug("Cached resource hashing failed: path=%s error=%s", path, error)
         return None
+    LOGGER.debug("Cached resource hash checked: path=%s valid=%s", path, valid_hash)
     return path if valid_hash else None
 
 
@@ -99,8 +120,22 @@ def _ingest_resource(
         Either the completed metadata or the isolated exception.
     """
     try:
-        return source.ingest(client, resource, dataset, destination), None
+        metadata = source.ingest(client, resource, dataset, destination)
+        LOGGER.debug(
+            "Daily resource ingested: source=%s day=%s rows=%d destination=%s",
+            source.code,
+            resource.day,
+            metadata.row_count,
+            destination,
+        )
+        return metadata, None
     except Exception as error:
+        LOGGER.exception(
+            "Daily resource ingestion failed: source=%s day=%s url=%s",
+            source.code,
+            resource.day,
+            resource.url,
+        )
         return None, error
 
 
@@ -185,10 +220,23 @@ def _record_outcomes(
         if metadata is not None:
             catalog.mark_ready(key, resource.day, destination, metadata)
             coverage.paths.append(destination)
+            LOGGER.info(
+                "Daily resource cached: key=%s day=%s rows=%d path=%s",
+                key,
+                resource.day,
+                metadata.row_count,
+                destination,
+            )
             continue
         message = str(error) if error is not None else "unknown ingestion failure"
         catalog.mark_failed(key, resource.day, message)
         coverage.problems.append(Message("resource_failed", message, resource.day))
+        LOGGER.warning(
+            "Daily resource failed: key=%s day=%s error=%s",
+            key,
+            resource.day,
+            message,
+        )
 
 
 def cache_resources(
@@ -202,6 +250,7 @@ def cache_resources(
     *,
     offline: bool = False,
     max_workers: int = 16,
+    reporter: Reporter | None = None,
 ) -> CacheCoverage:
     """Reuse valid files and ingest every missing known resource.
 
@@ -215,21 +264,51 @@ def cache_resources(
         data_dir: The root downloader data directory.
         offline: Whether archive downloads must be skipped.
         max_workers: The caller's maximum concurrent daily ingestions.
+        reporter: The optional Rich activity reporter.
 
     Returns:
         Usable paths and isolated resource problems.
     """
     worker_count = _worker_count(source, dataset, max_workers)
     coverage, pending = _cache_plan(resources, data_dir, key, offline)
-    with ThreadPoolExecutor(max_workers=worker_count) as executor:
-        outcomes = list(
-            executor.map(
-                lambda item: _ingest_resource(
-                    source, client, dataset, item[0], item[1]
-                ),
-                pending,
-            )
-        )
+    display = reporter if reporter is not None else Reporter(False)
+    noun = "file" if len(resources) == 1 else "files"
+    missing_label = "not cached" if offline else "to download"
+    missing_count = len(coverage.problems) if offline else len(pending)
+    display.info(
+        f"{key.symbol}: {len(resources):,} daily {noun} | "
+        f"{len(coverage.paths):,} cached, {missing_count:,} {missing_label}"
+    )
+    LOGGER.debug(
+        "Cache plan complete: key=%s resources=%d cached=%d pending=%d "
+        "problems=%d offline=%s workers=%d",
+        key,
+        len(resources),
+        len(coverage.paths),
+        len(pending),
+        len(coverage.problems),
+        offline,
+        worker_count,
+    )
+    outcomes: list[tuple[IngestedResource | None, Exception | None]] = []
+    if pending:
+        with display.downloads(key.symbol, len(pending)) as advance:
+            with ThreadPoolExecutor(max_workers=worker_count) as executor:
+                completed = executor.map(
+                    lambda item: _ingest_resource(
+                        source, client, dataset, item[0], item[1]
+                    ),
+                    pending,
+                )
+                for (resource, _destination), outcome in zip(pending, completed):
+                    outcomes.append(outcome)
+                    advance(resource.day, outcome[0] is not None)
     _record_outcomes(catalog, key, pending, outcomes, coverage)
+    if pending:
+        succeeded = sum(metadata is not None for metadata, _error in outcomes)
+        display.info(
+            f"{key.symbol}: cached {succeeded:,} new daily file(s); "
+            f"{len(pending) - succeeded:,} failed"
+        )
     coverage.paths.sort()
     return coverage

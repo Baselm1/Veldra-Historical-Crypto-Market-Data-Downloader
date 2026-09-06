@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
+import logging
 import re
 from typing import cast
 
@@ -13,6 +14,7 @@ GAP_POLICIES = frozenset({"forward", "backward", "nan", "keep", "raise"})
 UTC = timezone.utc
 DATE_PATTERN = re.compile(r"\d{4}-\d{2}-\d{2}")
 IDENTIFIER_PATTERN = re.compile(r"[a-z][a-z0-9_]*")
+LOGGER = logging.getLogger(__name__)
 INTERVAL_PATTERN = re.compile(r"[1-9]\d*(?:mo|[smhdw])")
 
 
@@ -353,7 +355,7 @@ class Request:
         parsed_interval = parse_interval(interval, default=base_interval)
         columns = parse_columns(desired_columns)
         parsed_gap_policy = parse_gap_policy(gap_policy)
-        return cls(
+        request = cls(
             pairs=parsed_pairs,
             single=single,
             start=start,
@@ -364,3 +366,17 @@ class Request:
             dataset=parsed_dataset,
             gap_policy=parsed_gap_policy,
         )
+        LOGGER.debug(
+            "Request parsed: pairs=%s single=%s range=[%s, %s) product=%s "
+            "dataset=%s interval=%s columns=%s gap_policy=%s",
+            request.pairs,
+            request.single,
+            request.start,
+            request.end,
+            request.product,
+            request.dataset,
+            request.interval,
+            request.columns,
+            request.gap_policy,
+        )
+        return request

@@ -2,6 +2,7 @@
 
 from collections.abc import Iterator, Mapping
 from datetime import date
+import logging
 from pathlib import Path
 import re
 from urllib.parse import quote
@@ -19,6 +20,7 @@ EXCHANGE_INFO_URL = "https://api.binance.com/api/v3/exchangeInfo"
 BUCKET_URL = "https://s3-ap-northeast-1.amazonaws.com/data.binance.vision"
 ARCHIVE_URL = "https://data.binance.vision"
 SPOT_KLINES_PREFIX = "data/spot/daily/klines/"
+LOGGER = logging.getLogger(__name__)
 
 
 class Binance:
@@ -89,9 +91,19 @@ class Binance:
             {"showPermissionSets": "false"},
         )
         current = self._exchange_markets(response.json())
-        for symbol in self._archive_symbols(client):
+        exchange_count = len(current)
+        archive_symbols = self._archive_symbols(client)
+        for symbol in archive_symbols:
             current.setdefault(symbol, Market(symbol, normalize_pair(symbol)))
-        return [current[symbol] for symbol in sorted(current)]
+        markets = [current[symbol] for symbol in sorted(current)]
+        LOGGER.info(
+            "Binance markets loaded: product=%s exchange=%d archive=%d merged=%d",
+            product,
+            exchange_count,
+            len(archive_symbols),
+            len(markets),
+        )
+        return markets
 
     def resources(
         self,
@@ -131,7 +143,17 @@ class Binance:
                     found[day] = Resource(day, url, f"{url}.CHECKSUM")
             if past_end:
                 break
-        return [found[day] for day in sorted(found)]
+        resources = [found[day] for day in sorted(found)]
+        LOGGER.info(
+            "Binance resources listed: symbol=%s interval=%s range=[%s, %s] "
+            "resources=%d",
+            key.symbol,
+            key.interval,
+            start_day,
+            end_day,
+            len(resources),
+        )
+        return resources
 
     def ingest(
         self,
@@ -282,6 +304,16 @@ class Binance:
                 params["marker"] = marker
             root = self._listing_root(self._get(client, BUCKET_URL, params).content)
             keys, prefixes, truncated, next_marker = self._listing_values(root)
+            LOGGER.debug(
+                "Binance listing page: prefix=%s marker=%s keys=%d prefixes=%d "
+                "truncated=%s next_marker=%s",
+                prefix,
+                marker,
+                len(keys),
+                len(prefixes),
+                truncated,
+                next_marker,
+            )
             yield keys, prefixes
             if not truncated:
                 return

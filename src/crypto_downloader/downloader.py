@@ -1,13 +1,16 @@
 """Coordinate public cryptocurrency data requests."""
 
 from datetime import UTC, date, datetime, time
+import logging
 from pathlib import Path
+from time import perf_counter
 
 import httpx
 import pandas as pd
 
 from .catalog import catalog_lock, open_catalog
 from .datasets import get_dataset
+from .display import Reporter
 from .models import Result
 from .pair import process_pair
 from .request import Request
@@ -16,6 +19,7 @@ from .source import Source
 from .sources.binance import Binance
 
 MINIMUM_HISTORY_DATE = date(2018, 1, 1)
+LOGGER = logging.getLogger(__name__)
 
 
 def utc_today() -> date:
@@ -96,6 +100,7 @@ class Downloader:
         refresh: bool = False,
         offline: bool = False,
         gap_policy: object = "forward",
+        progress: bool = True,
     ) -> Result | list[Result]:
         """Return data and structured reports for requested pairs.
 
@@ -110,6 +115,7 @@ class Downloader:
             refresh: Whether to repeat complete resource discovery.
             offline: Whether to use only cataloged markets and cached files.
             gap_policy: The behavior used for internal missing candles.
+            progress: Whether to show optional Rich activity.
 
         Returns:
             One result for string input or an ordered result list.
@@ -134,8 +140,32 @@ class Downloader:
         catalog_path = self.data_dir / "catalog.duckdb"
         refresh = _boolean(refresh, "refresh")
         offline = _boolean(offline, "offline")
+        progress = _boolean(progress, "progress")
         if refresh and offline:
             raise ValueError("refresh and offline cannot both be enabled")
+        reporter = Reporter(progress)
+        reporter.request(
+            self.source.code,
+            request.product,
+            request.dataset,
+            len(request.pairs),
+            request.start,
+            request.end,
+        )
+        started = perf_counter()
+        LOGGER.debug(
+            "Request started: source=%s product=%s dataset=%s pairs=%s "
+            "range=[%s, %s) interval=%s refresh=%s offline=%s",
+            self.source.code,
+            request.product,
+            request.dataset,
+            request.pairs,
+            request.start,
+            request.end,
+            request.interval,
+            refresh,
+            offline,
+        )
         with catalog_lock(catalog_path):
             with (
                 open_catalog(catalog_path) as catalog,
@@ -146,10 +176,30 @@ class Downloader:
             ):
                 markets = catalog.markets(self.source.code, request.product)
                 if not offline:
-                    markets = self.source.markets(client, request.product)
+                    with reporter.status(
+                        f"Refreshing {self.source.code.title()} "
+                        f"{request.product} markets"
+                    ):
+                        markets = self.source.markets(client, request.product)
                     catalog.save_markets(self.source.code, request.product, markets)
+                    LOGGER.info(
+                        "Market snapshot refreshed: source=%s product=%s markets=%d",
+                        self.source.code,
+                        request.product,
+                        len(markets),
+                    )
+                    reporter.market_summary(markets, refreshed=True)
                 elif not markets:
                     raise RuntimeError("offline mode requires cached market metadata")
+                else:
+                    LOGGER.info(
+                        "Market snapshot loaded from cache: source=%s product=%s "
+                        "markets=%d",
+                        self.source.code,
+                        request.product,
+                        len(markets),
+                    )
+                    reporter.market_summary(markets, refreshed=False)
                 results = [
                     process_pair(
                         self.source,
@@ -166,9 +216,19 @@ class Downloader:
                         offline=offline,
                         discovery_tail_days=self.discovery_tail_days,
                         max_workers=self.max_workers,
+                        reporter=reporter,
                     )
                     for pair in request.pairs
                 ]
+        LOGGER.info(
+            "Request complete: source=%s product=%s dataset=%s pairs=%d "
+            "elapsed=%.3fs",
+            self.source.code,
+            request.product,
+            request.dataset,
+            len(results),
+            perf_counter() - started,
+        )
         return results[0] if request.single else results
 
     def get_data(
@@ -184,6 +244,7 @@ class Downloader:
         refresh: bool = False,
         offline: bool = False,
         gap_policy: object = "forward",
+        progress: bool = True,
     ) -> pd.DataFrame | list[pd.DataFrame]:
         """Return only DataFrames for requested pairs.
 
@@ -198,6 +259,7 @@ class Downloader:
             refresh: Whether to repeat complete resource discovery.
             offline: Whether to use only cataloged markets and cached files.
             gap_policy: The behavior used for internal missing candles.
+            progress: Whether to show optional Rich activity.
 
         Returns:
             One DataFrame for string input or an ordered DataFrame list.
@@ -213,6 +275,7 @@ class Downloader:
             refresh=refresh,
             offline=offline,
             gap_policy=gap_policy,
+            progress=progress,
         )
         if isinstance(results, Result):
             return results.frame()
@@ -237,6 +300,7 @@ def get_results(
     refresh: bool = False,
     offline: bool = False,
     gap_policy: object = "forward",
+    progress: bool = True,
 ) -> Result | list[Result]:
     """Create a downloader and return requested data with reports.
 
@@ -257,6 +321,7 @@ def get_results(
         refresh: Whether to repeat complete resource discovery.
         offline: Whether to use only cataloged markets and cached files.
         gap_policy: The behavior used for internal missing candles.
+        progress: Whether to show optional Rich activity.
 
     Returns:
         One result for string input or an ordered result list.
@@ -279,6 +344,7 @@ def get_results(
         refresh=refresh,
         offline=offline,
         gap_policy=gap_policy,
+        progress=progress,
     )
 
 
@@ -300,6 +366,7 @@ def get_data(
     refresh: bool = False,
     offline: bool = False,
     gap_policy: object = "forward",
+    progress: bool = True,
 ) -> pd.DataFrame | list[pd.DataFrame]:
     """Create a downloader and return only requested DataFrames.
 
@@ -320,6 +387,7 @@ def get_data(
         refresh: Whether to repeat complete resource discovery.
         offline: Whether to use only cataloged markets and cached files.
         gap_policy: The behavior used for internal missing candles.
+        progress: Whether to show optional Rich activity.
 
     Returns:
         One DataFrame for string input or an ordered DataFrame list.
@@ -342,6 +410,7 @@ def get_data(
         refresh=refresh,
         offline=offline,
         gap_policy=gap_policy,
+        progress=progress,
     )
 
 

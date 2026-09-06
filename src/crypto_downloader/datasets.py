@@ -2,11 +2,13 @@
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+import logging
 from types import MappingProxyType
 
 from .request import ColumnSelection
 
 type Columns = tuple[str, ...]
+LOGGER = logging.getLogger(__name__)
 
 SPOT_KLINE_SOURCE_COLUMNS: Columns = (
     "open_time",
@@ -160,6 +162,13 @@ def get_dataset(product: object, dataset: object) -> DatasetSpec:
         raise TypeError("dataset must be a string")
 
     try:
-        return DATASETS[(product, dataset)]
+        specification = DATASETS[(product, dataset)]
     except KeyError as error:
         raise ValueError(f"unsupported dataset '{product}/{dataset}'") from error
+    LOGGER.debug(
+        "Dataset resolved: product=%s dataset=%s base_interval=%s",
+        product,
+        dataset,
+        specification.base_interval,
+    )
+    return specification

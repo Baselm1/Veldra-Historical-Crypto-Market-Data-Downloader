@@ -1,12 +1,15 @@
 """Discover requested daily resources and record them in the catalog."""
 
 from datetime import date, datetime, timedelta
+import logging
 
 import httpx
 
 from .catalog import Catalog
 from .models import Resource, ResourceKey
 from .source import Source
+
+LOGGER = logging.getLogger(__name__)
 
 
 def requested_days(start: datetime, end: datetime) -> tuple[date, date]:
@@ -75,7 +78,7 @@ def discover_resources(
     if tail_days < 1:
         raise ValueError("tail_days must be positive")
     checkpoint = catalog.discovery_range(key)
-    for scan_start, scan_end in _scan_ranges(
+    scan_ranges = _scan_ranges(
         start_day,
         end_day,
         checkpoint,
@@ -83,11 +86,38 @@ def discover_resources(
         refresh=refresh,
         offline=offline,
         tail_days=tail_days,
-    ):
+    )
+    LOGGER.debug(
+        "Resource discovery planned: key=%s requested=[%s, %s] checkpoint=%s "
+        "scans=%s active=%s refresh=%s offline=%s",
+        key,
+        start_day,
+        end_day,
+        checkpoint,
+        scan_ranges,
+        active,
+        refresh,
+        offline,
+    )
+    for scan_start, scan_end in scan_ranges:
         resources = source.resources(client, key, scan_start, scan_end)
         _validate_resources(resources, scan_start, scan_end)
         catalog.save_discovery(key, scan_start, scan_end, resources)
-    return catalog.resources(key, start_day, end_day)
+        LOGGER.debug(
+            "Resource range discovered: key=%s range=[%s, %s] resources=%d",
+            key,
+            scan_start,
+            scan_end,
+            len(resources),
+        )
+    resources = catalog.resources(key, start_day, end_day)
+    LOGGER.info(
+        "Resource discovery complete: key=%s resources=%d scans=%d",
+        key,
+        len(resources),
+        len(scan_ranges),
+    )
+    return resources
 
 
 def _scan_ranges(

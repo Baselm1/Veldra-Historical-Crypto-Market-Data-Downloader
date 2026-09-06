@@ -1,5 +1,6 @@
 """Convert verified source ZIP archives into atomic Parquet files."""
 
+import logging
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from urllib.parse import unquote, urlsplit
@@ -14,6 +15,8 @@ from .datasets import DatasetSpec
 from .http import download
 from .models import IngestedResource, Resource
 from .processing import file_sha256, normalize_chunk, validate_chunk
+
+LOGGER = logging.getLogger(__name__)
 
 
 class ArchiveError(ValueError):
@@ -162,6 +165,13 @@ def ingest_archive(
     destination.parent.mkdir(parents=True, exist_ok=True)
     partial = destination.with_name(f"{destination.name}.part")
     partial.unlink(missing_ok=True)
+    LOGGER.debug(
+        "Archive ingestion started: day=%s url=%s destination=%s chunk_rows=%d",
+        resource.day,
+        resource.url,
+        destination,
+        chunk_rows,
+    )
 
     try:
         with TemporaryDirectory(prefix="crypto-downloader-") as directory:
@@ -192,7 +202,7 @@ def ingest_archive(
         parquet_sha256 = file_sha256(partial)
         partial.replace(destination)
         stat = destination.stat()
-        return IngestedResource(
+        metadata = IngestedResource(
             archive_sha256=archive_sha256,
             parquet_sha256=parquet_sha256,
             parquet_size=stat.st_size,
@@ -201,6 +211,23 @@ def ingest_archive(
             first_timestamp=first.to_pydatetime(),
             last_timestamp=last.to_pydatetime(),
         )
+        LOGGER.info(
+            "Archive ingestion complete: day=%s rows=%d first=%s last=%s "
+            "bytes=%d path=%s",
+            resource.day,
+            rows,
+            metadata.first_timestamp,
+            metadata.last_timestamp,
+            stat.st_size,
+            destination,
+        )
+        return metadata
     except BaseException:
         partial.unlink(missing_ok=True)
+        LOGGER.exception(
+            "Archive ingestion failed: day=%s url=%s destination=%s",
+            resource.day,
+            resource.url,
+            destination,
+        )
         raise
