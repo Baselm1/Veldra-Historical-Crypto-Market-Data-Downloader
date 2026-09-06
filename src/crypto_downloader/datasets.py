@@ -232,7 +232,7 @@ class DatasetSpec:
         generated = ("is_synthetic",) if self.supports_gap_policy else ()
         return (*self.stored_columns, *generated)
 
-    def resolve_interval(self, value: object) -> str:
+    def resolve_interval(self, value: object) -> str | None:
         """Validate an output interval against this dataset.
 
         Args:
@@ -241,6 +241,13 @@ class DatasetSpec:
         Returns:
             The supported interval spelling.
         """
+        if not self.needs_interval:
+            if value is None:
+                return None
+            raise ValueError(f"{self.product}/{self.name} does not accept an interval")
+        if value is None:
+            assert self.base_interval is not None
+            return self.base_interval
         if not isinstance(value, str):
             raise TypeError("interval must be a string")
         if value.endswith("s") and value[:-1].isdigit():
@@ -253,6 +260,24 @@ class DatasetSpec:
                 f"unsupported interval '{value}'; supported intervals: {supported}"
             )
         return value
+
+    def resolve_gap_policy(self, value: str | None) -> str | None:
+        """Apply dataset-specific missing-candle policy support.
+
+        Args:
+            value: The validated caller policy, or ``None`` when omitted.
+
+        Returns:
+            The effective kline policy, or ``None`` for raw datasets.
+
+        Raises:
+            ValueError: If a raw dataset receives a candle-only policy.
+        """
+        if self.supports_gap_policy:
+            return "forward" if value is None else value
+        if value is not None:
+            raise ValueError(f"{self.product}/{self.name} does not accept gap_policy")
+        return None
 
     def resolve_columns(self, value: ColumnSelection) -> dict[str, str]:
         """Resolve requested canonical columns and aliases.

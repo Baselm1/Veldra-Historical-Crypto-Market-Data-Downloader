@@ -342,7 +342,7 @@ class Downloader:
         desired_columns: object = None,
         refresh: bool = False,
         offline: bool = False,
-        gap_policy: object = "forward",
+        gap_policy: object = None,
         progress: bool = True,
     ) -> Result | list[Result]:
         """Return data and structured reports for requested pairs.
@@ -374,7 +374,7 @@ class Downloader:
             gap_policy=gap_policy,
         )
         specification = get_dataset(request.product, request.dataset)
-        specification.resolve_interval(request.interval)
+        request = request.resolve_dataset(specification)
         if request.product not in self.source.products:
             raise ValueError(
                 f"unsupported product for {self.source.code}: {request.product}"
@@ -470,7 +470,7 @@ class Downloader:
         desired_columns: object = None,
         refresh: bool = False,
         offline: bool = False,
-        gap_policy: object = "forward",
+        gap_policy: object = None,
         progress: bool = True,
     ) -> pd.DataFrame | list[pd.DataFrame]:
         """Return only DataFrames for requested pairs.
@@ -520,7 +520,7 @@ class Downloader:
         desired_columns: object = None,
         refresh: bool = False,
         offline: bool = False,
-        gap_policy: object = "forward",
+        gap_policy: object = None,
         progress: bool = True,
     ) -> pd.DataFrame | list[pd.DataFrame]:
         """Run the DataFrame pipeline without blocking an async event loop.
@@ -576,7 +576,7 @@ def get_results(
     market_refresh_hours: float = 24.0,
     refresh: bool = False,
     offline: bool = False,
-    gap_policy: object = "forward",
+    gap_policy: object = None,
     progress: bool = True,
 ) -> Result | list[Result]:
     """Create a downloader and return requested data with reports.
@@ -645,7 +645,7 @@ def get_data(
     market_refresh_hours: float = 24.0,
     refresh: bool = False,
     offline: bool = False,
-    gap_policy: object = "forward",
+    gap_policy: object = None,
     progress: bool = True,
 ) -> pd.DataFrame | list[pd.DataFrame]:
     """Create a downloader and return only requested DataFrames.
@@ -714,7 +714,7 @@ async def aget_data(
     market_refresh_hours: float = 24.0,
     refresh: bool = False,
     offline: bool = False,
-    gap_policy: object = "forward",
+    gap_policy: object = None,
     progress: bool = True,
 ) -> pd.DataFrame | list[pd.DataFrame]:
     """Create a downloader and run it without blocking an async event loop.

@@ -5,6 +5,7 @@ from datetime import date, datetime, timedelta, timezone
 import pandas as pd
 import pytest
 
+from crypto_downloader.datasets import DatasetSpec, get_dataset
 from crypto_downloader.request import Request, normalize_pair, parse_timestamp
 
 UTC = timezone.utc
@@ -60,6 +61,90 @@ def test_defaults_and_single_pair_shape() -> None:
     assert request.columns is None
     assert request.product == "spot"
     assert request.dataset == "klines"
+
+
+def test_request_resolution_applies_kline_defaults_after_dataset_lookup() -> None:
+    """Confirm unspecified kline options resolve from the declared dataset."""
+    request = Request.parse(
+        "BTCUSDT",
+        "2024-01-01",
+        "2024-01-01",
+        gap_policy=None,
+    )
+
+    resolved = request.resolve_dataset(get_dataset("spot", "klines"))
+
+    assert request.interval is None
+    assert request.gap_policy is None
+    assert resolved.interval == "1m"
+    assert resolved.gap_policy == "forward"
+    assert resolved.columns == {
+        column: column for column in get_dataset("spot", "klines").output_columns
+    }
+
+
+def test_request_resolution_rejects_options_unsupported_by_raw_data() -> None:
+    """Confirm a raw dataset rejects interval and gap-policy inputs."""
+    raw = DatasetSpec(
+        product="spot",
+        name="snapshot",
+        remote_name="snapshot",
+        source_columns=("event_time", "value"),
+        stored_columns=("event_time", "value"),
+        time_column="event_time",
+        base_interval=None,
+        output_intervals=(),
+        aliases={},
+    )
+    request = Request.parse(
+        "BTCUSDT",
+        "2024-01-01",
+        "2024-01-01",
+        product="spot",
+        dataset="snapshot",
+        gap_policy=None,
+    )
+
+    assert request.resolve_dataset(raw).interval is None
+    with pytest.raises(ValueError, match="does not accept an interval"):
+        Request.parse(
+            "BTCUSDT",
+            "2024-01-01",
+            "2024-01-01",
+            product="spot",
+            dataset="snapshot",
+            interval="1m",
+            gap_policy=None,
+        ).resolve_dataset(raw)
+    with pytest.raises(ValueError, match="does not accept gap_policy"):
+        Request.parse(
+            "BTCUSDT",
+            "2024-01-01",
+            "2024-01-01",
+            product="spot",
+            dataset="snapshot",
+            gap_policy="keep",
+        ).resolve_dataset(raw)
+
+
+def test_request_resolution_rejects_a_mismatched_dataset() -> None:
+    """Confirm product and dataset identity cannot be resolved accidentally."""
+    request = parse_request(product="spot", dataset="klines")
+
+    with pytest.raises(ValueError, match="does not match"):
+        request.resolve_dataset(
+            DatasetSpec(
+                product="spot",
+                name="snapshot",
+                remote_name="snapshot",
+                source_columns=("event_time",),
+                stored_columns=("event_time",),
+                time_column="event_time",
+                base_interval=None,
+                output_intervals=(),
+                aliases={},
+            )
+        )
 
 
 def test_pair_lists_preserve_order_duplicates_and_caller_input() -> None:

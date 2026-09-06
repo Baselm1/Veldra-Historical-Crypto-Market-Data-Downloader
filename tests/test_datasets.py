@@ -126,6 +126,20 @@ def test_interval_less_snapshot_capabilities_are_declared_without_a_subclass() -
     assert snapshot.output_columns == ("event_time", "value")
 
 
+def test_capabilities_apply_dataset_specific_interval_and_gap_defaults() -> None:
+    """Confirm raw datasets reject candle-only request options."""
+    snapshot = minimal_snapshot()
+
+    assert spot_klines().resolve_interval(None) == "1m"
+    assert spot_klines().resolve_gap_policy(None) == "forward"
+    assert snapshot.resolve_interval(None) is None
+    assert snapshot.resolve_gap_policy(None) is None
+    with pytest.raises(ValueError, match="does not accept an interval"):
+        snapshot.resolve_interval("1m")
+    with pytest.raises(ValueError, match="does not accept gap_policy"):
+        snapshot.resolve_gap_policy("forward")
+
+
 @pytest.mark.parametrize(
     ("changes", "message"),
     [
@@ -168,7 +182,7 @@ def test_supported_output_intervals_are_returned(interval: str) -> None:
 
 @pytest.mark.parametrize(
     "interval",
-    [None, 1, True, [], "", "1s", "7m", "1M", "1month"],
+    [1, True, [], "", "1s", "7m", "1M", "1month"],
 )
 def test_unsupported_output_intervals_are_rejected(interval: object) -> None:
     """Confirm malformed, finer, and arbitrary output intervals fail.

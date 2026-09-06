@@ -1,12 +1,15 @@
 """Validate request values before the downloader uses disk or the network."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, time, timedelta, timezone
 import logging
 import re
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 import pandas as pd
+
+if TYPE_CHECKING:
+    from .datasets import DatasetSpec
 
 type TimeRange = tuple[datetime, datetime]
 type ColumnSelection = dict[str, str] | None
@@ -198,8 +201,14 @@ def parse_interval(value: object, *, default: object) -> str:
     Returns:
         A positive interval with a supported unit spelling.
     """
-    default_value = _interval_value(default, name="base_interval")
-    return default_value if value is None else _interval_value(value, name="interval")
+    default_value = (
+        _interval_value(default, name="base_interval") if default is not None else None
+    )
+    if value is None:
+        if default_value is None:
+            raise TypeError("base_interval must be a string")
+        return default_value
+    return _interval_value(value, name="interval")
 
 
 def _column_text(value: str) -> bool:
@@ -312,11 +321,11 @@ class Request:
     single: bool
     start: datetime
     end: datetime
-    interval: str
+    interval: str | None
     columns: ColumnSelection
     product: str = "spot"
     dataset: str = "klines"
-    gap_policy: str = "forward"
+    gap_policy: str | None = "forward"
 
     @classmethod
     def parse(
@@ -327,7 +336,7 @@ class Request:
         *,
         interval: object = None,
         desired_columns: object = None,
-        base_interval: object = "1m",
+        base_interval: object = None,
         product: object = "spot",
         dataset: object = "klines",
         gap_policy: object = "forward",
@@ -352,9 +361,13 @@ class Request:
         start, end = parse_range(starting_date, end_date)
         parsed_product = parse_identifier(product, name="product")
         parsed_dataset = parse_identifier(dataset, name="dataset")
-        parsed_interval = parse_interval(interval, default=base_interval)
+        parsed_interval = (
+            None
+            if interval is None and base_interval is None
+            else parse_interval(interval, default=base_interval)
+        )
         columns = parse_columns(desired_columns)
-        parsed_gap_policy = parse_gap_policy(gap_policy)
+        parsed_gap_policy = None if gap_policy is None else parse_gap_policy(gap_policy)
         request = cls(
             pairs=parsed_pairs,
             single=single,
@@ -380,3 +393,34 @@ class Request:
             request.gap_policy,
         )
         return request
+
+    def resolve_dataset(self, dataset: "DatasetSpec") -> "Request":
+        """Apply one dataset's defaults and capability restrictions.
+
+        Args:
+            dataset: The resolved product and dataset declaration.
+
+        Returns:
+            A request with effective interval, columns, and gap policy.
+
+        Raises:
+            ValueError: If the dataset does not match this request or rejects an option.
+        """
+        if (dataset.product, dataset.name) != (self.product, self.dataset):
+            raise ValueError("dataset declaration does not match the request")
+        resolved = replace(
+            self,
+            interval=dataset.resolve_interval(self.interval),
+            columns=dataset.resolve_columns(self.columns),
+            gap_policy=dataset.resolve_gap_policy(self.gap_policy),
+        )
+        LOGGER.debug(
+            "Request resolved: product=%s dataset=%s interval=%s columns=%s "
+            "gap_policy=%s",
+            resolved.product,
+            resolved.dataset,
+            resolved.interval,
+            resolved.columns,
+            resolved.gap_policy,
+        )
+        return resolved

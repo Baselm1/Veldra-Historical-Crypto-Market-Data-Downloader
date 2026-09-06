@@ -476,6 +476,8 @@ def query_parquet(
     output_interval = dataset.resolve_interval(
         dataset.base_interval if interval is None else interval
     )
+    if output_interval is None:
+        raise ValueError("interval-less dataset querying is not implemented")
     if not paths:
         LOGGER.info(
             "Parquet query skipped: product=%s dataset=%s paths=0 range=[%s, %s)",

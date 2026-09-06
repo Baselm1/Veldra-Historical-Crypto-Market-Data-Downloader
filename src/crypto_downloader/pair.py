@@ -40,7 +40,7 @@ def _result(pair: str, request: Request, dataset: DatasetSpec) -> Result:
         requested_range=(request.start, request.end),
         product=request.product,
         dataset=request.dataset,
-        gap_policy=request.gap_policy,
+        gap_policy=request.gap_policy or "keep",
     )
 
 
@@ -332,6 +332,9 @@ def _query_result(
         source_code: The source identifier used in diagnostics.
         reporter: The optional Rich activity reporter.
     """
+    gap_policy = request.gap_policy
+    if gap_policy is None:
+        raise ValueError("interval-less dataset querying is not implemented")
     result.gaps = missing_ranges(
         connection,
         paths,
@@ -350,16 +353,16 @@ def _query_result(
         )
         reporter.warning(
             f"{result.pair}: {missing:,} missing candle(s) across "
-            f"{len(result.gaps):,} internal gap(s); policy {request.gap_policy}"
+            f"{len(result.gaps):,} internal gap(s); policy {gap_policy}"
         )
         LOGGER.warning(
             "Missing source candles: pair=%s count=%d gaps=%d policy=%s",
             result.pair,
             missing,
             len(result.gaps),
-            request.gap_policy,
+            gap_policy,
         )
-        if request.gap_policy == "raise":
+        if gap_policy == "raise":
             raise MissingCandlesError(result.pair, result.gaps)
     columns = dataset.resolve_columns(request.columns)
     result.data = query_parquet(
@@ -369,7 +372,7 @@ def _query_result(
         used_range[0],
         used_range[1],
         columns,
-        gap_policy=request.gap_policy,
+        gap_policy=gap_policy,
         interval=request.interval,
     )
 
