@@ -25,7 +25,7 @@ def _key_values(key: ResourceKey) -> tuple[str, str, str, str, str]:
     Returns:
         The five values forming the resource key.
     """
-    return key.source, key.product, key.dataset, key.symbol, key.interval
+    return key.source, key.product, key.dataset, key.symbol, key.interval or ""
 
 
 def _validate_market_snapshot(markets: Sequence[Market]) -> None:
@@ -155,6 +155,11 @@ class Catalog:
                 base_asset VARCHAR,
                 quote_asset VARCHAR,
                 status VARCHAR,
+                pair VARCHAR,
+                contract_type VARCHAR,
+                contract_size DOUBLE,
+                onboard_time TIMESTAMP,
+                delivery_time TIMESTAMP,
                 refreshed_at TIMESTAMP,
                 PRIMARY KEY (source, product, symbol)
             );
@@ -166,6 +171,7 @@ class Catalog:
                 symbol VARCHAR NOT NULL,
                 interval VARCHAR NOT NULL,
                 day DATE NOT NULL,
+                archive_symbol VARCHAR,
                 url VARCHAR NOT NULL,
                 checksum_url VARCHAR NOT NULL,
                 status VARCHAR NOT NULL DEFAULT 'discovered',
@@ -177,6 +183,8 @@ class Catalog:
                 row_count BIGINT,
                 first_timestamp TIMESTAMP,
                 last_timestamp TIMESTAMP,
+                timestamp_column VARCHAR,
+                schema_version INTEGER NOT NULL DEFAULT 1,
                 error VARCHAR,
                 last_attempt_at TIMESTAMP,
                 PRIMARY KEY (source, product, dataset, symbol, interval, day)
@@ -211,6 +219,20 @@ class Catalog:
             """)
         self.connection.execute(
             "ALTER TABLE markets ADD COLUMN IF NOT EXISTS refreshed_at TIMESTAMP"
+        )
+        for statement in (
+            "ALTER TABLE markets ADD COLUMN IF NOT EXISTS pair VARCHAR",
+            "ALTER TABLE markets ADD COLUMN IF NOT EXISTS contract_type VARCHAR",
+            "ALTER TABLE markets ADD COLUMN IF NOT EXISTS contract_size DOUBLE",
+            "ALTER TABLE markets ADD COLUMN IF NOT EXISTS onboard_time TIMESTAMP",
+            "ALTER TABLE markets ADD COLUMN IF NOT EXISTS delivery_time TIMESTAMP",
+            "ALTER TABLE resources ADD COLUMN IF NOT EXISTS archive_symbol VARCHAR",
+            "ALTER TABLE resources ADD COLUMN IF NOT EXISTS timestamp_column VARCHAR",
+            "ALTER TABLE resources ADD COLUMN IF NOT EXISTS schema_version INTEGER",
+        ):
+            self.connection.execute(statement)
+        self.connection.execute(
+            "UPDATE resources SET schema_version = 1 WHERE schema_version IS NULL"
         )
         self.connection.execute("""
             INSERT INTO discovery_segments
@@ -253,14 +275,29 @@ class Catalog:
         """
         rows = self.connection.execute(
             """
-            SELECT symbol, normalized_symbol, base_asset, quote_asset, status
+            SELECT symbol, normalized_symbol, base_asset, quote_asset, status,
+                   pair, contract_type, contract_size, onboard_time, delivery_time
             FROM markets
             WHERE source = ? AND product = ?
             ORDER BY symbol
             """,
             [source, product],
         ).fetchall()
-        return [Market(*row) for row in rows]
+        return [
+            Market(
+                symbol=row[0],
+                normalized_symbol=row[1],
+                base_asset=row[2],
+                quote_asset=row[3],
+                status=row[4],
+                pair=row[5],
+                contract_type=row[6],
+                contract_size=row[7],
+                onboard_time=_utc_timestamp(row[8]),
+                delivery_time=_utc_timestamp(row[9]),
+            )
+            for row in rows
+        ]
 
     def market_snapshot_at(self, source: str, product: str) -> datetime | None:
         """Return when one complete market snapshot was last stored.
@@ -302,6 +339,19 @@ class Catalog:
                 market.base_asset,
                 market.quote_asset,
                 market.status,
+                market.pair,
+                market.contract_type,
+                market.contract_size,
+                (
+                    _database_timestamp(market.onboard_time)
+                    if market.onboard_time is not None
+                    else None
+                ),
+                (
+                    _database_timestamp(market.delivery_time)
+                    if market.delivery_time is not None
+                    else None
+                ),
             )
             for market in markets
         ]
@@ -315,6 +365,11 @@ class Catalog:
                 "base_asset",
                 "quote_asset",
                 "status",
+                "pair",
+                "contract_type",
+                "contract_size",
+                "onboard_time",
+                "delivery_time",
             ),
         )
         self.connection.register("incoming_markets", frame)
@@ -328,16 +383,23 @@ class Catalog:
                 self.connection.execute("""
                     INSERT INTO markets (
                         source, product, symbol, normalized_symbol,
-                        base_asset, quote_asset, status, refreshed_at
+                        base_asset, quote_asset, status, pair, contract_type,
+                        contract_size, onboard_time, delivery_time, refreshed_at
                     )
                     SELECT source, product, symbol, normalized_symbol,
-                           base_asset, quote_asset, status, current_timestamp
+                           base_asset, quote_asset, status, pair, contract_type,
+                           contract_size, onboard_time, delivery_time, current_timestamp
                     FROM incoming_markets
                     ON CONFLICT (source, product, symbol) DO UPDATE SET
                         normalized_symbol = excluded.normalized_symbol,
                         base_asset = excluded.base_asset,
                         quote_asset = excluded.quote_asset,
                         status = excluded.status,
+                        pair = excluded.pair,
+                        contract_type = excluded.contract_type,
+                        contract_size = excluded.contract_size,
+                        onboard_time = excluded.onboard_time,
+                        delivery_time = excluded.delivery_time,
                         refreshed_at = excluded.refreshed_at
                     """)
         finally:
@@ -430,7 +492,15 @@ class Catalog:
         _validate_discovery(start_day, end_day, resources)
         key_values = _key_values(key)
         rows = [
-            (*key_values, resource.day, resource.url, resource.checksum_url)
+            (
+                *key_values,
+                resource.day,
+                resource.archive_symbol,
+                resource.url,
+                resource.checksum_url,
+                resource.timestamp_column,
+                resource.schema_version,
+            )
             for resource in resources
         ]
         frame = pd.DataFrame.from_records(
@@ -442,8 +512,11 @@ class Catalog:
                 "symbol",
                 "interval",
                 "day",
+                "archive_symbol",
                 "url",
                 "checksum_url",
+                "timestamp_column",
+                "schema_version",
             ),
         )
         if rows:
@@ -454,16 +527,21 @@ class Catalog:
                     self.connection.execute("""
                     INSERT INTO resources (
                         source, product, dataset, symbol, interval, day,
-                        url, checksum_url
+                        archive_symbol, url, checksum_url, timestamp_column,
+                        schema_version
                     )
                     SELECT source, product, dataset, symbol, interval, day,
-                           url, checksum_url
+                           archive_symbol, url, checksum_url, timestamp_column,
+                           schema_version
                     FROM incoming_resources
                     ON CONFLICT (
                         source, product, dataset, symbol, interval, day
                     ) DO UPDATE SET
                         url = excluded.url,
-                        checksum_url = excluded.checksum_url
+                        checksum_url = excluded.checksum_url,
+                        archive_symbol = excluded.archive_symbol,
+                        timestamp_column = excluded.timestamp_column,
+                        schema_version = excluded.schema_version
                     """)
                 self.connection.execute(
                     """
@@ -522,7 +600,8 @@ class Catalog:
             """
             SELECT day, url, checksum_url, status, archive_sha256,
                    parquet_path, parquet_sha256, parquet_size, parquet_mtime_ns, row_count,
-                   first_timestamp, last_timestamp, error, last_attempt_at
+                   first_timestamp, last_timestamp, archive_symbol, timestamp_column,
+                   schema_version, error, last_attempt_at
             FROM resources
             WHERE source = ? AND product = ? AND dataset = ?
               AND symbol = ? AND interval = ?
@@ -545,8 +624,11 @@ class Catalog:
                 row_count=row[9],
                 first_timestamp=_utc_timestamp(row[10]),
                 last_timestamp=_utc_timestamp(row[11]),
-                error=row[12],
-                last_attempt_at=_utc_timestamp(row[13]),
+                archive_symbol=row[12],
+                timestamp_column=row[13],
+                schema_version=row[14],
+                error=row[15],
+                last_attempt_at=_utc_timestamp(row[16]),
             )
             for row in rows
         ]
@@ -578,6 +660,8 @@ class Catalog:
                 row_count = ?,
                 first_timestamp = ?,
                 last_timestamp = ?,
+                timestamp_column = ?,
+                schema_version = ?,
                 error = NULL,
                 last_attempt_at = current_timestamp
             WHERE source = ? AND product = ? AND dataset = ?
@@ -593,6 +677,8 @@ class Catalog:
                 metadata.row_count,
                 _database_timestamp(metadata.first_timestamp),
                 _database_timestamp(metadata.last_timestamp),
+                metadata.timestamp_column,
+                metadata.schema_version,
                 *_key_values(key),
                 day,
             ],

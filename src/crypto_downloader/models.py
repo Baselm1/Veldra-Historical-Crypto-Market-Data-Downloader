@@ -24,6 +24,11 @@ class Market:
     base_asset: str | None = None
     quote_asset: str | None = None
     status: str | None = None
+    pair: str | None = None
+    contract_type: str | None = None
+    contract_size: float | None = None
+    onboard_time: datetime | None = None
+    delivery_time: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -34,7 +39,7 @@ class ResourceKey:
     product: str
     dataset: str
     symbol: str
-    interval: str
+    interval: str | None
 
 
 @dataclass(frozen=True)
@@ -53,6 +58,9 @@ class Resource:
     row_count: int | None = None
     first_timestamp: datetime | None = None
     last_timestamp: datetime | None = None
+    archive_symbol: str | None = None
+    timestamp_column: str | None = None
+    schema_version: int = 1
     error: str | None = None
     last_attempt_at: datetime | None = None
 
@@ -68,6 +76,8 @@ class IngestedResource:
     row_count: int
     first_timestamp: datetime
     last_timestamp: datetime
+    timestamp_column: str | None = None
+    schema_version: int = 1
 
 
 @dataclass(frozen=True)

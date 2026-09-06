@@ -44,7 +44,7 @@ def parquet_path(data_dir: Path, key: ResourceKey, day: date) -> Path:
         / key.product
         / key.dataset
         / key.symbol
-        / key.interval
+        / (key.interval or "raw")
         / f"{day.isoformat()}.parquet"
     )
 

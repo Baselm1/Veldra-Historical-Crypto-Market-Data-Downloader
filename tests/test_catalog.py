@@ -78,6 +78,113 @@ def test_catalog_creates_the_metadata_tables_and_uses_utc(catalog: Catalog) -> N
     assert timezone is not None
     assert timezone[0] == "UTC"
 
+    market_columns = {
+        row[1]
+        for row in catalog.connection.execute("PRAGMA table_info('markets')").fetchall()
+    }
+    resource_columns = {
+        row[1]
+        for row in catalog.connection.execute(
+            "PRAGMA table_info('resources')"
+        ).fetchall()
+    }
+    assert {
+        "pair",
+        "contract_type",
+        "contract_size",
+        "onboard_time",
+        "delivery_time",
+    } <= market_columns
+    assert {"archive_symbol", "timestamp_column", "schema_version"} <= resource_columns
+
+
+def test_catalog_round_trips_extended_market_and_resource_metadata(
+    catalog: Catalog,
+) -> None:
+    """Confirm generic Futures-ready metadata remains available after storage."""
+    market = Market(
+        "BTCUSD_PERP",
+        "BTCUSDPERP",
+        "BTC",
+        "USD",
+        "TRADING",
+        pair="BTCUSD",
+        contract_type="PERPETUAL",
+        contract_size=100.0,
+        onboard_time=datetime(2020, 8, 10, tzinfo=UTC),
+        delivery_time=datetime(2100, 1, 1, tzinfo=UTC),
+    )
+    item = Resource(
+        date(2025, 1, 1),
+        "https://data.example/BTCUSD-2025-01-01.zip",
+        "https://data.example/BTCUSD-2025-01-01.zip.CHECKSUM",
+        archive_symbol="BTCUSD",
+        timestamp_column="event_time",
+        schema_version=2,
+    )
+
+    catalog.save_markets("binance", "cm", [market])
+    catalog.save_discovery(
+        ResourceKey("binance", "cm", "trades", "BTCUSD_PERP", None),
+        date(2025, 1, 1),
+        date(2025, 1, 1),
+        [item],
+    )
+
+    assert catalog.markets("binance", "cm") == [market]
+    assert catalog.resources(
+        ResourceKey("binance", "cm", "trades", "BTCUSD_PERP", None),
+        date(2025, 1, 1),
+        date(2025, 1, 1),
+    ) == [item]
+
+
+def test_catalog_migrates_existing_spot_metadata_without_losing_rows(
+    tmp_path: Path,
+) -> None:
+    """Confirm a legacy Spot catalog gains new columns and retains valid rows."""
+    path = tmp_path / "catalog.duckdb"
+    connection = duckdb.connect(str(path))
+    connection.execute("""
+        CREATE TABLE markets (
+            source VARCHAR NOT NULL, product VARCHAR NOT NULL, symbol VARCHAR NOT NULL,
+            normalized_symbol VARCHAR NOT NULL, base_asset VARCHAR, quote_asset VARCHAR,
+            status VARCHAR, PRIMARY KEY (source, product, symbol)
+        )
+        """)
+    connection.execute("""
+        CREATE TABLE resources (
+            source VARCHAR NOT NULL, product VARCHAR NOT NULL, dataset VARCHAR NOT NULL,
+            symbol VARCHAR NOT NULL, interval VARCHAR NOT NULL, day DATE NOT NULL,
+            url VARCHAR NOT NULL, checksum_url VARCHAR NOT NULL,
+            status VARCHAR NOT NULL DEFAULT 'discovered', archive_sha256 VARCHAR,
+            parquet_path VARCHAR, parquet_sha256 VARCHAR, parquet_size BIGINT,
+            parquet_mtime_ns BIGINT, row_count BIGINT, first_timestamp TIMESTAMP,
+            last_timestamp TIMESTAMP, error VARCHAR, last_attempt_at TIMESTAMP,
+            PRIMARY KEY (source, product, dataset, symbol, interval, day)
+        )
+        """)
+    connection.execute(
+        "INSERT INTO markets VALUES ('binance', 'spot', 'BTCUSDT', 'BTCUSDT', "
+        "'BTC', 'USDT', 'TRADING')"
+    )
+    connection.execute(
+        "INSERT INTO resources (source, product, dataset, symbol, interval, day, url, "
+        "checksum_url) VALUES ('binance', 'spot', 'klines', 'BTCUSDT', '1m', "
+        "DATE '2025-01-01', 'https://data.example/one.zip', "
+        "'https://data.example/one.zip.CHECKSUM')"
+    )
+
+    catalog = Catalog(connection)
+
+    assert catalog.markets("binance", "spot") == [
+        Market("BTCUSDT", "BTCUSDT", "BTC", "USDT", "TRADING")
+    ]
+    assert catalog.resources(KEY, date(2025, 1, 1), date(2025, 1, 1)) == [
+        resource(name="one")
+    ]
+    connection.close()
+
 
 def test_open_catalog_creates_parent_directories_and_persists(tmp_path: Path) -> None:
     """Confirm a file catalog survives closing and reopening."""
