@@ -1,5 +1,6 @@
 """Normalize and validate tabular source data."""
 
+from collections.abc import Callable
 from datetime import date
 import hashlib
 import logging
@@ -105,7 +106,7 @@ def _epoch(values: pd.Series, column: str) -> pd.Series:
         raise DataValidationError(f"invalid {column} value") from error
 
 
-def normalize_chunk(frame: pd.DataFrame, dataset: DatasetSpec) -> pd.DataFrame:
+def _normalize_spot_klines(frame: pd.DataFrame, dataset: DatasetSpec) -> pd.DataFrame:
     """Convert one source CSV chunk into its canonical stored schema.
 
     Args:
@@ -115,11 +116,6 @@ def normalize_chunk(frame: pd.DataFrame, dataset: DatasetSpec) -> pd.DataFrame:
     Returns:
         A new DataFrame containing normalized values and column names.
     """
-    if tuple(frame.columns) != dataset.source_columns:
-        raise DataValidationError("CSV does not match the expected source columns")
-    if (dataset.product, dataset.name) != ("spot", "klines"):
-        raise ValueError(f"unsupported normalizer: {dataset.product}/{dataset.name}")
-
     result = pd.DataFrame(index=frame.index)
     result["open_time"] = _epoch(frame["open_time"], "open_time")
     for column in ("open", "high", "low", "close", "volume"):
@@ -281,7 +277,7 @@ def _validate_ohlc(frame: pd.DataFrame) -> None:
         raise DataValidationError("low is above another OHLC price")
 
 
-def validate_chunk(
+def _validate_spot_kline_chunk(
     frame: pd.DataFrame,
     dataset: DatasetSpec,
     day: date,
@@ -298,13 +294,6 @@ def validate_chunk(
     Returns:
         The final timestamp in the validated chunk.
     """
-    if tuple(frame.columns) != dataset.stored_columns:
-        raise DataValidationError("chunk does not match the expected stored columns")
-    if frame.empty:
-        raise DataValidationError("chunk cannot be empty")
-    if (dataset.product, dataset.name) != ("spot", "klines"):
-        raise ValueError(f"unsupported validator: {dataset.product}/{dataset.name}")
-
     last = _validate_timestamps(frame, dataset, day, previous_timestamp)
     _validate_numbers(frame, dataset)
     _validate_ohlc(frame)
@@ -317,3 +306,75 @@ def validate_chunk(
         last,
     )
     return last
+
+
+type Normalizer = Callable[[pd.DataFrame, DatasetSpec], pd.DataFrame]
+type Validator = Callable[
+    [pd.DataFrame, DatasetSpec, date, pd.Timestamp | None], pd.Timestamp
+]
+
+_NORMALIZERS: dict[tuple[str, str], Normalizer] = {
+    ("spot", "klines"): _normalize_spot_klines,
+}
+_VALIDATORS: dict[tuple[str, str], Validator] = {
+    ("spot", "klines"): _validate_spot_kline_chunk,
+}
+
+
+def normalize_chunk(frame: pd.DataFrame, dataset: DatasetSpec) -> pd.DataFrame:
+    """Convert one declared source CSV chunk into its stored schema.
+
+    Args:
+        frame: The raw source rows with declared source column names.
+        dataset: The dataset declaration selecting a normalizer.
+
+    Returns:
+        A new DataFrame containing canonical stored columns.
+
+    Raises:
+        DataValidationError: If the source columns do not match the declaration.
+        ValueError: If the dataset has no registered normalizer.
+    """
+    if tuple(frame.columns) != dataset.source_columns:
+        raise DataValidationError("CSV does not match the expected source columns")
+    try:
+        normalizer = _NORMALIZERS[(dataset.product, dataset.name)]
+    except KeyError as error:
+        raise ValueError(
+            f"unsupported normalizer: {dataset.product}/{dataset.name}"
+        ) from error
+    return normalizer(frame, dataset)
+
+
+def validate_chunk(
+    frame: pd.DataFrame,
+    dataset: DatasetSpec,
+    day: date,
+    previous_timestamp: pd.Timestamp | None = None,
+) -> pd.Timestamp:
+    """Validate one canonical chunk with its dataset-specific rules.
+
+    Args:
+        frame: The normalized rows to validate.
+        dataset: The dataset declaration selecting a validator.
+        day: The UTC source day that must contain every row.
+        previous_timestamp: The final timestamp from the preceding chunk.
+
+    Returns:
+        The final timestamp in the validated chunk.
+
+    Raises:
+        DataValidationError: If the canonical schema is invalid or empty.
+        ValueError: If the dataset has no registered validator.
+    """
+    if tuple(frame.columns) != dataset.stored_columns:
+        raise DataValidationError("chunk does not match the expected stored columns")
+    if frame.empty:
+        raise DataValidationError("chunk cannot be empty")
+    try:
+        validator = _VALIDATORS[(dataset.product, dataset.name)]
+    except KeyError as error:
+        raise ValueError(
+            f"unsupported validator: {dataset.product}/{dataset.name}"
+        ) from error
+    return validator(frame, dataset, day, previous_timestamp)

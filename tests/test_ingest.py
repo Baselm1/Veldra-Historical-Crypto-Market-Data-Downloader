@@ -1,6 +1,7 @@
 """Test verified ZIP-to-Parquet ingestion."""
 
 from datetime import date
+from dataclasses import replace
 import hashlib
 from io import BytesIO
 from pathlib import Path
@@ -113,7 +114,39 @@ def test_ingest_archive_writes_atomic_canonical_parquet(
     assert metadata.parquet_mtime_ns == destination.stat().st_mtime_ns
     assert metadata.first_timestamp == frame.iloc[0]["open_time"].to_pydatetime()
     assert metadata.last_timestamp == frame.iloc[-1]["open_time"].to_pydatetime()
+    assert metadata.timestamp_column == SPOT_KLINES.time_column
+    assert metadata.schema_version == SPOT_KLINES.schema_version
     assert not destination.with_name("result.parquet.part").exists()
+
+
+def test_ingest_archive_reads_a_dataset_declared_csv_header(tmp_path: Path) -> None:
+    """Confirm header-bearing archives use their declared source schema."""
+    dataset = replace(SPOT_KLINES, csv_header="present", schema_version=2)
+    source = (FIXTURES / "binance_spot_klines_2024-01-01.csv").read_text()
+    content = (",".join(dataset.source_columns) + "\n" + source).encode()
+    payload = archive_bytes(content)
+    destination = tmp_path / "headered.parquet"
+
+    with client_for(payload) as client:
+        metadata = ingest_archive(client, RESOURCE, dataset, destination, chunk_rows=1)
+
+    frame = pd.read_parquet(destination)
+    assert tuple(frame.columns) == dataset.stored_columns
+    assert len(frame) == metadata.row_count == 2
+    assert metadata.timestamp_column == "open_time"
+    assert metadata.schema_version == 2
+
+
+def test_ingest_archive_rejects_a_wrong_declared_csv_header(tmp_path: Path) -> None:
+    """Confirm a source header must match the dataset declaration exactly."""
+    dataset = replace(SPOT_KLINES, csv_header="present")
+    source = (FIXTURES / "binance_spot_klines_2024-01-01.csv").read_text()
+    content = ("wrong," + ",".join(dataset.source_columns[1:]) + "\n" + source).encode()
+    payload = archive_bytes(content)
+
+    with client_for(payload) as client:
+        with pytest.raises(DataValidationError, match="source columns"):
+            ingest_archive(client, RESOURCE, dataset, tmp_path / "wrong-header.parquet")
 
 
 @pytest.mark.parametrize(

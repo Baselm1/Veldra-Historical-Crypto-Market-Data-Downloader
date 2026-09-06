@@ -100,14 +100,15 @@ def _write_chunks(
         with archive.open(member, "r") as source:
             chunks = pd.read_csv(
                 source,
-                header=None,
+                header=dataset.csv_header_row,
                 dtype=str,
                 chunksize=chunk_rows,
             )
             for raw in chunks:
                 if raw.shape[1] != len(dataset.source_columns):
                     raise ArchiveError("CSV does not have the expected field count")
-                raw.columns = dataset.source_columns
+                if dataset.csv_header == "absent":
+                    raw.columns = dataset.source_columns
                 frame = normalize_chunk(raw, dataset)
                 previous = validate_chunk(
                     frame, dataset, resource.day, previous_timestamp=previous
@@ -210,6 +211,8 @@ def ingest_archive(
             row_count=rows,
             first_timestamp=first.to_pydatetime(),
             last_timestamp=last.to_pydatetime(),
+            timestamp_column=dataset.time_column,
+            schema_version=dataset.schema_version,
         )
         LOGGER.info(
             "Archive ingestion complete: day=%s rows=%d first=%s last=%s "
