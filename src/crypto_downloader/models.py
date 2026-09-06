@@ -33,13 +33,14 @@ class Market:
 
 @dataclass(frozen=True)
 class ResourceKey:
-    """Identify one source, product, dataset, symbol, and interval."""
+    """Identify one requested dataset and optional source archive symbol."""
 
     source: str
     product: str
     dataset: str
     symbol: str
     interval: str | None
+    archive_symbol: str | None = None
 
 
 @dataclass(frozen=True)

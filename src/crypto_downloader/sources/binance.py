@@ -11,7 +11,7 @@ import xml.etree.ElementTree as ElementTree
 import httpx
 
 from ..http import get
-from ..datasets import DatasetSpec
+from ..datasets import DatasetSpec, get_dataset
 from ..ingest import ingest_archive
 from ..models import IngestedResource, Market, Resource, ResourceKey
 from ..request import normalize_pair
@@ -19,7 +19,7 @@ from ..request import normalize_pair
 EXCHANGE_INFO_URL = "https://api.binance.com/api/v3/exchangeInfo"
 BUCKET_URL = "https://s3-ap-northeast-1.amazonaws.com/data.binance.vision"
 ARCHIVE_URL = "https://data.binance.vision"
-SPOT_KLINES_PREFIX = "data/spot/daily/klines/"
+DAILY_ROOTS: Mapping[str, str] = {"spot": "data/spot/daily"}
 LOGGER = logging.getLogger(__name__)
 
 
@@ -92,7 +92,7 @@ class Binance:
         )
         current = self._exchange_markets(response.json())
         exchange_count = len(current)
-        archive_symbols = self._archive_symbols(client)
+        archive_symbols = self._archive_symbols(client, product)
         for symbol in archive_symbols:
             current.setdefault(symbol, Market(symbol, normalize_pair(symbol)))
         markets = [current[symbol] for symbol in sorted(current)]
@@ -123,9 +123,8 @@ class Binance:
         Returns:
             The available daily archives ordered by date.
         """
-        self._validate_resource_request(key, start_day, end_day)
-        prefix = f"{SPOT_KLINES_PREFIX}{key.symbol}/{key.interval}/"
-        stem = f"{key.symbol}-{key.interval}-"
+        dataset = self._validate_resource_request(key, start_day, end_day)
+        prefix, stem, archive_symbol = self._archive_layout(key, dataset)
         marker = f"{prefix}{stem}{start_day.isoformat()}"
         pattern = re.compile(re.escape(prefix + stem) + r"(\d{4}-\d{2}-\d{2})\.zip")
         found: dict[date, Resource] = {}
@@ -140,7 +139,7 @@ class Binance:
                     past_end = True
                 elif day >= start_day:
                     url = f"{ARCHIVE_URL}/{quote(object_key, safe='/')}"
-                    found[day] = Resource(day, url, f"{url}.CHECKSUM")
+                    found[day] = self._resource(day, url, archive_symbol, dataset)
             if past_end:
                 break
         resources = [found[day] for day in sorted(found)]
@@ -173,9 +172,8 @@ class Binance:
         Returns:
             The first matching daily archive, or ``None`` when none exists.
         """
-        self._validate_resource_request(key, start_day, end_day)
-        prefix = f"{SPOT_KLINES_PREFIX}{key.symbol}/{key.interval}/"
-        stem = f"{key.symbol}-{key.interval}-"
+        dataset = self._validate_resource_request(key, start_day, end_day)
+        prefix, stem, archive_symbol = self._archive_layout(key, dataset)
         marker = f"{prefix}{stem}{start_day.isoformat()}"
         pattern = re.compile(re.escape(prefix + stem) + r"(\d{4}-\d{2}-\d{2})\.zip")
         for keys, _ in self._pages(client, prefix, marker=marker, max_keys=2):
@@ -186,7 +184,7 @@ class Binance:
                 if day > end_day:
                     return None
                 url = f"{ARCHIVE_URL}/{quote(object_key, safe='/')}"
-                return Resource(day, url, f"{url}.CHECKSUM")
+                return self._resource(day, url, archive_symbol, dataset)
         return None
 
     def ingest(
@@ -283,37 +281,109 @@ class Binance:
             raise ValueError("exchangeInfo contains an invalid market")
         return result
 
-    def _archive_symbols(self, client: httpx.Client) -> set[str]:
+    def _archive_symbols(self, client: httpx.Client, product: str) -> set[str]:
         """Return safe symbols represented by Spot kline folders.
 
         Args:
             client: The HTTPX client used for bucket listings.
+            product: The Binance product whose primary archive folders to list.
 
         Returns:
             The unique archive symbol names.
         """
+        dataset = get_dataset(product, "klines")
+        prefix = self._dataset_root(product, dataset)
         symbols: set[str] = set()
-        for _, prefixes in self._pages(client, SPOT_KLINES_PREFIX, delimiter="/"):
+        for _, prefixes in self._pages(client, prefix, delimiter="/"):
             for prefix in prefixes:
-                symbol = self._folder_symbol(prefix)
+                symbol = self._folder_symbol(
+                    prefix, self._dataset_root(product, dataset)
+                )
                 if symbol is not None:
                     symbols.add(symbol)
         return symbols
 
     @staticmethod
-    def _folder_symbol(prefix: str) -> str | None:
+    def _folder_symbol(prefix: str, dataset_root: str) -> str | None:
         """Extract one safe symbol from an exact Spot kline folder.
 
         Args:
             prefix: The folder prefix returned by the bucket.
+            dataset_root: The exact product and dataset folder root.
 
         Returns:
             The native symbol, or ``None`` for an unrelated or unsafe folder.
         """
-        if not prefix.startswith(SPOT_KLINES_PREFIX) or not prefix.endswith("/"):
+        if not prefix.startswith(dataset_root) or not prefix.endswith("/"):
             return None
-        symbol = prefix[len(SPOT_KLINES_PREFIX) : -1]
+        symbol = prefix[len(dataset_root) : -1]
         return symbol if re.fullmatch(r"[A-Za-z0-9_]+", symbol) else None
+
+    @staticmethod
+    def _resource(
+        day: date, url: str, archive_symbol: str, dataset: DatasetSpec
+    ) -> Resource:
+        """Build one discovered resource with source routing and schema metadata.
+
+        Args:
+            day: The UTC day represented by the archive.
+            url: The public ZIP archive URL.
+            archive_symbol: The symbol used in the archive path and filename.
+            dataset: The declaration used to parse the archive.
+
+        Returns:
+            A discovered resource ready for catalog persistence.
+        """
+        return Resource(
+            day=day,
+            url=url,
+            checksum_url=f"{url}.CHECKSUM",
+            archive_symbol=archive_symbol,
+            timestamp_column=dataset.time_column,
+            schema_version=dataset.schema_version,
+        )
+
+    @staticmethod
+    def _dataset_root(product: str, dataset: DatasetSpec) -> str:
+        """Return the Binance folder root for one supported dataset.
+
+        Args:
+            product: The Binance product identifier.
+            dataset: The dataset declaration with its Binance folder name.
+
+        Returns:
+            The slash-terminated bucket folder root.
+
+        Raises:
+            ValueError: If the product has no declared daily archive root.
+        """
+        try:
+            daily_root = DAILY_ROOTS[product]
+        except KeyError as error:
+            raise ValueError(f"unsupported Binance product: {product}") from error
+        return f"{daily_root}/{dataset.remote_name}/"
+
+    @staticmethod
+    def _archive_layout(key: ResourceKey, dataset: DatasetSpec) -> tuple[str, str, str]:
+        """Build the archive folder and filename prefix for one dataset key.
+
+        Args:
+            key: The requested local dataset identity and optional source symbol.
+            dataset: The matching declarative dataset schema.
+
+        Returns:
+            The archive folder prefix, file stem, and effective archive symbol.
+        """
+        archive_symbol = key.archive_symbol or key.symbol
+        root = Binance._dataset_root(key.product, dataset)
+        if dataset.needs_interval:
+            assert key.interval is not None
+            prefix = f"{root}{archive_symbol}/{key.interval}/"
+            stem = f"{archive_symbol}-{key.interval}-"
+        else:
+            prefix = f"{root}{archive_symbol}/"
+            stem = f"{archive_symbol}-{dataset.remote_name}-"
+        return prefix, stem, archive_symbol
 
     def _pages(
         self,
@@ -421,7 +491,7 @@ class Binance:
 
     def _validate_resource_request(
         self, key: ResourceKey, start_day: date, end_day: date
-    ) -> None:
+    ) -> DatasetSpec:
         """Reject unsupported or unsafe daily resource requests.
 
         Args:
@@ -432,14 +502,22 @@ class Binance:
         if key.source != self.code:
             raise ValueError(f"unsupported source: {key.source}")
         self._check_product(key.product)
-        if key.dataset != "klines":
-            raise ValueError(f"unsupported Binance dataset: {key.dataset}")
-        if key.interval != "1m":
+        try:
+            dataset = get_dataset(key.product, key.dataset)
+        except ValueError as error:
+            raise ValueError(f"unsupported Binance dataset: {key.dataset}") from error
+        if key.interval != dataset.base_interval:
             raise ValueError(f"unsupported Binance interval: {key.interval}")
         if re.fullmatch(r"[A-Za-z0-9_]+", key.symbol) is None:
             raise ValueError("invalid Binance symbol")
+        if (
+            key.archive_symbol is not None
+            and re.fullmatch(r"[A-Za-z0-9_]+", key.archive_symbol) is None
+        ):
+            raise ValueError("invalid Binance archive symbol")
         if end_day < start_day:
             raise ValueError("Binance date range ends before it starts")
+        return dataset
 
     @staticmethod
     def _resource_day(object_key: str, pattern: re.Pattern[str]) -> date | None:

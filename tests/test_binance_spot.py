@@ -9,18 +9,19 @@ from typing import cast
 import httpx
 import pytest
 
-from crypto_downloader.models import Market, ResourceKey
+from crypto_downloader.datasets import DatasetSpec, SPOT_KLINES
+from crypto_downloader.models import Market, Resource, ResourceKey
 from crypto_downloader.source import Source
 from crypto_downloader.sources.binance import (
     ARCHIVE_URL,
     BUCKET_URL,
     EXCHANGE_INFO_URL,
-    SPOT_KLINES_PREFIX,
     Binance,
 )
 
 FIXTURES = Path(__file__).parent / "fixtures"
 KEY = ResourceKey("binance", "spot", "klines", "BTCUSDT", "1m")
+SPOT_KLINES_PREFIX = "data/spot/daily/klines/"
 
 
 def fixture_text(name: str) -> str:
@@ -342,6 +343,69 @@ def test_first_resource_uses_a_small_forward_listing() -> None:
     assert requests[0].url.params["marker"].endswith("BTCUSDT-1m-2020-01-01")
 
 
+def test_archive_layout_uses_dataset_rules_and_an_optional_archive_symbol() -> None:
+    """Confirm interval and raw archive paths stay inside the Binance connector."""
+    raw_trades = DatasetSpec(
+        product="spot",
+        name="trades",
+        remote_name="trades",
+        source_columns=("event_time",),
+        stored_columns=("event_time",),
+        time_column="event_time",
+        base_interval=None,
+        output_intervals=(),
+        aliases={},
+    )
+    alternate_key = ResourceKey(
+        "binance",
+        "spot",
+        "klines",
+        "BTCUSD_PERP",
+        "1m",
+        archive_symbol="BTCUSD",
+    )
+    raw_key = ResourceKey("binance", "spot", "trades", "BTCUSDT", None)
+
+    interval_prefix, interval_stem, interval_symbol = Binance._archive_layout(
+        alternate_key, SPOT_KLINES
+    )
+    raw_prefix, raw_stem, raw_symbol = Binance._archive_layout(raw_key, raw_trades)
+
+    assert interval_prefix == "data/spot/daily/klines/BTCUSD/1m/"
+    assert interval_stem == "BTCUSD-1m-"
+    assert interval_symbol == "BTCUSD"
+    assert raw_prefix == "data/spot/daily/trades/BTCUSDT/"
+    assert raw_stem == "BTCUSDT-trades-"
+    assert raw_symbol == "BTCUSDT"
+
+
+def test_resource_discovery_records_dataset_metadata_and_archive_symbol() -> None:
+    """Confirm discovered resources retain routing and schema metadata."""
+    prefix = f"{SPOT_KLINES_PREFIX}BTCUSDT/1m/"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        """Return one exact daily kline archive."""
+        return httpx.Response(
+            200,
+            text=listing(keys=(f"{prefix}BTCUSDT-1m-2025-01-01.zip",)),
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        resources = Binance().resources(client, KEY, date(2025, 1, 1), date(2025, 1, 1))
+
+    url = f"{ARCHIVE_URL}/{prefix}BTCUSDT-1m-2025-01-01.zip"
+    assert resources == [
+        Resource(
+            day=date(2025, 1, 1),
+            url=url,
+            checksum_url=f"{url}.CHECKSUM",
+            archive_symbol="BTCUSDT",
+            timestamp_column="open_time",
+            schema_version=1,
+        )
+    ]
+
+
 def test_first_resource_returns_none_when_no_archive_follows_boundary() -> None:
     """Confirm a valid empty first-page listing means no known availability."""
 
@@ -453,6 +517,19 @@ def test_daily_listing_ignores_prior_and_impossible_dates() -> None:
             date(2025, 1, 1),
             date(2025, 1, 2),
             "symbol",
+        ),
+        (
+            ResourceKey(
+                "binance",
+                "spot",
+                "klines",
+                "BTCUSD_PERP",
+                "1m",
+                archive_symbol="../BTCUSD",
+            ),
+            date(2025, 1, 1),
+            date(2025, 1, 2),
+            "archive symbol",
         ),
         (
             KEY,
