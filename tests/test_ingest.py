@@ -33,7 +33,7 @@ from crypto_downloader.http import ChecksumError
 from crypto_downloader.ingest import ArchiveError, _member, ingest_archive
 from crypto_downloader.models import Resource
 from crypto_downloader.processing import DataValidationError, file_sha256
-from crypto_downloader.sources.binance import Binance
+from crypto_downloader.sources.binance import BinanceSource
 
 FIXTURES = Path(__file__).parent / "fixtures"
 DAY = date(2024, 1, 1)
@@ -672,7 +672,7 @@ def test_binance_ingest_uses_source_http_settings(tmp_path: Path) -> None:
         return httpx.Response(200, content=payload)
 
     with httpx.Client(transport=httpx.MockTransport(handler)) as client:
-        result = Binance(timeout=7.0, retries=0).ingest(
+        result = BinanceSource(timeout=7.0, retries=0).ingest(
             client, RESOURCE, SPOT_KLINES, tmp_path / "out.parquet"
         )
 

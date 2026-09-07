@@ -19,7 +19,7 @@ from crypto_downloader.catalog import open_catalog
 from crypto_downloader.discovery import _validate_resources, requested_days
 from crypto_downloader.downloader import Downloader
 from crypto_downloader.models import Resource, ResourceKey, Result
-from crypto_downloader.sources.binance import Binance
+from crypto_downloader.sources.binance import BinanceSource
 
 FIXTURES = Path(__file__).parent / "fixtures"
 DAY = date(2024, 1, 1)
@@ -143,7 +143,7 @@ def downloader(tmp_path: Path, server: BinanceServer) -> Downloader:
     """
     return Downloader(
         tmp_path,
-        source=Binance(retries=0),
+        source=BinanceSource(retries=0),
         transport=httpx.MockTransport(server),
     )
 
@@ -326,7 +326,7 @@ def test_public_get_data_returns_a_dataframe_with_its_report(tmp_path: Path) -> 
         "2024-01-01",
         data_dir=tmp_path,
         desired_columns=["open_time", "close"],
-        source=Binance(retries=0),
+        source=BinanceSource(retries=0),
         transport=httpx.MockTransport(server),
     )
 
@@ -345,7 +345,7 @@ def test_public_get_results_returns_the_structured_result(tmp_path: Path) -> Non
         "2024-01-01",
         "2024-01-01",
         data_dir=tmp_path,
-        source=Binance(retries=0),
+        source=BinanceSource(retries=0),
         transport=httpx.MockTransport(server),
     )
 
@@ -436,7 +436,7 @@ def test_malformed_discovery_returns_a_pair_error(tmp_path: Path) -> None:
 
     service = Downloader(
         tmp_path,
-        source=Binance(retries=0),
+        source=BinanceSource(retries=0),
         transport=httpx.MockTransport(malformed),
     )
     result = service.get_results("BTCUSDT", "2024-01-01", "2024-01-01")
@@ -600,7 +600,7 @@ def test_source_product_mismatch_is_rejected_before_network_access(
 ) -> None:
     """Confirm dataset support and source support must agree."""
     server = BinanceServer()
-    source = Binance(retries=0)
+    source = BinanceSource(retries=0)
     monkeypatch.setattr(source, "products", ("um",))
 
     with pytest.raises(ValueError, match="unsupported product"):
@@ -617,7 +617,7 @@ def test_downloader_defaults_to_the_binance_source(tmp_path: Path) -> None:
     """Confirm callers do not need to construct the default strategy."""
     service = Downloader(tmp_path)
 
-    assert isinstance(service.source, Binance)
+    assert isinstance(service.source, BinanceSource)
     assert service.earliest_date == date(2020, 1, 1)
     assert service.max_workers == 32
 

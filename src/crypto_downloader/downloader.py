@@ -21,7 +21,7 @@ from .pair import process_pair
 from .request import Request
 from .request import parse_timestamp
 from .source import Source
-from .sources.binance import Binance
+from .sources.binance import BinanceSource
 
 LOGGER = logging.getLogger(__name__)
 
@@ -321,7 +321,7 @@ class Downloader:
         if not str(data_dir).strip():
             raise ValueError("data_dir must not be empty")
         self.data_dir = Path(data_dir).expanduser().resolve()
-        self.source: Source = source if source is not None else Binance()
+        self.source: Source = source if source is not None else BinanceSource()
         self.transport = transport
         self.settings: Settings = load_settings(config_path)
         configured_date = self.settings.earliest_date

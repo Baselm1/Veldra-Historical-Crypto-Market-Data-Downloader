@@ -32,7 +32,7 @@ DAILY_ROOTS: Mapping[str, str] = {
 LOGGER = logging.getLogger(__name__)
 
 
-class Binance:
+class BinanceSource:
     """Discover metadata from Binance and its public archive bucket."""
 
     code: str = "binance"
@@ -255,11 +255,11 @@ class Binance:
         Returns:
             Included markets and deliberately excluded native symbols.
         """
-        Binance._exchange_url(product)
+        BinanceSource._exchange_url(product)
         markets: dict[str, Market] = {}
         excluded: set[str] = set()
-        for value in Binance._exchange_rows(payload):
-            parsed = Binance._parsed_exchange_market(value, product)
+        for value in BinanceSource._exchange_rows(payload):
+            parsed = BinanceSource._parsed_exchange_market(value, product)
             if parsed is None:
                 continue
             symbol, market = parsed
@@ -302,15 +302,15 @@ class Binance:
         """
         if not isinstance(value, dict):
             raise ValueError("exchangeInfo contains an invalid market")
-        symbol = Binance._exchange_symbol(value)
+        symbol = BinanceSource._exchange_symbol(value)
         if symbol is None:
             return None
         if (
             product != "spot"
-            and Binance._required_text(value, "contractType") != "PERPETUAL"
+            and BinanceSource._required_text(value, "contractType") != "PERPETUAL"
         ):
             return symbol, None
-        return symbol, Binance._exchange_market(value, product, symbol)
+        return symbol, BinanceSource._exchange_market(value, product, symbol)
 
     @staticmethod
     def _exchange_url(product: str) -> str:
@@ -351,7 +351,7 @@ class Binance:
         """
         if not isinstance(value, dict):
             raise ValueError("exchangeInfo contains an invalid market")
-        symbol = Binance._required_text(value, "symbol")
+        symbol = BinanceSource._required_text(value, "symbol")
         if re.fullmatch(r"[A-Za-z0-9_]+", symbol) is None:
             if not symbol.isascii():
                 LOGGER.debug(
@@ -379,23 +379,23 @@ class Binance:
             return Market(
                 symbol=symbol,
                 normalized_symbol=normalize_pair(symbol),
-                base_asset=Binance._required_text(value, "baseAsset"),
-                quote_asset=Binance._required_text(value, "quoteAsset"),
-                status=Binance._required_text(value, "status"),
+                base_asset=BinanceSource._required_text(value, "baseAsset"),
+                quote_asset=BinanceSource._required_text(value, "quoteAsset"),
+                status=BinanceSource._required_text(value, "status"),
             )
 
         status_field = "contractStatus" if product == "cm" else "status"
         return Market(
             symbol=symbol,
             normalized_symbol=normalize_pair(symbol),
-            base_asset=Binance._required_text(value, "baseAsset"),
-            quote_asset=Binance._required_text(value, "quoteAsset"),
-            status=Binance._required_text(value, status_field),
-            pair=Binance._required_text(value, "pair"),
+            base_asset=BinanceSource._required_text(value, "baseAsset"),
+            quote_asset=BinanceSource._required_text(value, "quoteAsset"),
+            status=BinanceSource._required_text(value, status_field),
+            pair=BinanceSource._required_text(value, "pair"),
             contract_type="PERPETUAL",
-            contract_size=Binance._contract_size(value, product),
-            onboard_time=Binance._source_time(value.get("onboardDate")),
-            delivery_time=Binance._delivery_time(value.get("deliveryDate")),
+            contract_size=BinanceSource._contract_size(value, product),
+            onboard_time=BinanceSource._source_time(value.get("onboardDate")),
+            delivery_time=BinanceSource._delivery_time(value.get("deliveryDate")),
         )
 
     @staticmethod
@@ -446,7 +446,7 @@ class Binance:
         Returns:
             A real delivery timestamp, or ``None`` for the perpetual placeholder.
         """
-        timestamp = Binance._source_time(value)
+        timestamp = BinanceSource._source_time(value)
         return None if timestamp.year >= 2100 else timestamp
 
     @staticmethod
@@ -518,7 +518,7 @@ class Binance:
             if (
                 symbol in current
                 or symbol in excluded
-                or not Binance._is_archive_perpetual(symbol, product)
+                or not BinanceSource._is_archive_perpetual(symbol, product)
             ):
                 continue
             current[symbol] = Market(
@@ -621,7 +621,7 @@ class Binance:
             The archive folder prefix, file stem, and effective archive symbol.
         """
         archive_symbol = key.archive_symbol or key.symbol
-        root = Binance._dataset_root(key.product, dataset)
+        root = BinanceSource._dataset_root(key.product, dataset)
         if dataset.needs_interval:
             assert key.interval is not None
             prefix = f"{root}{archive_symbol}/{key.interval}/"
