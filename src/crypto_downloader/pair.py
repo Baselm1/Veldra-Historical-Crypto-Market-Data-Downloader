@@ -798,9 +798,11 @@ def process_pair(
         requested_resources,
         data_dir,
         offline=offline,
+        refresh=refresh,
         max_workers=max_workers,
         reporter=display,
     )
+    result.warnings.extend(coverage.warnings)
     result.problems.extend(coverage.problems)
     if not coverage.paths:
         return _finish(result, display, started)

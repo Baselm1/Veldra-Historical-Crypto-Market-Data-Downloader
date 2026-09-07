@@ -208,6 +208,43 @@ def _checksum(text: str, archive_url: str) -> str:
     return match.group(1).lower()
 
 
+def archive_checksum(
+    client: httpx.Client,
+    resource: Resource,
+    *,
+    timeout: float = 30.0,
+    retries: int = 3,
+    backoff: float = 0.5,
+) -> str:
+    """Fetch and validate one archive's SHA-256 sidecar.
+
+    Args:
+        client: The HTTPX client used for the sidecar request.
+        resource: The archive resource whose sidecar is checked.
+        timeout: The timeout for each request in seconds.
+        retries: The number of retries after the first attempt.
+        backoff: The initial exponential retry delay in seconds.
+
+    Returns:
+        The lowercase archive SHA-256 digest.
+    """
+    _validate_settings(timeout, retries, backoff)
+
+    def request() -> str:
+        """Fetch and parse one checksum sidecar.
+
+        Returns:
+            The digest declared by the checksum sidecar.
+        """
+        response = client.get(resource.checksum_url, timeout=timeout)
+        response.raise_for_status()
+        digest = _checksum(response.text, resource.url)
+        LOGGER.debug("Archive checksum fetched: url=%s sha256=%s", resource.url, digest)
+        return digest
+
+    return _retry(request, retries=retries, backoff=backoff)
+
+
 def _declared_size(response: httpx.Response) -> int | None:
     """Read a valid Content-Length value when the server provides one.
 

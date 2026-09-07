@@ -11,7 +11,7 @@ import xml.etree.ElementTree as ElementTree
 
 import httpx
 
-from ..http import get
+from ..http import archive_checksum, get
 from ..datasets import DatasetSpec, get_dataset
 from ..ingest import ingest_archive
 from ..models import IngestedResource, Market, Resource, ResourceKey
@@ -112,6 +112,24 @@ class Binance:
             len(markets),
         )
         return markets
+
+    def checksum(self, client: httpx.Client, resource: Resource) -> str:
+        """Return Binance's current SHA-256 digest for one archive.
+
+        Args:
+            client: The HTTPX client used for Binance requests.
+            resource: The Binance archive whose sidecar is checked.
+
+        Returns:
+            The lowercase SHA-256 digest declared by Binance.
+        """
+        return archive_checksum(
+            client,
+            resource,
+            timeout=self.timeout,
+            retries=self.retries,
+            backoff=self.backoff,
+        )
 
     def resources(
         self,

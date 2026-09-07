@@ -111,7 +111,7 @@ def test_binance_declares_supported_market_products() -> None:
     assert source.max_concurrency == 32
 
 
-def test_source_contract_remains_limited_to_four_operations() -> None:
+def test_source_contract_remains_limited_to_five_operations() -> None:
     """Confirm sources expose bounded discovery and ingestion without orchestration."""
     operations = {
         name
@@ -119,7 +119,13 @@ def test_source_contract_remains_limited_to_four_operations() -> None:
         if callable(value) and not name.startswith("_")
     }
 
-    assert operations == {"markets", "first_resource", "resources", "ingest"}
+    assert operations == {
+        "checksum",
+        "markets",
+        "first_resource",
+        "resources",
+        "ingest",
+    }
 
 
 def test_market_discovery_preserves_native_metadata_and_merges_archive_only() -> None:

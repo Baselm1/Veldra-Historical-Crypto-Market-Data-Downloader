@@ -17,6 +17,18 @@ class Source(Protocol):
     products: tuple[str, ...]
     active_statuses: frozenset[str]
 
+    def checksum(self, client: httpx.Client, resource: Resource) -> str:
+        """Return the current SHA-256 digest for one source archive.
+
+        Args:
+            client: The HTTPX client used for source requests.
+            resource: The archive resource whose sidecar is checked.
+
+        Returns:
+            The lowercase SHA-256 digest declared by the source.
+        """
+        pass
+
     def markets(self, client: httpx.Client, product: str) -> list[Market]:
         """Return current and archive-only markets for one product.
 

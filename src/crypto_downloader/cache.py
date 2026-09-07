@@ -23,6 +23,7 @@ class CacheCoverage:
     """Hold usable Parquet paths and problems found while caching."""
 
     paths: list[Path] = field(default_factory=list)
+    warnings: list[Message] = field(default_factory=list)
     problems: list[Message] = field(default_factory=list)
 
 
@@ -169,7 +170,7 @@ def _cache_plan(
     data_dir: Path,
     key: ResourceKey,
     offline: bool,
-) -> tuple[CacheCoverage, list[tuple[Resource, Path]]]:
+) -> tuple[CacheCoverage, list[tuple[Resource, Path]], list[tuple[Resource, Path]]]:
     """Separate valid cache entries from resources requiring ingestion.
 
     Args:
@@ -179,14 +180,16 @@ def _cache_plan(
         offline: Whether missing cache entries can be downloaded.
 
     Returns:
-        Initial cache coverage and the resources still requiring work.
+        Initial cache coverage, resources requiring ingestion, and valid local
+        resource paths.
     """
     coverage = CacheCoverage()
     pending: list[tuple[Resource, Path]] = []
+    cached: list[tuple[Resource, Path]] = []
     for resource in resources:
-        cached = valid_cached_path(resource)
-        if cached is not None:
-            coverage.paths.append(cached)
+        path = valid_cached_path(resource)
+        if path is not None:
+            cached.append((resource, path))
         elif offline:
             coverage.problems.append(
                 Message(
@@ -197,6 +200,144 @@ def _cache_plan(
             )
         else:
             pending.append((resource, parquet_path(data_dir, key, resource.day)))
+    return coverage, pending, cached
+
+
+def _revalidate_cached_resource(
+    source: Source,
+    client: httpx.Client,
+    resource: Resource,
+) -> tuple[bool, Message | None]:
+    """Check whether one locally cached archive remains current at its source.
+
+    Args:
+        source: The source strategy that owns the archive.
+        client: The HTTPX client used for the sidecar request.
+        resource: The cataloged archive and local cache metadata.
+
+    Returns:
+        Whether the local partition remains usable and an optional warning.
+    """
+    if resource.archive_sha256 is None:
+        LOGGER.debug(
+            "Cached archive lacks a source checksum and will be rebuilt: day=%s",
+            resource.day,
+        )
+        return False, None
+    try:
+        current = source.checksum(client, resource)
+    except Exception as error:
+        LOGGER.warning(
+            "Archive checksum revalidation failed; reusing cache: day=%s error=%s",
+            resource.day,
+            error,
+        )
+        return True, Message(
+            "archive_revalidation_failed",
+            "Could not revalidate the source archive; reused the verified local "
+            "Parquet file.",
+            resource.day,
+        )
+    unchanged = current == resource.archive_sha256
+    LOGGER.debug(
+        "Archive checksum revalidated: day=%s unchanged=%s expected=%s actual=%s",
+        resource.day,
+        unchanged,
+        resource.archive_sha256,
+        current,
+    )
+    return unchanged, None
+
+
+def _revalidate_cached_resources(
+    source: Source,
+    client: httpx.Client,
+    cached: list[tuple[Resource, Path]],
+    worker_count: int,
+) -> tuple[list[Path], list[tuple[Resource, Path]], list[Message]]:
+    """Split cached partitions into reusable and source-corrected groups.
+
+    Args:
+        source: The source strategy that owns the archives.
+        client: The HTTPX client used for checksum sidecars.
+        cached: Valid local resource paths to inspect.
+        worker_count: The bounded concurrent checksum request count.
+
+    Returns:
+        Reusable local paths, partitions requiring ingestion, and warnings.
+    """
+    if not cached:
+        return [], [], []
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        checked = list(
+            executor.map(
+                lambda item: _revalidate_cached_resource(source, client, item[0]),
+                cached,
+            )
+        )
+    paths: list[Path] = []
+    pending: list[tuple[Resource, Path]] = []
+    warnings: list[Message] = []
+    for (resource, path), (unchanged, warning) in zip(cached, checked):
+        if unchanged:
+            paths.append(path)
+        else:
+            pending.append((resource, path))
+        if warning is not None:
+            warnings.append(warning)
+    return paths, pending, warnings
+
+
+def _cached_coverage(
+    source: Source,
+    client: httpx.Client,
+    resources: list[Resource],
+    data_dir: Path,
+    key: ResourceKey,
+    *,
+    offline: bool,
+    refresh: bool,
+    worker_count: int,
+) -> tuple[CacheCoverage, list[tuple[Resource, Path]]]:
+    """Build cache coverage and optionally revalidate local source archives.
+
+    Args:
+        source: The source strategy that owns the archives.
+        client: The HTTPX client used for checksum sidecars.
+        resources: The cataloged daily resources requested by the caller.
+        data_dir: The root downloader data directory.
+        key: The requested source dataset identity.
+        offline: Whether source access is forbidden.
+        refresh: Whether ready resources must check remote checksums.
+        worker_count: The bounded concurrent checksum request count.
+
+    Returns:
+        Cache coverage and resources still requiring ingestion.
+    """
+    coverage, pending, cached = _cache_plan(resources, data_dir, key, offline)
+    if not refresh or offline:
+        coverage.paths.extend(path for _resource, path in cached)
+        return coverage, pending
+
+    paths, changed, warnings = _revalidate_cached_resources(
+        source,
+        client,
+        cached,
+        worker_count,
+    )
+    coverage.paths.extend(paths)
+    coverage.warnings.extend(warnings)
+    pending.extend(changed)
+    if cached:
+        LOGGER.info(
+            "Archive cache revalidated: key=%s cached=%d unchanged=%d changed=%d "
+            "unavailable=%d",
+            key,
+            len(cached),
+            len(paths),
+            len(changed),
+            len(warnings),
+        )
     return coverage, pending
 
 
@@ -249,6 +390,7 @@ def cache_resources(
     data_dir: Path,
     *,
     offline: bool = False,
+    refresh: bool = False,
     max_workers: int = 16,
     reporter: Reporter | None = None,
 ) -> CacheCoverage:
@@ -263,6 +405,7 @@ def cache_resources(
         resources: The discovered daily resources to materialize.
         data_dir: The root downloader data directory.
         offline: Whether archive downloads must be skipped.
+        refresh: Whether ready resources must check their remote checksums.
         max_workers: The caller's maximum concurrent daily ingestions.
         reporter: The optional Rich activity reporter.
 
@@ -270,7 +413,16 @@ def cache_resources(
         Usable paths and isolated resource problems.
     """
     worker_count = _worker_count(source, dataset, max_workers)
-    coverage, pending = _cache_plan(resources, data_dir, key, offline)
+    coverage, pending = _cached_coverage(
+        source,
+        client,
+        resources,
+        data_dir,
+        key,
+        offline=offline,
+        refresh=refresh,
+        worker_count=worker_count,
+    )
     display = reporter if reporter is not None else Reporter(False)
     noun = "file" if len(resources) == 1 else "files"
     missing_label = "not cached" if offline else "to download"
@@ -281,13 +433,15 @@ def cache_resources(
     )
     LOGGER.debug(
         "Cache plan complete: key=%s resources=%d cached=%d pending=%d "
-        "problems=%d offline=%s workers=%d",
+        "warnings=%d problems=%d offline=%s refresh=%s workers=%d",
         key,
         len(resources),
         len(coverage.paths),
         len(pending),
+        len(coverage.warnings),
         len(coverage.problems),
         offline,
+        refresh,
         worker_count,
     )
     outcomes: list[tuple[IngestedResource | None, Exception | None]] = []

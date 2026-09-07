@@ -35,6 +35,9 @@ class DurableSource:
         """Create an empty record of source activity."""
         self.resource_calls: list[tuple[date, date]] = []
         self.ingest_calls: list[date] = []
+        self.checksum_calls: list[date] = []
+        self.checksums: dict[date, str] = {}
+        self.checksum_errors: set[date] = set()
         self.fail_once: set[date] = set()
         self.active = 0
         self.peak = 0
@@ -51,6 +54,21 @@ class DurableSource:
             An empty market list.
         """
         return []
+
+    def checksum(self, client: httpx.Client, item: Resource) -> str:
+        """Return a configurable archive checksum for one cached resource.
+
+        Args:
+            client: The unused HTTP client.
+            item: The resource whose sidecar is requested.
+
+        Returns:
+            The configured archive SHA-256 digest.
+        """
+        self.checksum_calls.append(item.day)
+        if item.day in self.checksum_errors:
+            raise RuntimeError("checksum endpoint unavailable")
+        return self.checksums.get(item.day, "a" * 64)
 
     def resources(
         self,
@@ -395,6 +413,106 @@ def test_missing_ready_file_is_downloaded_again(tmp_path: Path) -> None:
 
     assert len(second.paths) == 1
     assert source.ingest_calls == [item.day, item.day]
+
+
+def test_refresh_reuses_a_cached_partition_when_the_archive_checksum_matches(
+    tmp_path: Path,
+) -> None:
+    """Confirm refresh keeps a valid Parquet file when Binance's archive is unchanged.
+
+    Args:
+        tmp_path: The isolated cache directory.
+    """
+    source = DurableSource()
+    store = catalog()
+    item = resource(date(2025, 1, 1))
+    store.save_discovery(KEY, item.day, item.day, [item])
+    cache_resources(source, store, httpx.Client(), KEY, SPOT_KLINES, [item], tmp_path)
+    ready = store.resources(KEY, item.day, item.day)
+
+    coverage = cache_resources(
+        source,
+        store,
+        httpx.Client(),
+        KEY,
+        SPOT_KLINES,
+        ready,
+        tmp_path,
+        refresh=True,
+    )
+
+    assert source.checksum_calls == [item.day]
+    assert source.ingest_calls == [item.day]
+    assert len(coverage.paths) == 1
+    assert coverage.problems == []
+
+
+def test_refresh_rebuilds_a_cached_partition_when_the_archive_checksum_changes(
+    tmp_path: Path,
+) -> None:
+    """Confirm refresh replaces a cache partition after a source correction.
+
+    Args:
+        tmp_path: The isolated cache directory.
+    """
+    source = DurableSource()
+    store = catalog()
+    item = resource(date(2025, 1, 1))
+    store.save_discovery(KEY, item.day, item.day, [item])
+    cache_resources(source, store, httpx.Client(), KEY, SPOT_KLINES, [item], tmp_path)
+    ready = store.resources(KEY, item.day, item.day)
+    source.checksums[item.day] = "b" * 64
+
+    coverage = cache_resources(
+        source,
+        store,
+        httpx.Client(),
+        KEY,
+        SPOT_KLINES,
+        ready,
+        tmp_path,
+        refresh=True,
+    )
+
+    assert source.checksum_calls == [item.day]
+    assert source.ingest_calls == [item.day, item.day]
+    assert len(coverage.paths) == 1
+    assert coverage.problems == []
+
+
+def test_refresh_warns_and_reuses_a_cache_when_checksum_lookup_fails(
+    tmp_path: Path,
+) -> None:
+    """Confirm a sidecar outage does not discard a locally verified partition.
+
+    Args:
+        tmp_path: The isolated cache directory.
+    """
+    source = DurableSource()
+    store = catalog()
+    item = resource(date(2025, 1, 1))
+    store.save_discovery(KEY, item.day, item.day, [item])
+    cache_resources(source, store, httpx.Client(), KEY, SPOT_KLINES, [item], tmp_path)
+    ready = store.resources(KEY, item.day, item.day)
+    source.checksum_errors.add(item.day)
+
+    coverage = cache_resources(
+        source,
+        store,
+        httpx.Client(),
+        KEY,
+        SPOT_KLINES,
+        ready,
+        tmp_path,
+        refresh=True,
+    )
+
+    assert source.checksum_calls == [item.day]
+    assert source.ingest_calls == [item.day]
+    assert len(coverage.paths) == 1
+    assert [warning.code for warning in coverage.warnings] == [
+        "archive_revalidation_failed"
+    ]
 
 
 def test_failed_resource_is_retried_on_the_next_request(tmp_path: Path) -> None:

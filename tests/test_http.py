@@ -14,6 +14,7 @@ import pytest
 from crypto_downloader.http import (
     ChecksumError,
     DownloadSizeError,
+    archive_checksum,
     download,
     get,
     retry_delay,
@@ -578,3 +579,43 @@ def test_download_rejects_nonpositive_size_limit_before_request(tmp_path: Path) 
             download(client, daily_resource(), tmp_path / "archive.zip", max_bytes=0)
 
     assert calls == 0
+
+
+def test_archive_checksum_reads_a_verified_sidecar() -> None:
+    """Confirm sidecar-only revalidation returns its declared archive digest."""
+    item = daily_resource()
+    contents = b"archive"
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        """Record one checksum request and return a matching sidecar."""
+        requests.append(request)
+        return httpx.Response(200, text=sidecar(contents))
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        actual = archive_checksum(client, item, timeout=7.0, retries=0)
+
+    assert actual == hashlib.sha256(contents).hexdigest()
+    assert [request.url.path for request in requests] == [
+        "/BTCUSDT-1m-2025-01-01.zip.CHECKSUM"
+    ]
+    assert set(requests[0].extensions["timeout"].values()) == {7.0}
+
+
+def test_archive_checksum_retries_a_temporary_sidecar_failure() -> None:
+    """Confirm a transient checksum response uses the standard retry policy."""
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        """Return one temporary error before a valid checksum sidecar."""
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return httpx.Response(503)
+        return httpx.Response(200, text=sidecar(b"archive"))
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        digest = archive_checksum(client, daily_resource(), retries=1, backoff=0)
+
+    assert digest == hashlib.sha256(b"archive").hexdigest()
+    assert calls == 2

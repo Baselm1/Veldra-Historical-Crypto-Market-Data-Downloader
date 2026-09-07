@@ -81,6 +81,7 @@ class BinanceServer:
         self.checksum_valid = checksum_valid
         self.payload = archive_bytes()
         self.archive_requests = 0
+        self.checksum_requests = 0
         self.resource_requests = 0
         self.market_requests = 0
 
@@ -119,6 +120,7 @@ class BinanceServer:
             keys = (OBJECT_KEY,) if self.resource_available else ()
             return httpx.Response(200, text=listing(keys=keys))
         if str(request.url).endswith(".CHECKSUM"):
+            self.checksum_requests += 1
             digest = hashlib.sha256(self.payload).hexdigest()
             if not self.checksum_valid:
                 digest = "0" * 64
@@ -287,6 +289,31 @@ def test_downloader_completes_and_reuses_one_spot_kline_day(
     assert markets[0].symbol == "BTCUSDT"
     assert resource.status == "ready"
     assert resource.parquet_path == expected
+
+
+def test_refresh_rechecks_a_cached_archive_without_redownloading_it(
+    tmp_path: Path,
+) -> None:
+    """Confirm refresh requests a sidecar but retains an unchanged partition.
+
+    Args:
+        tmp_path: The isolated downloader directory.
+    """
+    server = BinanceServer()
+    service = downloader(tmp_path, server)
+
+    service.get_results("BTCUSDT", "2024-01-01", "2024-01-01")
+    refreshed = service.get_results(
+        "BTCUSDT",
+        "2024-01-01",
+        "2024-01-01",
+        refresh=True,
+    )
+
+    assert refreshed.complete
+    assert refreshed.warnings == []
+    assert server.archive_requests == 1
+    assert server.checksum_requests == 2
 
 
 def test_public_get_data_returns_a_dataframe_with_its_report(tmp_path: Path) -> None:
