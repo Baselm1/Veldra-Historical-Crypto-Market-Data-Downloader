@@ -685,6 +685,40 @@ def test_metrics_resource_discovery_uses_the_futures_raw_layout(
     ("product", "symbol"),
     [("um", "BTCUSDT"), ("cm", "BTCUSD_PERP")],
 )
+def test_book_depth_resource_discovery_uses_the_futures_raw_layout(
+    product: str, symbol: str
+) -> None:
+    """Confirm Futures book-depth archives have no interval subdirectory.
+
+    Args:
+        product: The USD-M or COIN-M perpetual product.
+        symbol: The native perpetual contract archive symbol.
+    """
+    dataset = get_dataset(product, "book_depth")
+    key = ResourceKey("binance", product, dataset.name, symbol, None)
+    prefix = f"data/futures/{product}/daily/bookDepth/{symbol}/"
+    filename = f"{symbol}-bookDepth-2024-01-01.zip"
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        """Record the requested source location and return one archive."""
+        requests.append(request)
+        return httpx.Response(200, text=listing(keys=(f"{prefix}{filename}",)))
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        resources = Binance().resources(client, key, date(2024, 1, 1), date(2024, 1, 1))
+
+    assert len(resources) == 1
+    assert resources[0].url == f"{ARCHIVE_URL}/{prefix}{filename}"
+    assert resources[0].timestamp_column == "event_time"
+    assert requests[0].url.params["prefix"] == prefix
+    assert requests[0].url.params["marker"] == f"{prefix}{filename[:-4]}"
+
+
+@pytest.mark.parametrize(
+    ("product", "symbol"),
+    [("um", "BTCUSDT"), ("cm", "BTCUSD_PERP")],
+)
 def test_mark_price_resource_discovery_uses_the_futures_interval_layout(
     product: str, symbol: str
 ) -> None:

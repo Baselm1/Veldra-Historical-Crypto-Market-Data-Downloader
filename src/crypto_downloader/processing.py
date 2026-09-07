@@ -370,6 +370,31 @@ def _normalize_metrics(
     return result.loc[:, dataset.stored_columns]
 
 
+def _normalize_book_depth(
+    frame: pd.DataFrame, dataset: DatasetSpec, contract_size: float | None = None
+) -> pd.DataFrame:
+    """Normalize one USD-M or COIN-M Futures book-depth snapshot chunk.
+
+    Args:
+        frame: Header-bearing Binance book-depth source rows.
+        dataset: The product-specific book-depth declaration.
+        contract_size: The optional COIN-M contract size, unused by depth data.
+
+    Returns:
+        Canonical depth rows with signed percentage buckets.
+    """
+    result = pd.DataFrame(index=frame.index)
+    result["event_time"] = _source_timestamp(frame["timestamp"], "timestamp")
+    result["percentage_bucket"] = _integer(frame["percentage"], "percentage")
+    if dataset.product == "um":
+        result["base_depth"] = _number(frame["depth"], "depth")
+        result["quote_notional"] = _number(frame["notional"], "notional")
+    else:
+        result["contract_depth"] = _number(frame["depth"], "depth")
+        result["base_notional"] = _number(frame["notional"], "notional")
+    return result.loc[:, dataset.stored_columns]
+
+
 def _normalize_spot_trades(
     frame: pd.DataFrame, dataset: DatasetSpec, contract_size: float | None = None
 ) -> pd.DataFrame:
@@ -739,6 +764,35 @@ def _validate_metrics_chunk(
     return last
 
 
+def _validate_book_depth_chunk(
+    frame: pd.DataFrame,
+    dataset: DatasetSpec,
+    day: date,
+    previous_timestamp: pd.Timestamp | None = None,
+) -> pd.Timestamp:
+    """Validate one daily Futures book-depth snapshot chunk.
+
+    Args:
+        frame: The normalized book-depth rows.
+        dataset: The product-specific book-depth declaration.
+        day: The UTC resource day containing the snapshots.
+        previous_timestamp: The final timestamp from the preceding chunk.
+
+    Returns:
+        The final snapshot timestamp in the chunk.
+    """
+    last = _validate_event_timestamps(frame["event_time"], day, previous_timestamp)
+    if frame["percentage_bucket"].eq(0).any():
+        raise DataValidationError("percentage bucket cannot be zero")
+    depth_columns = [column for column in frame.columns if column.endswith("depth")]
+    notional_columns = [
+        column for column in frame.columns if column.endswith("notional")
+    ]
+    if (frame.loc[:, [*depth_columns, *notional_columns]] < 0).any().any():
+        raise DataValidationError("depth values must be nonnegative")
+    return last
+
+
 def _validate_event_timestamps(
     values: pd.Series, day: date, previous_timestamp: pd.Timestamp | None
 ) -> pd.Timestamp:
@@ -922,6 +976,8 @@ _NORMALIZERS: dict[tuple[str, str], Normalizer] = {
     ("cm", "premium_index_klines"): _normalize_price_klines,
     ("um", "metrics"): _normalize_metrics,
     ("cm", "metrics"): _normalize_metrics,
+    ("um", "book_depth"): _normalize_book_depth,
+    ("cm", "book_depth"): _normalize_book_depth,
     ("spot", "trades"): _normalize_spot_trades,
     ("spot", "agg_trades"): _normalize_spot_trades,
     ("um", "trades"): _normalize_um_trades,
@@ -941,6 +997,8 @@ _VALIDATORS: dict[tuple[str, str], Validator] = {
     ("cm", "premium_index_klines"): _validate_premium_index_kline_chunk,
     ("um", "metrics"): _validate_metrics_chunk,
     ("cm", "metrics"): _validate_metrics_chunk,
+    ("um", "book_depth"): _validate_book_depth_chunk,
+    ("cm", "book_depth"): _validate_book_depth_chunk,
     ("spot", "trades"): _validate_spot_event_chunk,
     ("spot", "agg_trades"): _validate_spot_event_chunk,
     ("um", "trades"): _validate_futures_event_chunk,

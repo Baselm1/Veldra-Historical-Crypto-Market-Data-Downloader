@@ -12,6 +12,7 @@ import pandas as pd
 import pytest
 
 from crypto_downloader.datasets import (
+    CM_BOOK_DEPTH,
     CM_INDEX_PRICE_KLINES,
     CM_MARK_PRICE_KLINES,
     CM_METRICS,
@@ -21,6 +22,7 @@ from crypto_downloader.datasets import (
     UM_INDEX_PRICE_KLINES,
     UM_MARK_PRICE_KLINES,
     UM_METRICS,
+    UM_BOOK_DEPTH,
     SPOT_AGG_TRADES,
     SPOT_KLINES,
     SPOT_TRADES,
@@ -413,6 +415,63 @@ def test_ingest_archive_writes_canonical_futures_metrics_parquet(
     assert metadata.row_count == len(frame) == 2
     assert metadata.timestamp_column == "event_time"
     assert metadata.schema_version == dataset.schema_version
+
+
+@pytest.mark.parametrize(
+    ("dataset", "fixture", "archive_name"),
+    [
+        (
+            UM_BOOK_DEPTH,
+            "binance_um_book_depth_2024-01-01.csv",
+            "BTCUSDT-bookDepth-2024-01-01.zip",
+        ),
+        (
+            CM_BOOK_DEPTH,
+            "binance_cm_book_depth_2024-01-01.csv",
+            "BTCUSD_PERP-bookDepth-2024-01-01.zip",
+        ),
+    ],
+)
+def test_ingest_archive_writes_canonical_futures_book_depth_parquet(
+    dataset: DatasetSpec,
+    fixture: str,
+    archive_name: str,
+    tmp_path: Path,
+) -> None:
+    """Confirm every Futures depth bucket becomes a canonical Parquet row.
+
+    Args:
+        dataset: The USD-M or COIN-M book-depth declaration.
+        fixture: The matching source CSV fixture.
+        archive_name: The matching source archive basename.
+        tmp_path: The isolated output directory.
+    """
+    content = (FIXTURES / fixture).read_bytes()
+    payload = archive_bytes(
+        content, names=(archive_name.removesuffix(".zip") + ".csv",)
+    )
+    resource = Resource(
+        DAY,
+        f"https://data.example/{archive_name}",
+        f"https://data.example/{archive_name}.CHECKSUM",
+    )
+    digest = hashlib.sha256(payload).hexdigest()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        """Serve the matching checksum sidecar or archive content."""
+        if str(request.url).endswith(".CHECKSUM"):
+            return httpx.Response(200, text=f"{digest}  {archive_name}\n")
+        return httpx.Response(200, content=payload)
+
+    destination = tmp_path / f"{dataset.product}-book-depth.parquet"
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        metadata = ingest_archive(client, resource, dataset, destination, chunk_rows=3)
+
+    frame = pd.read_parquet(destination)
+    assert tuple(frame.columns) == dataset.stored_columns
+    assert metadata.row_count == len(frame) == 20
+    assert metadata.timestamp_column == "event_time"
+    assert frame["percentage_bucket"].nunique() == 10
 
 
 def test_ingest_archive_rejects_a_wrong_declared_csv_header(tmp_path: Path) -> None:

@@ -3,6 +3,7 @@
 import pytest
 
 from crypto_downloader.datasets import (
+    CM_BOOK_DEPTH,
     CM_INDEX_PRICE_KLINES,
     CM_METRICS,
     CM_MARK_PRICE_KLINES,
@@ -11,6 +12,7 @@ from crypto_downloader.datasets import (
     CM_AGG_TRADES,
     CM_TRADES,
     UM_INDEX_PRICE_KLINES,
+    UM_BOOK_DEPTH,
     UM_METRICS,
     UM_MARK_PRICE_KLINES,
     UM_PREMIUM_INDEX_KLINES,
@@ -333,6 +335,28 @@ def test_perpetual_metrics_schemas_declare_distinct_open_interest_units() -> Non
     assert "open_interest_quote_value" in UM_METRICS.stored_columns
     assert "open_interest_contract_quantity" in CM_METRICS.stored_columns
     assert "open_interest_base_quantity" in CM_METRICS.stored_columns
+
+
+def test_perpetual_book_depth_schemas_declare_native_depth_units() -> None:
+    """Confirm Futures depth snapshots do not expose ambiguous quantities."""
+    assert get_dataset("um", "book_depth") is UM_BOOK_DEPTH
+    assert get_dataset("cm", "book_depth") is CM_BOOK_DEPTH
+    assert UM_BOOK_DEPTH.base_interval is None
+    assert CM_BOOK_DEPTH.base_interval is None
+    assert UM_BOOK_DEPTH.stored_columns == (
+        "event_time",
+        "percentage_bucket",
+        "base_depth",
+        "quote_notional",
+    )
+    assert CM_BOOK_DEPTH.stored_columns == (
+        "event_time",
+        "percentage_bucket",
+        "contract_depth",
+        "base_notional",
+    )
+    assert UM_BOOK_DEPTH.ordering_columns == ("event_time", "percentage_bucket")
+    assert CM_BOOK_DEPTH.ordering_columns == ("event_time", "percentage_bucket")
 
 
 def test_perpetual_trade_schemas_declare_native_and_derived_quantity_units() -> None:

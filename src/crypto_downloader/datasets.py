@@ -771,6 +771,59 @@ CM_METRICS = DatasetSpec(
     timestamp_columns=("event_time",),
 )
 
+BOOK_DEPTH_SOURCE_COLUMNS: Columns = (
+    "timestamp",
+    "percentage",
+    "depth",
+    "notional",
+)
+
+UM_BOOK_DEPTH = DatasetSpec(
+    product="um",
+    name="book_depth",
+    remote_name="bookDepth",
+    source_columns=BOOK_DEPTH_SOURCE_COLUMNS,
+    stored_columns=(
+        "event_time",
+        "percentage_bucket",
+        "base_depth",
+        "quote_notional",
+    ),
+    time_column="event_time",
+    base_interval=None,
+    output_intervals=(),
+    aliases=MappingProxyType({"percentage": "percentage_bucket"}),
+    max_concurrency=16,
+    csv_header="present",
+    schema_version=1,
+    ordering_columns=("event_time", "percentage_bucket"),
+    timestamp_columns=("event_time",),
+    integer_columns=("percentage_bucket",),
+)
+
+CM_BOOK_DEPTH = DatasetSpec(
+    product="cm",
+    name="book_depth",
+    remote_name="bookDepth",
+    source_columns=BOOK_DEPTH_SOURCE_COLUMNS,
+    stored_columns=(
+        "event_time",
+        "percentage_bucket",
+        "contract_depth",
+        "base_notional",
+    ),
+    time_column="event_time",
+    base_interval=None,
+    output_intervals=(),
+    aliases=MappingProxyType({"percentage": "percentage_bucket"}),
+    max_concurrency=16,
+    csv_header="present",
+    schema_version=1,
+    ordering_columns=("event_time", "percentage_bucket"),
+    timestamp_columns=("event_time",),
+    integer_columns=("percentage_bucket",),
+)
+
 UM_TRADES = DatasetSpec(
     product="um",
     name="trades",
@@ -952,6 +1005,8 @@ DATASETS: Mapping[tuple[str, str], DatasetSpec] = MappingProxyType(
         ("cm", "premium_index_klines"): CM_PREMIUM_INDEX_KLINES,
         ("um", "metrics"): UM_METRICS,
         ("cm", "metrics"): CM_METRICS,
+        ("um", "book_depth"): UM_BOOK_DEPTH,
+        ("cm", "book_depth"): CM_BOOK_DEPTH,
         ("um", "trades"): UM_TRADES,
         ("cm", "trades"): CM_TRADES,
         ("um", "agg_trades"): UM_AGG_TRADES,
