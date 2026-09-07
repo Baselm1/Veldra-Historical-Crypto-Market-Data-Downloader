@@ -298,7 +298,7 @@ class Downloader:
         *,
         source: Source | None = None,
         transport: httpx.BaseTransport | None = None,
-        config_path: str | Path = "config.toml",
+        config_path: str | Path | None = None,
         earliest_date: object = None,
         max_workers: int = 32,
         discovery_tail_days: int = 7,
@@ -310,7 +310,7 @@ class Downloader:
             data_dir: The directory containing the catalog and Parquet cache.
             source: The optional source strategy, defaulting to Binance.
             transport: An optional HTTPX transport used for requests.
-            config_path: The TOML file containing default downloader settings.
+            config_path: An optional TOML file overriding installed defaults.
             earliest_date: An optional override for the configured history boundary.
             max_workers: The maximum concurrent daily archive downloads.
             discovery_tail_days: Recent active-market days rediscovered per request.
@@ -583,7 +583,7 @@ def get_results(
     desired_columns: object = None,
     source: Source | None = None,
     transport: httpx.BaseTransport | None = None,
-    config_path: str | Path = "config.toml",
+    config_path: str | Path | None = None,
     earliest_date: object = None,
     max_workers: int = 32,
     discovery_tail_days: int = 7,
@@ -606,7 +606,7 @@ def get_results(
         desired_columns: Optional selected and renamed columns.
         source: The optional source strategy, defaulting to Binance.
         transport: An optional HTTPX transport used for requests.
-        config_path: The TOML file containing default downloader settings.
+        config_path: An optional TOML file overriding installed defaults.
         earliest_date: An optional override for the configured history boundary.
         max_workers: The maximum concurrent daily archive downloads.
         discovery_tail_days: Recent active-market days rediscovered per request.
@@ -655,7 +655,7 @@ def get_data(
     desired_columns: object = None,
     source: Source | None = None,
     transport: httpx.BaseTransport | None = None,
-    config_path: str | Path = "config.toml",
+    config_path: str | Path | None = None,
     earliest_date: object = None,
     max_workers: int = 32,
     discovery_tail_days: int = 7,
@@ -678,7 +678,7 @@ def get_data(
         desired_columns: Optional selected and renamed columns.
         source: The optional source strategy, defaulting to Binance.
         transport: An optional HTTPX transport used for requests.
-        config_path: The TOML file containing default downloader settings.
+        config_path: An optional TOML file overriding installed defaults.
         earliest_date: An optional override for the configured history boundary.
         max_workers: The maximum concurrent daily archive downloads.
         discovery_tail_days: Recent active-market days rediscovered per request.
@@ -727,7 +727,7 @@ async def aget_data(
     desired_columns: object = None,
     source: Source | None = None,
     transport: httpx.BaseTransport | None = None,
-    config_path: str | Path = "config.toml",
+    config_path: str | Path | None = None,
     earliest_date: object = None,
     max_workers: int = 32,
     discovery_tail_days: int = 7,
@@ -750,7 +750,7 @@ async def aget_data(
         desired_columns: Optional selected and renamed columns.
         source: The optional source strategy, defaulting to Binance.
         transport: An optional HTTPX transport used for requests.
-        config_path: The TOML file containing default downloader settings.
+        config_path: An optional TOML file overriding installed defaults.
         earliest_date: An optional override for the configured history boundary.
         max_workers: The maximum concurrent daily archive downloads.
         discovery_tail_days: Recent active-market days rediscovered per request.

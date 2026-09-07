@@ -165,7 +165,7 @@ def test_cli_forwards_options_and_renders_complete_results(
         "dataset": "klines",
         "interval": "1h",
         "desired_columns": ["open_time", "close"],
-        "config_path": "config.toml",
+        "config_path": None,
         "earliest_date": "2019-01-01",
         "max_workers": 8,
         "discovery_tail_days": 4,

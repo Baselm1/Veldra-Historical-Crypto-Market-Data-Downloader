@@ -14,6 +14,12 @@ class Settings:
     kline_base_interval: str
 
 
+DEFAULT_SETTINGS = Settings(
+    earliest_date=date(2020, 1, 1),
+    kline_base_interval="1m",
+)
+
+
 def _table(data: dict[str, object], name: str) -> dict[str, object]:
     """Return one required TOML table.
 
@@ -74,15 +80,18 @@ def _kline_base_interval(value: object) -> str:
     return "1m"
 
 
-def load_settings(path: str | Path = "config.toml") -> Settings:
+def load_settings(path: str | Path | None = None) -> Settings:
     """Read downloader settings from one TOML file.
 
     Args:
-        path: The TOML file containing downloader settings.
+        path: An optional TOML file containing downloader settings. ``None``
+            uses the defaults installed with the package.
 
     Returns:
         The validated immutable downloader settings.
     """
+    if path is None:
+        return DEFAULT_SETTINGS
     config_path = Path(path).expanduser()
     try:
         with config_path.open("rb") as file:

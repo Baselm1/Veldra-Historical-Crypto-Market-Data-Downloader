@@ -92,7 +92,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dataset", default="klines", help="dataset (default: klines)")
     parser.add_argument("--interval", help="output interval (default: stored interval)")
     parser.add_argument("--columns", nargs="+", help="columns to select")
-    parser.add_argument("--config", default="config.toml", help="settings TOML file")
+    parser.add_argument("--config", help="optional settings TOML file")
     parser.add_argument("--data-dir", default="data", help="cache directory")
     parser.add_argument(
         "--earliest-date", help="override configured earliest date or use 'all'"

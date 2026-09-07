@@ -622,6 +622,22 @@ def test_downloader_defaults_to_the_binance_source(tmp_path: Path) -> None:
     assert service.max_workers == 32
 
 
+def test_downloader_construction_does_not_create_its_data_directory(
+    tmp_path: Path,
+) -> None:
+    """Confirm configuring a downloader has no filesystem side effect.
+
+    Args:
+        tmp_path: The isolated parent of the proposed data directory.
+    """
+    data_dir = tmp_path / "not-created"
+
+    service = Downloader(data_dir)
+
+    assert service.data_dir == data_dir.resolve()
+    assert not data_dir.exists()
+
+
 @pytest.mark.parametrize(
     ("setting", "value"),
     [
