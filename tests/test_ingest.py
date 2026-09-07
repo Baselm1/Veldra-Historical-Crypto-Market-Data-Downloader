@@ -12,9 +12,11 @@ import pandas as pd
 import pytest
 
 from crypto_downloader.datasets import (
+    CM_MARK_PRICE_KLINES,
     CM_AGG_TRADES,
     CM_TRADES,
     UM_AGG_TRADES,
+    UM_MARK_PRICE_KLINES,
     SPOT_AGG_TRADES,
     SPOT_KLINES,
     SPOT_TRADES,
@@ -283,6 +285,63 @@ def test_ingest_archive_writes_canonical_futures_trade_parquet(
     assert frame[notional_column].notna().all()
     if dataset is CM_TRADES or dataset is CM_AGG_TRADES:
         assert frame[notional_column].tolist() == [300.0, 200.0]
+
+
+@pytest.mark.parametrize(
+    ("dataset", "fixture", "archive_name"),
+    [
+        (
+            UM_MARK_PRICE_KLINES,
+            "binance_um_mark_price_klines_2024-01-01.csv",
+            "BTCUSDT-1m-2024-01-01.zip",
+        ),
+        (
+            CM_MARK_PRICE_KLINES,
+            "binance_cm_mark_price_klines_2024-01-01.csv",
+            "BTCUSD_PERP-1m-2024-01-01.zip",
+        ),
+    ],
+)
+def test_ingest_archive_writes_canonical_mark_price_parquet(
+    dataset: DatasetSpec,
+    fixture: str,
+    archive_name: str,
+    tmp_path: Path,
+) -> None:
+    """Confirm verified Futures mark-price archives become price-only Parquet.
+
+    Args:
+        dataset: The product-specific mark-price schema declaration.
+        fixture: The representative raw Binance CSV fixture.
+        archive_name: The matching source archive basename.
+        tmp_path: The isolated output directory.
+    """
+    content = (FIXTURES / fixture).read_bytes()
+    payload = archive_bytes(
+        content, names=(archive_name.removesuffix(".zip") + ".csv",)
+    )
+    resource = Resource(
+        DAY,
+        f"https://data.example/{archive_name}",
+        f"https://data.example/{archive_name}.CHECKSUM",
+    )
+    digest = hashlib.sha256(payload).hexdigest()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        """Serve a matching checksum sidecar and archive body."""
+        if str(request.url).endswith(".CHECKSUM"):
+            return httpx.Response(200, text=f"{digest}  {archive_name}\n")
+        return httpx.Response(200, content=payload)
+
+    destination = tmp_path / f"{dataset.product}-mark-price.parquet"
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        metadata = ingest_archive(client, resource, dataset, destination, chunk_rows=1)
+
+    frame = pd.read_parquet(destination)
+    assert tuple(frame.columns) == dataset.stored_columns
+    assert metadata.row_count == len(frame) == 2
+    assert frame["sample_count"].tolist() == [60, 60]
+    assert "volume" not in frame.columns
 
 
 def test_ingest_archive_rejects_a_wrong_declared_csv_header(tmp_path: Path) -> None:

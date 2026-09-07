@@ -241,6 +241,49 @@ def _normalize_cm_klines(
     )
 
 
+def _normalize_price_klines(
+    frame: pd.DataFrame, dataset: DatasetSpec, contract_size: float | None = None
+) -> pd.DataFrame:
+    """Normalize one perpetual mark-price candle source chunk.
+
+    Args:
+        frame: Header-bearing Binance mark-price Kline source rows.
+        dataset: The USD-M or COIN-M mark-price schema declaration.
+        contract_size: The optional COIN-M contract size, unused by price data.
+
+    Returns:
+        Canonical price candles and their source sample counts.
+
+    Raises:
+        DataValidationError: If a structural source field is no longer zero.
+    """
+    structural_columns = (
+        "volume",
+        "quote_volume",
+        "taker_buy_volume",
+        "taker_buy_quote_volume",
+        "ignore",
+    )
+    for column in structural_columns:
+        if (_number(frame[column], column) != 0).any():
+            raise DataValidationError(
+                f"mark-price structural field '{column}' is not zero"
+            )
+    result = pd.DataFrame(index=frame.index)
+    result["open_time"] = _epoch(frame["open_time"], "open_time")
+    for column in ("open", "high", "low", "close"):
+        result[column] = _number(frame[column], column)
+    result["close_time"] = _epoch(frame["close_time"], "close_time")
+    result["sample_count"] = _integer(frame["count"], "count")
+    normalized = result.loc[:, dataset.stored_columns]
+    LOGGER.debug(
+        "Mark-price Kline chunk normalized: product=%s rows=%d",
+        dataset.product,
+        len(normalized),
+    )
+    return normalized
+
+
 def _normalize_spot_trades(
     frame: pd.DataFrame, dataset: DatasetSpec, contract_size: float | None = None
 ) -> pd.DataFrame:
@@ -732,6 +775,8 @@ _NORMALIZERS: dict[tuple[str, str], Normalizer] = {
     ("spot", "klines"): _normalize_spot_klines,
     ("um", "klines"): _normalize_um_klines,
     ("cm", "klines"): _normalize_cm_klines,
+    ("um", "mark_price_klines"): _normalize_price_klines,
+    ("cm", "mark_price_klines"): _normalize_price_klines,
     ("spot", "trades"): _normalize_spot_trades,
     ("spot", "agg_trades"): _normalize_spot_trades,
     ("um", "trades"): _normalize_um_trades,
@@ -743,6 +788,8 @@ _VALIDATORS: dict[tuple[str, str], Validator] = {
     ("spot", "klines"): _validate_kline_chunk,
     ("um", "klines"): _validate_kline_chunk,
     ("cm", "klines"): _validate_kline_chunk,
+    ("um", "mark_price_klines"): _validate_kline_chunk,
+    ("cm", "mark_price_klines"): _validate_kline_chunk,
     ("spot", "trades"): _validate_spot_event_chunk,
     ("spot", "agg_trades"): _validate_spot_event_chunk,
     ("um", "trades"): _validate_futures_event_chunk,

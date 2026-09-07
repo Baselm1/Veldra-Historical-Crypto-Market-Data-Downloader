@@ -9,7 +9,7 @@ from typing import cast
 import httpx
 import pytest
 
-from crypto_downloader.datasets import DatasetSpec, SPOT_KLINES
+from crypto_downloader.datasets import DatasetSpec, SPOT_KLINES, get_dataset
 from crypto_downloader.models import Market, Resource, ResourceKey
 from crypto_downloader.source import Source
 from crypto_downloader.sources.binance import (
@@ -643,6 +643,41 @@ def test_daily_event_resource_discovery_uses_raw_dataset_layout(
     assert resources[0].url == f"{ARCHIVE_URL}/{prefix}{filename}"
     assert resources[0].archive_symbol == "BTCUSDT"
     assert resources[0].timestamp_column == timestamp_column
+    assert requests[0].url.params["prefix"] == prefix
+    assert requests[0].url.params["marker"] == f"{prefix}{filename[:-4]}"
+
+
+@pytest.mark.parametrize(
+    ("product", "symbol"),
+    [("um", "BTCUSDT"), ("cm", "BTCUSD_PERP")],
+)
+def test_mark_price_resource_discovery_uses_the_futures_interval_layout(
+    product: str, symbol: str
+) -> None:
+    """Confirm mark-price Klines reuse the Futures daily archive layout.
+
+    Args:
+        product: The Binance perpetual Futures product.
+        symbol: The perpetual contract archive symbol.
+    """
+    dataset = get_dataset(product, "mark_price_klines")
+    key = ResourceKey("binance", product, dataset.name, symbol, "1m")
+    prefix = f"data/futures/{product}/daily/markPriceKlines/{symbol}/1m/"
+    filename = f"{symbol}-1m-2024-01-01.zip"
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        """Record the requested listing and return one archive object."""
+        requests.append(request)
+        return httpx.Response(200, text=listing(keys=(f"{prefix}{filename}",)))
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        resources = Binance().resources(client, key, date(2024, 1, 1), date(2024, 1, 1))
+
+    assert len(resources) == 1
+    assert resources[0].url == f"{ARCHIVE_URL}/{prefix}{filename}"
+    assert resources[0].timestamp_column == "open_time"
+    assert resources[0].schema_version == dataset.schema_version
     assert requests[0].url.params["prefix"] == prefix
     assert requests[0].url.params["marker"] == f"{prefix}{filename[:-4]}"
 

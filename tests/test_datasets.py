@@ -3,9 +3,11 @@
 import pytest
 
 from crypto_downloader.datasets import (
+    CM_MARK_PRICE_KLINES,
     CM_KLINES,
     CM_AGG_TRADES,
     CM_TRADES,
+    UM_MARK_PRICE_KLINES,
     UM_KLINES,
     UM_AGG_TRADES,
     UM_TRADES,
@@ -268,6 +270,30 @@ def test_perpetual_kline_schemas_declare_product_specific_quantity_units() -> No
     assert CM_KLINES.stored_columns[5] == "contract_volume"
     assert "volume" not in UM_KLINES.stored_columns
     assert "volume" not in CM_KLINES.stored_columns
+
+
+def test_perpetual_mark_price_schemas_keep_only_price_and_sample_fields() -> None:
+    """Confirm Futures mark-price candles discard structural volume fields."""
+    for product, specification in (
+        ("um", UM_MARK_PRICE_KLINES),
+        ("cm", CM_MARK_PRICE_KLINES),
+    ):
+        assert get_dataset(product, "mark_price_klines") is specification
+        assert specification.remote_name == "markPriceKlines"
+        assert specification.csv_header == "present"
+        assert specification.stored_columns == (
+            "open_time",
+            "open",
+            "high",
+            "low",
+            "close",
+            "close_time",
+            "sample_count",
+        )
+        assert specification.resample_sum_columns == ("sample_count",)
+        assert specification.resolve_columns({"count": "samples"}) == {
+            "sample_count": "samples"
+        }
 
 
 def test_perpetual_trade_schemas_declare_native_and_derived_quantity_units() -> None:
