@@ -1,0 +1,3 @@
+create_time,symbol,sum_open_interest,sum_open_interest_value,count_toptrader_long_short_ratio,sum_toptrader_long_short_ratio,count_long_short_ratio,sum_taker_long_short_vol_ratio
+2024-01-01 00:00:00,BTCUSD_PERP,8796805.00000000,20799.14240696,,,,1.44124606
+2024-01-01 00:05:00,BTCUSD_PERP,8822260.00000000,20798.02011622,,,,2.75029318

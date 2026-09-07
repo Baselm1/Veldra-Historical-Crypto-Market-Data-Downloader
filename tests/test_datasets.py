@@ -4,12 +4,14 @@ import pytest
 
 from crypto_downloader.datasets import (
     CM_INDEX_PRICE_KLINES,
+    CM_METRICS,
     CM_MARK_PRICE_KLINES,
     CM_PREMIUM_INDEX_KLINES,
     CM_KLINES,
     CM_AGG_TRADES,
     CM_TRADES,
     UM_INDEX_PRICE_KLINES,
+    UM_METRICS,
     UM_MARK_PRICE_KLINES,
     UM_PREMIUM_INDEX_KLINES,
     UM_KLINES,
@@ -319,6 +321,18 @@ def test_perpetual_premium_index_schemas_use_native_contract_symbols() -> None:
     assert CM_PREMIUM_INDEX_KLINES.remote_name == "premiumIndexKlines"
     assert UM_PREMIUM_INDEX_KLINES.archive_symbol_attribute == "symbol"
     assert CM_PREMIUM_INDEX_KLINES.archive_symbol_attribute == "symbol"
+
+
+def test_perpetual_metrics_schemas_declare_distinct_open_interest_units() -> None:
+    """Confirm Futures metrics do not expose an ambiguous open-interest volume."""
+    assert get_dataset("um", "metrics") is UM_METRICS
+    assert get_dataset("cm", "metrics") is CM_METRICS
+    assert UM_METRICS.base_interval is None
+    assert CM_METRICS.base_interval is None
+    assert "open_interest_base_quantity" in UM_METRICS.stored_columns
+    assert "open_interest_quote_value" in UM_METRICS.stored_columns
+    assert "open_interest_contract_quantity" in CM_METRICS.stored_columns
+    assert "open_interest_base_quantity" in CM_METRICS.stored_columns
 
 
 def test_perpetual_trade_schemas_declare_native_and_derived_quantity_units() -> None:

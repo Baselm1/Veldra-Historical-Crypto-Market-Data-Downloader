@@ -709,6 +709,68 @@ CM_PREMIUM_INDEX_KLINES = DatasetSpec(
     integer_columns=("sample_count",),
 )
 
+METRICS_SOURCE_COLUMNS: Columns = (
+    "create_time",
+    "symbol",
+    "sum_open_interest",
+    "sum_open_interest_value",
+    "count_toptrader_long_short_ratio",
+    "sum_toptrader_long_short_ratio",
+    "count_long_short_ratio",
+    "sum_taker_long_short_vol_ratio",
+)
+
+METRICS_RATIO_COLUMNS: Columns = (
+    "top_trader_account_long_short_ratio",
+    "top_trader_position_long_short_ratio",
+    "account_long_short_ratio",
+    "taker_long_short_volume_ratio",
+)
+
+UM_METRICS = DatasetSpec(
+    product="um",
+    name="metrics",
+    remote_name="metrics",
+    source_columns=METRICS_SOURCE_COLUMNS,
+    stored_columns=(
+        "event_time",
+        "open_interest_base_quantity",
+        "open_interest_quote_value",
+        *METRICS_RATIO_COLUMNS,
+    ),
+    time_column="event_time",
+    base_interval=None,
+    output_intervals=(),
+    aliases=MappingProxyType({}),
+    max_concurrency=16,
+    csv_header="present",
+    schema_version=1,
+    ordering_columns=("event_time",),
+    timestamp_columns=("event_time",),
+)
+
+CM_METRICS = DatasetSpec(
+    product="cm",
+    name="metrics",
+    remote_name="metrics",
+    source_columns=METRICS_SOURCE_COLUMNS,
+    stored_columns=(
+        "event_time",
+        "open_interest_contract_quantity",
+        "open_interest_base_quantity",
+        *METRICS_RATIO_COLUMNS,
+    ),
+    time_column="event_time",
+    base_interval=None,
+    output_intervals=(),
+    aliases=MappingProxyType({}),
+    max_concurrency=16,
+    csv_header="present",
+    schema_version=1,
+    ordering_columns=("event_time",),
+    timestamp_columns=("event_time",),
+)
+
 UM_TRADES = DatasetSpec(
     product="um",
     name="trades",
@@ -888,6 +950,8 @@ DATASETS: Mapping[tuple[str, str], DatasetSpec] = MappingProxyType(
         ("cm", "index_price_klines"): CM_INDEX_PRICE_KLINES,
         ("um", "premium_index_klines"): UM_PREMIUM_INDEX_KLINES,
         ("cm", "premium_index_klines"): CM_PREMIUM_INDEX_KLINES,
+        ("um", "metrics"): UM_METRICS,
+        ("cm", "metrics"): CM_METRICS,
         ("um", "trades"): UM_TRADES,
         ("cm", "trades"): CM_TRADES,
         ("um", "agg_trades"): UM_AGG_TRADES,

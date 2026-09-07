@@ -124,6 +124,46 @@ def _epoch(values: pd.Series, column: str) -> pd.Series:
         raise DataValidationError(f"invalid {column} value") from error
 
 
+def _source_timestamp(values: pd.Series, column: str) -> pd.Series:
+    """Convert one Binance UTC timestamp string into microsecond timestamps.
+
+    Args:
+        values: The source UTC timestamp strings.
+        column: The source column name used in errors.
+
+    Returns:
+        UTC-aware microsecond pandas timestamps.
+    """
+    try:
+        result = pd.to_datetime(
+            values, format="%Y-%m-%d %H:%M:%S", utc=True, errors="raise"
+        )
+    except (TypeError, ValueError) as error:
+        raise DataValidationError(f"invalid {column} value") from error
+    return result.astype("datetime64[us, UTC]")
+
+
+def _nullable_number(values: pd.Series, column: str) -> pd.Series:
+    """Convert optional source values to finite floats while retaining nulls.
+
+    Args:
+        values: The optional numeric source strings.
+        column: The source column name used in errors.
+
+    Returns:
+        Finite floats with source nulls preserved.
+    """
+    text = values.astype("string").str.strip()
+    missing = text.isna() | text.eq("")
+    try:
+        result = pd.to_numeric(text.mask(missing), errors="raise").astype("float64")
+    except (TypeError, ValueError) as error:
+        raise DataValidationError(f"invalid {column} value") from error
+    if not np.isfinite(result.dropna().to_numpy()).all():
+        raise DataValidationError(f"{column} values must be finite")
+    return result
+
+
 def _normalize_kline_chunk(
     frame: pd.DataFrame,
     dataset: DatasetSpec,
@@ -282,6 +322,52 @@ def _normalize_price_klines(
         len(normalized),
     )
     return normalized
+
+
+def _normalize_metrics(
+    frame: pd.DataFrame, dataset: DatasetSpec, contract_size: float | None = None
+) -> pd.DataFrame:
+    """Normalize one USD-M or COIN-M Futures metrics snapshot chunk.
+
+    Args:
+        frame: Header-bearing Binance metrics source rows.
+        dataset: The product-specific metrics declaration.
+        contract_size: The optional COIN-M contract size, unused by metrics.
+
+    Returns:
+        Canonical open-interest snapshots with optional ratio fields.
+    """
+    result = pd.DataFrame(index=frame.index)
+    result["event_time"] = _source_timestamp(frame["create_time"], "create_time")
+    if dataset.product == "um":
+        result["open_interest_base_quantity"] = _number(
+            frame["sum_open_interest"], "sum_open_interest"
+        )
+        result["open_interest_quote_value"] = _number(
+            frame["sum_open_interest_value"], "sum_open_interest_value"
+        )
+    else:
+        result["open_interest_contract_quantity"] = _number(
+            frame["sum_open_interest"], "sum_open_interest"
+        )
+        result["open_interest_base_quantity"] = _number(
+            frame["sum_open_interest_value"], "sum_open_interest_value"
+        )
+    source_ratios = (
+        "count_toptrader_long_short_ratio",
+        "sum_toptrader_long_short_ratio",
+        "count_long_short_ratio",
+        "sum_taker_long_short_vol_ratio",
+    )
+    stored_ratios = (
+        "top_trader_account_long_short_ratio",
+        "top_trader_position_long_short_ratio",
+        "account_long_short_ratio",
+        "taker_long_short_volume_ratio",
+    )
+    for source, stored in zip(source_ratios, stored_ratios):
+        result[stored] = _nullable_number(frame[source], source)
+    return result.loc[:, dataset.stored_columns]
 
 
 def _normalize_spot_trades(
@@ -624,6 +710,35 @@ def _validate_premium_index_kline_chunk(
     return last
 
 
+def _validate_metrics_chunk(
+    frame: pd.DataFrame,
+    dataset: DatasetSpec,
+    day: date,
+    previous_timestamp: pd.Timestamp | None = None,
+) -> pd.Timestamp:
+    """Validate one daily Futures metrics snapshot chunk.
+
+    Args:
+        frame: The normalized metrics snapshots.
+        dataset: The product-specific metrics declaration.
+        day: The UTC resource day containing the snapshots.
+        previous_timestamp: The final timestamp from the preceding chunk.
+
+    Returns:
+        The final snapshot timestamp in the chunk.
+    """
+    last = _validate_event_timestamps(frame["event_time"], day, previous_timestamp)
+    quantity_columns = [
+        column for column in frame.columns if column.startswith("open_interest_")
+    ]
+    if (frame.loc[:, quantity_columns] < 0).any().any():
+        raise DataValidationError("open interest values must be nonnegative")
+    ratios = frame.loc[:, [column for column in frame if column.endswith("ratio")]]
+    if (ratios.dropna(how="all") <= 0).any().any():
+        raise DataValidationError("ratio must be positive when supplied")
+    return last
+
+
 def _validate_event_timestamps(
     values: pd.Series, day: date, previous_timestamp: pd.Timestamp | None
 ) -> pd.Timestamp:
@@ -805,6 +920,8 @@ _NORMALIZERS: dict[tuple[str, str], Normalizer] = {
     ("cm", "index_price_klines"): _normalize_price_klines,
     ("um", "premium_index_klines"): _normalize_price_klines,
     ("cm", "premium_index_klines"): _normalize_price_klines,
+    ("um", "metrics"): _normalize_metrics,
+    ("cm", "metrics"): _normalize_metrics,
     ("spot", "trades"): _normalize_spot_trades,
     ("spot", "agg_trades"): _normalize_spot_trades,
     ("um", "trades"): _normalize_um_trades,
@@ -822,6 +939,8 @@ _VALIDATORS: dict[tuple[str, str], Validator] = {
     ("cm", "index_price_klines"): _validate_kline_chunk,
     ("um", "premium_index_klines"): _validate_premium_index_kline_chunk,
     ("cm", "premium_index_klines"): _validate_premium_index_kline_chunk,
+    ("um", "metrics"): _validate_metrics_chunk,
+    ("cm", "metrics"): _validate_metrics_chunk,
     ("spot", "trades"): _validate_spot_event_chunk,
     ("spot", "agg_trades"): _validate_spot_event_chunk,
     ("um", "trades"): _validate_futures_event_chunk,
