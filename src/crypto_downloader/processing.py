@@ -343,6 +343,60 @@ def _normalize_cm_trades(
     return result.loc[:, dataset.stored_columns]
 
 
+def _normalize_um_agg_trades(
+    frame: pd.DataFrame, dataset: DatasetSpec, contract_size: float | None = None
+) -> pd.DataFrame:
+    """Normalize one USD-M perpetual aggregate-trade CSV chunk.
+
+    Args:
+        frame: Header-bearing USD-M aggregate-trade source rows.
+        dataset: The USD-M aggregate-trade schema declaration.
+        contract_size: The optional COIN-M contract size, unused by USD-M data.
+
+    Returns:
+        Canonical USD-M aggregates with base quantity and derived quote quantity.
+    """
+    result = pd.DataFrame(index=frame.index)
+    result["agg_trade_id"] = _integer(frame["agg_trade_id"], "agg_trade_id")
+    result["first_trade_id"] = _integer(frame["first_trade_id"], "first_trade_id")
+    result["last_trade_id"] = _integer(frame["last_trade_id"], "last_trade_id")
+    result["price"] = _number(frame["price"], "price")
+    result["base_quantity"] = _number(frame["quantity"], "quantity")
+    result["quote_quantity"] = result["price"] * result["base_quantity"]
+    result["event_time"] = _epoch(frame["transact_time"], "transact_time")
+    result["buyer_is_maker"] = _boolean(frame["is_buyer_maker"], "is_buyer_maker")
+    return result.loc[:, dataset.stored_columns]
+
+
+def _normalize_cm_agg_trades(
+    frame: pd.DataFrame, dataset: DatasetSpec, contract_size: float | None = None
+) -> pd.DataFrame:
+    """Normalize one COIN-M perpetual aggregate-trade CSV chunk.
+
+    Args:
+        frame: Header-bearing COIN-M aggregate-trade source rows.
+        dataset: The COIN-M aggregate-trade schema declaration.
+        contract_size: The cataloged USD value of one COIN-M contract.
+
+    Returns:
+        Canonical COIN-M aggregates with preserved contracts and derived values.
+    """
+    size = _contract_size(contract_size)
+    result = pd.DataFrame(index=frame.index)
+    result["agg_trade_id"] = _integer(frame["agg_trade_id"], "agg_trade_id")
+    result["first_trade_id"] = _integer(frame["first_trade_id"], "first_trade_id")
+    result["last_trade_id"] = _integer(frame["last_trade_id"], "last_trade_id")
+    result["price"] = _number(frame["price"], "price")
+    if (result["price"] <= 0).any():
+        raise DataValidationError("trade price must be greater than zero")
+    result["contract_quantity"] = _number(frame["quantity"], "quantity")
+    result["quote_notional"] = result["contract_quantity"] * size
+    result["base_quantity"] = result["quote_notional"] / result["price"]
+    result["event_time"] = _epoch(frame["transact_time"], "transact_time")
+    result["buyer_is_maker"] = _boolean(frame["is_buyer_maker"], "is_buyer_maker")
+    return result.loc[:, dataset.stored_columns]
+
+
 def _validate_timestamps(
     frame: pd.DataFrame,
     dataset: DatasetSpec,
@@ -580,21 +634,51 @@ def _validate_spot_event_chunk(
     return last
 
 
-def _validate_futures_trade_rows(frame: pd.DataFrame, dataset: DatasetSpec) -> None:
-    """Validate numeric, ID, and maker-side rules for Futures trade rows.
+def _validate_futures_event_ids(frame: pd.DataFrame, dataset: DatasetSpec) -> None:
+    """Validate ordered primary and aggregate component identifiers.
 
     Args:
-        frame: Canonical USD-M or COIN-M trade rows.
-        dataset: The matching Futures trade schema declaration.
+        frame: Canonical USD-M or COIN-M trade-family rows.
+        dataset: The matching Futures event schema declaration.
     """
-    identifiers = frame["trade_id"]
+    id_column = dataset.ordering_columns[-1]
+    identifiers = frame[id_column]
     if (identifiers < 0).any() or not identifiers.is_monotonic_increasing:
-        raise DataValidationError("trade_id must be nonnegative and increasing")
-    quantities = [
-        column
-        for column in dataset.stored_columns
-        if column not in {"trade_id", "price", "event_time", "buyer_is_maker"}
-    ]
+        raise DataValidationError(f"{id_column} must be nonnegative and increasing")
+    if dataset.name == "agg_trades" and (
+        (frame["first_trade_id"] < 0).any()
+        or (frame["last_trade_id"] < frame["first_trade_id"]).any()
+    ):
+        raise DataValidationError("aggregate trade IDs are invalid")
+
+
+def _futures_quantity_columns(dataset: DatasetSpec) -> list[str]:
+    """Return canonical Futures quantity fields without IDs or event metadata.
+
+    Args:
+        dataset: The Futures trade-family schema declaration.
+
+    Returns:
+        Canonical source or derived quantity column names.
+    """
+    excluded = {
+        dataset.ordering_columns[-1],
+        "first_trade_id",
+        "last_trade_id",
+        "price",
+        "event_time",
+        "buyer_is_maker",
+    }
+    return [column for column in dataset.stored_columns if column not in excluded]
+
+
+def _validate_futures_event_values(frame: pd.DataFrame, quantities: list[str]) -> None:
+    """Validate finite price, quantity, and maker-side values for Futures rows.
+
+    Args:
+        frame: Canonical USD-M or COIN-M trade-family rows.
+        quantities: Canonical quantity columns that must remain nonnegative.
+    """
     values = frame[["price", *quantities]]
     if not np.isfinite(values.to_numpy(dtype="float64")).all():
         raise DataValidationError("trade values must be finite")
@@ -606,17 +690,28 @@ def _validate_futures_trade_rows(frame: pd.DataFrame, dataset: DatasetSpec) -> N
         raise DataValidationError("buyer_is_maker must be boolean")
 
 
-def _validate_futures_trade_chunk(
+def _validate_futures_event_rows(frame: pd.DataFrame, dataset: DatasetSpec) -> None:
+    """Validate numeric, ID, and maker-side rules for Futures event rows.
+
+    Args:
+        frame: Canonical USD-M or COIN-M trade-family rows.
+        dataset: The matching Futures event schema declaration.
+    """
+    _validate_futures_event_ids(frame, dataset)
+    _validate_futures_event_values(frame, _futures_quantity_columns(dataset))
+
+
+def _validate_futures_event_chunk(
     frame: pd.DataFrame,
     dataset: DatasetSpec,
     day: date,
     previous_timestamp: pd.Timestamp | None,
 ) -> pd.Timestamp:
-    """Validate one canonical USD-M or COIN-M trade chunk.
+    """Validate one canonical USD-M or COIN-M trade-family chunk.
 
     Args:
         frame: Canonical Futures event rows to validate.
-        dataset: The Futures trade dataset declaration.
+        dataset: The Futures trade or aggregate-trade declaration.
         day: The UTC archive day that must contain all events.
         previous_timestamp: The final timestamp from the preceding CSV chunk.
 
@@ -624,7 +719,7 @@ def _validate_futures_trade_chunk(
         The final event timestamp in the chunk.
     """
     last = _validate_event_timestamps(frame["event_time"], day, previous_timestamp)
-    _validate_futures_trade_rows(frame, dataset)
+    _validate_futures_event_rows(frame, dataset)
     return last
 
 
@@ -641,6 +736,8 @@ _NORMALIZERS: dict[tuple[str, str], Normalizer] = {
     ("spot", "agg_trades"): _normalize_spot_trades,
     ("um", "trades"): _normalize_um_trades,
     ("cm", "trades"): _normalize_cm_trades,
+    ("um", "agg_trades"): _normalize_um_agg_trades,
+    ("cm", "agg_trades"): _normalize_cm_agg_trades,
 }
 _VALIDATORS: dict[tuple[str, str], Validator] = {
     ("spot", "klines"): _validate_kline_chunk,
@@ -648,8 +745,10 @@ _VALIDATORS: dict[tuple[str, str], Validator] = {
     ("cm", "klines"): _validate_kline_chunk,
     ("spot", "trades"): _validate_spot_event_chunk,
     ("spot", "agg_trades"): _validate_spot_event_chunk,
-    ("um", "trades"): _validate_futures_trade_chunk,
-    ("cm", "trades"): _validate_futures_trade_chunk,
+    ("um", "trades"): _validate_futures_event_chunk,
+    ("cm", "trades"): _validate_futures_event_chunk,
+    ("um", "agg_trades"): _validate_futures_event_chunk,
+    ("cm", "agg_trades"): _validate_futures_event_chunk,
 }
 
 

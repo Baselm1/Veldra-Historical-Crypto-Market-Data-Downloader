@@ -612,6 +612,80 @@ CM_TRADES = DatasetSpec(
     boolean_columns=("buyer_is_maker",),
 )
 
+UM_AGG_TRADES = DatasetSpec(
+    product="um",
+    name="agg_trades",
+    remote_name="aggTrades",
+    source_columns=(
+        "agg_trade_id",
+        "price",
+        "quantity",
+        "first_trade_id",
+        "last_trade_id",
+        "transact_time",
+        "is_buyer_maker",
+    ),
+    stored_columns=(
+        "agg_trade_id",
+        "first_trade_id",
+        "last_trade_id",
+        "price",
+        "base_quantity",
+        "quote_quantity",
+        "event_time",
+        "buyer_is_maker",
+    ),
+    time_column="event_time",
+    base_interval=None,
+    output_intervals=(),
+    aliases=MappingProxyType({"id": "agg_trade_id", "quantity": "base_quantity"}),
+    max_concurrency=8,
+    csv_header="present",
+    schema_version=1,
+    ordering_columns=("event_time", "agg_trade_id"),
+    timestamp_columns=("event_time",),
+    integer_columns=("agg_trade_id", "first_trade_id", "last_trade_id"),
+    boolean_columns=("buyer_is_maker",),
+)
+
+CM_AGG_TRADES = DatasetSpec(
+    product="cm",
+    name="agg_trades",
+    remote_name="aggTrades",
+    source_columns=(
+        "agg_trade_id",
+        "price",
+        "quantity",
+        "first_trade_id",
+        "last_trade_id",
+        "transact_time",
+        "is_buyer_maker",
+    ),
+    stored_columns=(
+        "agg_trade_id",
+        "first_trade_id",
+        "last_trade_id",
+        "price",
+        "contract_quantity",
+        "base_quantity",
+        "quote_notional",
+        "event_time",
+        "buyer_is_maker",
+    ),
+    time_column="event_time",
+    base_interval=None,
+    output_intervals=(),
+    aliases=MappingProxyType({"id": "agg_trade_id", "quantity": "contract_quantity"}),
+    max_concurrency=8,
+    csv_header="present",
+    schema_version=1,
+    requires_contract_size=True,
+    ordering_columns=("event_time", "agg_trade_id"),
+    timestamp_columns=("event_time",),
+    integer_columns=("agg_trade_id", "first_trade_id", "last_trade_id"),
+    boolean_columns=("buyer_is_maker",),
+)
+
 SPOT_TRADES = DatasetSpec(
     product="spot",
     name="trades",
@@ -659,6 +733,8 @@ DATASETS: Mapping[tuple[str, str], DatasetSpec] = MappingProxyType(
         ("cm", "klines"): CM_KLINES,
         ("um", "trades"): UM_TRADES,
         ("cm", "trades"): CM_TRADES,
+        ("um", "agg_trades"): UM_AGG_TRADES,
+        ("cm", "agg_trades"): CM_AGG_TRADES,
     }
 )
 

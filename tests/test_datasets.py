@@ -4,8 +4,10 @@ import pytest
 
 from crypto_downloader.datasets import (
     CM_KLINES,
+    CM_AGG_TRADES,
     CM_TRADES,
     UM_KLINES,
+    UM_AGG_TRADES,
     UM_TRADES,
     DatasetSpec,
     get_dataset,
@@ -295,10 +297,29 @@ def test_perpetual_trade_schemas_declare_native_and_derived_quantity_units() -> 
     )
 
 
+def test_perpetual_aggregate_trade_schemas_preserve_component_identifiers() -> None:
+    """Confirm Futures aggregate schemas retain IDs and explicit quantity units."""
+    assert get_dataset("um", "agg_trades") is UM_AGG_TRADES
+    assert get_dataset("cm", "agg_trades") is CM_AGG_TRADES
+    assert UM_AGG_TRADES.integer_columns == (
+        "agg_trade_id",
+        "first_trade_id",
+        "last_trade_id",
+    )
+    assert CM_AGG_TRADES.integer_columns == UM_AGG_TRADES.integer_columns
+    assert UM_AGG_TRADES.stored_columns[4:6] == ("base_quantity", "quote_quantity")
+    assert CM_AGG_TRADES.stored_columns[4:7] == (
+        "contract_quantity",
+        "base_quantity",
+        "quote_notional",
+    )
+    assert CM_AGG_TRADES.requires_contract_size is True
+
+
 @pytest.mark.parametrize(
     ("product", "dataset"),
     [
-        ("cm", "agg_trades"),
+        ("spot", "not_a_dataset"),
         ("unknown", "unknown"),
     ],
 )

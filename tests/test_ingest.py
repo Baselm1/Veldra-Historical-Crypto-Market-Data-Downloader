@@ -12,7 +12,9 @@ import pandas as pd
 import pytest
 
 from crypto_downloader.datasets import (
+    CM_AGG_TRADES,
     CM_TRADES,
+    UM_AGG_TRADES,
     SPOT_AGG_TRADES,
     SPOT_KLINES,
     SPOT_TRADES,
@@ -217,6 +219,20 @@ def test_ingest_archive_writes_canonical_spot_event_parquet(
             100.0,
             "quote_notional",
         ),
+        (
+            UM_AGG_TRADES,
+            "binance_um_agg_trades_2024-01-01.csv",
+            "BTCUSDT-aggTrades-2024-01-01.zip",
+            None,
+            "quote_quantity",
+        ),
+        (
+            CM_AGG_TRADES,
+            "binance_cm_agg_trades_2024-01-01.csv",
+            "BTCUSD_PERP-aggTrades-2024-01-01.zip",
+            100.0,
+            "quote_notional",
+        ),
     ],
 )
 def test_ingest_archive_writes_canonical_futures_trade_parquet(
@@ -265,7 +281,7 @@ def test_ingest_archive_writes_canonical_futures_trade_parquet(
     assert tuple(frame.columns) == dataset.stored_columns
     assert len(frame) == metadata.row_count == 2
     assert frame[notional_column].notna().all()
-    if dataset is CM_TRADES:
+    if dataset is CM_TRADES or dataset is CM_AGG_TRADES:
         assert frame[notional_column].tolist() == [300.0, 200.0]
 
 
