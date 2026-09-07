@@ -5,11 +5,13 @@ import pytest
 from crypto_downloader.datasets import (
     CM_INDEX_PRICE_KLINES,
     CM_MARK_PRICE_KLINES,
+    CM_PREMIUM_INDEX_KLINES,
     CM_KLINES,
     CM_AGG_TRADES,
     CM_TRADES,
     UM_INDEX_PRICE_KLINES,
     UM_MARK_PRICE_KLINES,
+    UM_PREMIUM_INDEX_KLINES,
     UM_KLINES,
     UM_AGG_TRADES,
     UM_TRADES,
@@ -307,6 +309,16 @@ def test_perpetual_index_price_schemas_declare_their_archive_identifiers() -> No
     assert UM_INDEX_PRICE_KLINES.archive_symbol_attribute == "symbol"
     assert CM_INDEX_PRICE_KLINES.archive_symbol_attribute == "pair"
     assert CM_INDEX_PRICE_KLINES.stored_columns == UM_INDEX_PRICE_KLINES.stored_columns
+
+
+def test_perpetual_premium_index_schemas_use_native_contract_symbols() -> None:
+    """Confirm premium archives keep the Futures contract as their identifier."""
+    assert get_dataset("um", "premium_index_klines") is UM_PREMIUM_INDEX_KLINES
+    assert get_dataset("cm", "premium_index_klines") is CM_PREMIUM_INDEX_KLINES
+    assert UM_PREMIUM_INDEX_KLINES.remote_name == "premiumIndexKlines"
+    assert CM_PREMIUM_INDEX_KLINES.remote_name == "premiumIndexKlines"
+    assert UM_PREMIUM_INDEX_KLINES.archive_symbol_attribute == "symbol"
+    assert CM_PREMIUM_INDEX_KLINES.archive_symbol_attribute == "symbol"
 
 
 def test_perpetual_trade_schemas_declare_native_and_derived_quantity_units() -> None:

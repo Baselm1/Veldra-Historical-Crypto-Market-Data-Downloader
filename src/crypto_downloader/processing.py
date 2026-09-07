@@ -554,14 +554,15 @@ def _validate_numbers(frame: pd.DataFrame, dataset: DatasetSpec) -> None:
         raise DataValidationError("volume and count values must be nonnegative")
 
 
-def _validate_ohlc(frame: pd.DataFrame) -> None:
-    """Validate positive and internally consistent OHLC prices.
+def _validate_ohlc(frame: pd.DataFrame, *, positive: bool = True) -> None:
+    """Validate internally consistent OHLC values and optional positive prices.
 
     Args:
         frame: The canonical rows containing OHLC price columns.
+        positive: Whether values must be greater than zero.
     """
     prices = frame[["open", "high", "low", "close"]]
-    if (prices <= 0).any().any():
+    if positive and (prices <= 0).any().any():
         raise DataValidationError("price values must be greater than zero")
     if (frame["high"] < prices[["open", "low", "close"]].max(axis=1)).any():
         raise DataValidationError("high is below another OHLC price")
@@ -597,6 +598,29 @@ def _validate_kline_chunk(
         len(frame),
         last,
     )
+    return last
+
+
+def _validate_premium_index_kline_chunk(
+    frame: pd.DataFrame,
+    dataset: DatasetSpec,
+    day: date,
+    previous_timestamp: pd.Timestamp | None = None,
+) -> pd.Timestamp:
+    """Validate one signed perpetual Futures premium-index candle chunk.
+
+    Args:
+        frame: The normalized premium-index candle rows.
+        dataset: The premium-index schema declaration.
+        day: The UTC source day that must contain every row.
+        previous_timestamp: The final timestamp from the preceding chunk.
+
+    Returns:
+        The final timestamp in the validated chunk.
+    """
+    last = _validate_timestamps(frame, dataset, day, previous_timestamp)
+    _validate_numbers(frame, dataset)
+    _validate_ohlc(frame, positive=False)
     return last
 
 
@@ -779,6 +803,8 @@ _NORMALIZERS: dict[tuple[str, str], Normalizer] = {
     ("cm", "mark_price_klines"): _normalize_price_klines,
     ("um", "index_price_klines"): _normalize_price_klines,
     ("cm", "index_price_klines"): _normalize_price_klines,
+    ("um", "premium_index_klines"): _normalize_price_klines,
+    ("cm", "premium_index_klines"): _normalize_price_klines,
     ("spot", "trades"): _normalize_spot_trades,
     ("spot", "agg_trades"): _normalize_spot_trades,
     ("um", "trades"): _normalize_um_trades,
@@ -794,6 +820,8 @@ _VALIDATORS: dict[tuple[str, str], Validator] = {
     ("cm", "mark_price_klines"): _validate_kline_chunk,
     ("um", "index_price_klines"): _validate_kline_chunk,
     ("cm", "index_price_klines"): _validate_kline_chunk,
+    ("um", "premium_index_klines"): _validate_premium_index_kline_chunk,
+    ("cm", "premium_index_klines"): _validate_premium_index_kline_chunk,
     ("spot", "trades"): _validate_spot_event_chunk,
     ("spot", "agg_trades"): _validate_spot_event_chunk,
     ("um", "trades"): _validate_futures_event_chunk,

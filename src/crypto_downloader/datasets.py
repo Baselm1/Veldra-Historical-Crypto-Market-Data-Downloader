@@ -667,6 +667,48 @@ CM_INDEX_PRICE_KLINES = DatasetSpec(
     archive_symbol_attribute="pair",
 )
 
+UM_PREMIUM_INDEX_KLINES = DatasetSpec(
+    product="um",
+    name="premium_index_klines",
+    remote_name="premiumIndexKlines",
+    source_columns=SPOT_KLINE_SOURCE_COLUMNS,
+    stored_columns=UM_MARK_PRICE_KLINES.stored_columns,
+    time_column="open_time",
+    base_interval="1m",
+    output_intervals=SPOT_KLINE_OUTPUT_INTERVALS,
+    aliases=MappingProxyType({"count": "sample_count"}),
+    max_concurrency=32,
+    csv_header="present",
+    schema_version=1,
+    supports_resampling=True,
+    supports_gap_policy=True,
+    resample_sum_columns=("sample_count",),
+    ordering_columns=("open_time",),
+    timestamp_columns=("open_time", "close_time"),
+    integer_columns=("sample_count",),
+)
+
+CM_PREMIUM_INDEX_KLINES = DatasetSpec(
+    product="cm",
+    name="premium_index_klines",
+    remote_name="premiumIndexKlines",
+    source_columns=SPOT_KLINE_SOURCE_COLUMNS,
+    stored_columns=UM_MARK_PRICE_KLINES.stored_columns,
+    time_column="open_time",
+    base_interval="1m",
+    output_intervals=SPOT_KLINE_OUTPUT_INTERVALS,
+    aliases=MappingProxyType({"count": "sample_count"}),
+    max_concurrency=32,
+    csv_header="present",
+    schema_version=1,
+    supports_resampling=True,
+    supports_gap_policy=True,
+    resample_sum_columns=("sample_count",),
+    ordering_columns=("open_time",),
+    timestamp_columns=("open_time", "close_time"),
+    integer_columns=("sample_count",),
+)
+
 UM_TRADES = DatasetSpec(
     product="um",
     name="trades",
@@ -844,6 +886,8 @@ DATASETS: Mapping[tuple[str, str], DatasetSpec] = MappingProxyType(
         ("cm", "mark_price_klines"): CM_MARK_PRICE_KLINES,
         ("um", "index_price_klines"): UM_INDEX_PRICE_KLINES,
         ("cm", "index_price_klines"): CM_INDEX_PRICE_KLINES,
+        ("um", "premium_index_klines"): UM_PREMIUM_INDEX_KLINES,
+        ("cm", "premium_index_klines"): CM_PREMIUM_INDEX_KLINES,
         ("um", "trades"): UM_TRADES,
         ("cm", "trades"): CM_TRADES,
         ("um", "agg_trades"): UM_AGG_TRADES,
