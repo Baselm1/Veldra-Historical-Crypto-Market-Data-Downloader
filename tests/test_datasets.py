@@ -3,10 +3,12 @@
 import pytest
 
 from crypto_downloader.datasets import (
+    CM_INDEX_PRICE_KLINES,
     CM_MARK_PRICE_KLINES,
     CM_KLINES,
     CM_AGG_TRADES,
     CM_TRADES,
+    UM_INDEX_PRICE_KLINES,
     UM_MARK_PRICE_KLINES,
     UM_KLINES,
     UM_AGG_TRADES,
@@ -294,6 +296,17 @@ def test_perpetual_mark_price_schemas_keep_only_price_and_sample_fields() -> Non
         assert specification.resolve_columns({"count": "samples"}) == {
             "sample_count": "samples"
         }
+
+
+def test_perpetual_index_price_schemas_declare_their_archive_identifiers() -> None:
+    """Confirm CM index archives use the pair while UM uses the contract symbol."""
+    assert get_dataset("um", "index_price_klines") is UM_INDEX_PRICE_KLINES
+    assert get_dataset("cm", "index_price_klines") is CM_INDEX_PRICE_KLINES
+    assert UM_INDEX_PRICE_KLINES.remote_name == "indexPriceKlines"
+    assert CM_INDEX_PRICE_KLINES.remote_name == "indexPriceKlines"
+    assert UM_INDEX_PRICE_KLINES.archive_symbol_attribute == "symbol"
+    assert CM_INDEX_PRICE_KLINES.archive_symbol_attribute == "pair"
+    assert CM_INDEX_PRICE_KLINES.stored_columns == UM_INDEX_PRICE_KLINES.stored_columns
 
 
 def test_perpetual_trade_schemas_declare_native_and_derived_quantity_units() -> None:

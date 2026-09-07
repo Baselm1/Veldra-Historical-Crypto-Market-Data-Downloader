@@ -57,6 +57,71 @@ def _result(pair: str, request: Request, dataset: DatasetSpec) -> Result:
     )
 
 
+def _archive_symbol(market: Market, dataset: DatasetSpec, result: Result) -> str | None:
+    """Resolve the source archive identifier declared by one dataset.
+
+    Args:
+        market: The public market selected by the caller.
+        dataset: The dataset selecting a market identifier attribute.
+        result: The result receiving a missing routing-context error.
+
+    Returns:
+        The alternate archive identifier, or ``None`` when the market symbol is used.
+    """
+    if dataset.archive_symbol_attribute == "symbol":
+        return None
+    value = market.pair
+    if isinstance(value, str) and value:
+        return value
+    result.errors.append(
+        Message(
+            "archive_symbol_unavailable",
+            f"{dataset.product}/{dataset.name} requires a source pair identifier.",
+        )
+    )
+    return None
+
+
+def _resource_key(
+    source_code: str,
+    pair: str,
+    request: Request,
+    dataset: DatasetSpec,
+    markets: list[Market],
+    result: Result,
+    reporter: Reporter,
+) -> tuple[Market, ResourceKey] | None:
+    """Resolve one market and construct its dataset-specific resource key.
+
+    Args:
+        source_code: The identifier of the source serving the request.
+        pair: The caller's original market spelling.
+        request: The validated request selecting product and dataset.
+        dataset: The resolved dataset declaration.
+        markets: The current source market snapshot.
+        result: The result receiving resolution errors and the native symbol.
+        reporter: The optional activity reporter.
+
+    Returns:
+        The resolved market and source resource key, or ``None`` after an error.
+    """
+    market = _match_market(pair, markets, result, reporter)
+    if market is None:
+        return None
+    result.pair = market.symbol
+    archive_symbol = _archive_symbol(market, dataset, result)
+    if result.errors:
+        return None
+    return market, ResourceKey(
+        source_code,
+        request.product,
+        request.dataset,
+        market.symbol,
+        dataset.base_interval,
+        archive_symbol=archive_symbol,
+    )
+
+
 def _suggestions(pair: str, markets: list[Market]) -> tuple[str, ...]:
     """Return likely native symbols for one unknown pair spelling.
 
@@ -781,18 +846,18 @@ def process_pair(
         request.product,
         request.dataset,
     )
-    market = _match_market(pair, markets, result, display)
-    if market is None:
-        return _finish(result, display, started)
-
-    result.pair = market.symbol
-    key = ResourceKey(
+    resolved = _resource_key(
         source.code,
-        request.product,
-        request.dataset,
-        market.symbol,
-        dataset.base_interval,
+        pair,
+        request,
+        dataset,
+        markets,
+        result,
+        display,
     )
+    if resolved is None:
+        return _finish(result, display, started)
+    market, key = resolved
     active = market.status in source.active_statuses
     availability = _availability_range(
         source,

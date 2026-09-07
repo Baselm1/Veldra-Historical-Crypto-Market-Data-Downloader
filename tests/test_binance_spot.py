@@ -682,6 +682,43 @@ def test_mark_price_resource_discovery_uses_the_futures_interval_layout(
     assert requests[0].url.params["marker"] == f"{prefix}{filename[:-4]}"
 
 
+@pytest.mark.parametrize(
+    ("product", "symbol", "archive_symbol"),
+    [("um", "BTCUSDT", "BTCUSDT"), ("cm", "BTCUSD_PERP", "BTCUSD")],
+)
+def test_index_price_resource_discovery_uses_the_declared_archive_symbol(
+    product: str, symbol: str, archive_symbol: str
+) -> None:
+    """Confirm index archives route contracts through their source identifier.
+
+    Args:
+        product: The Binance perpetual Futures product.
+        symbol: The public perpetual contract identifier.
+        archive_symbol: The source folder and archive identifier.
+    """
+    dataset = get_dataset(product, "index_price_klines")
+    key = ResourceKey(
+        "binance",
+        product,
+        dataset.name,
+        symbol,
+        "1m",
+        archive_symbol=archive_symbol,
+    )
+    prefix = f"data/futures/{product}/daily/indexPriceKlines/{archive_symbol}/1m/"
+    filename = f"{archive_symbol}-1m-2024-01-01.zip"
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        """Return one source archive listed under its native index symbol."""
+        return httpx.Response(200, text=listing(keys=(f"{prefix}{filename}",)))
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        resources = Binance().resources(client, key, date(2024, 1, 1), date(2024, 1, 1))
+
+    assert resources[0].archive_symbol == archive_symbol
+    assert resources[0].url == f"{ARCHIVE_URL}/{prefix}{filename}"
+
+
 def test_first_resource_returns_none_when_no_archive_follows_boundary() -> None:
     """Confirm a valid empty first-page listing means no known availability."""
 

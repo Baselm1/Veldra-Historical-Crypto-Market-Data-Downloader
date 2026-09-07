@@ -10,6 +10,7 @@ from .request import ColumnSelection
 
 type Columns = tuple[str, ...]
 type CsvHeader = Literal["absent", "present"]
+type ArchiveSymbolAttribute = Literal["symbol", "pair"]
 LOGGER = logging.getLogger(__name__)
 
 SPOT_KLINE_SOURCE_COLUMNS: Columns = (
@@ -263,6 +264,19 @@ def _validate_schema_version(value: int) -> None:
         raise ValueError("dataset schema_version must be positive")
 
 
+def _validate_archive_symbol_attribute(value: str) -> None:
+    """Reject an unsupported market field selected for archive routing.
+
+    Args:
+        value: The market attribute used as a source archive identifier.
+
+    Raises:
+        ValueError: If the attribute is not a supported market identifier.
+    """
+    if value not in {"symbol", "pair"}:
+        raise ValueError("dataset archive symbol attribute is unsupported")
+
+
 @dataclass(frozen=True)
 class DatasetSpec:
     """Describe one product and dataset combination."""
@@ -287,6 +301,7 @@ class DatasetSpec:
     timestamp_columns: Columns = ()
     integer_columns: Columns = ()
     boolean_columns: Columns = ()
+    archive_symbol_attribute: ArchiveSymbolAttribute = "symbol"
 
     def __post_init__(self) -> None:
         """Validate the immutable capability declaration.
@@ -321,6 +336,7 @@ class DatasetSpec:
             self.boolean_columns,
         )
         _validate_schema_version(self.schema_version)
+        _validate_archive_symbol_attribute(self.archive_symbol_attribute)
 
     @property
     def needs_interval(self) -> bool:
@@ -608,6 +624,49 @@ CM_MARK_PRICE_KLINES = DatasetSpec(
     integer_columns=("sample_count",),
 )
 
+UM_INDEX_PRICE_KLINES = DatasetSpec(
+    product="um",
+    name="index_price_klines",
+    remote_name="indexPriceKlines",
+    source_columns=SPOT_KLINE_SOURCE_COLUMNS,
+    stored_columns=UM_MARK_PRICE_KLINES.stored_columns,
+    time_column="open_time",
+    base_interval="1m",
+    output_intervals=SPOT_KLINE_OUTPUT_INTERVALS,
+    aliases=MappingProxyType({"count": "sample_count"}),
+    max_concurrency=32,
+    csv_header="present",
+    schema_version=1,
+    supports_resampling=True,
+    supports_gap_policy=True,
+    resample_sum_columns=("sample_count",),
+    ordering_columns=("open_time",),
+    timestamp_columns=("open_time", "close_time"),
+    integer_columns=("sample_count",),
+)
+
+CM_INDEX_PRICE_KLINES = DatasetSpec(
+    product="cm",
+    name="index_price_klines",
+    remote_name="indexPriceKlines",
+    source_columns=SPOT_KLINE_SOURCE_COLUMNS,
+    stored_columns=UM_MARK_PRICE_KLINES.stored_columns,
+    time_column="open_time",
+    base_interval="1m",
+    output_intervals=SPOT_KLINE_OUTPUT_INTERVALS,
+    aliases=MappingProxyType({"count": "sample_count"}),
+    max_concurrency=32,
+    csv_header="present",
+    schema_version=1,
+    supports_resampling=True,
+    supports_gap_policy=True,
+    resample_sum_columns=("sample_count",),
+    ordering_columns=("open_time",),
+    timestamp_columns=("open_time", "close_time"),
+    integer_columns=("sample_count",),
+    archive_symbol_attribute="pair",
+)
+
 UM_TRADES = DatasetSpec(
     product="um",
     name="trades",
@@ -783,6 +842,8 @@ DATASETS: Mapping[tuple[str, str], DatasetSpec] = MappingProxyType(
         ("cm", "klines"): CM_KLINES,
         ("um", "mark_price_klines"): UM_MARK_PRICE_KLINES,
         ("cm", "mark_price_klines"): CM_MARK_PRICE_KLINES,
+        ("um", "index_price_klines"): UM_INDEX_PRICE_KLINES,
+        ("cm", "index_price_klines"): CM_INDEX_PRICE_KLINES,
         ("um", "trades"): UM_TRADES,
         ("cm", "trades"): CM_TRADES,
         ("um", "agg_trades"): UM_AGG_TRADES,

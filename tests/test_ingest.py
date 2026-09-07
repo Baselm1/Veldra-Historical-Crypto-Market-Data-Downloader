@@ -12,10 +12,12 @@ import pandas as pd
 import pytest
 
 from crypto_downloader.datasets import (
+    CM_INDEX_PRICE_KLINES,
     CM_MARK_PRICE_KLINES,
     CM_AGG_TRADES,
     CM_TRADES,
     UM_AGG_TRADES,
+    UM_INDEX_PRICE_KLINES,
     UM_MARK_PRICE_KLINES,
     SPOT_AGG_TRADES,
     SPOT_KLINES,
@@ -299,6 +301,16 @@ def test_ingest_archive_writes_canonical_futures_trade_parquet(
             CM_MARK_PRICE_KLINES,
             "binance_cm_mark_price_klines_2024-01-01.csv",
             "BTCUSD_PERP-1m-2024-01-01.zip",
+        ),
+        (
+            UM_INDEX_PRICE_KLINES,
+            "binance_um_index_price_klines_2024-01-01.csv",
+            "BTCUSDT-1m-2024-01-01.zip",
+        ),
+        (
+            CM_INDEX_PRICE_KLINES,
+            "binance_cm_index_price_klines_2024-01-01.csv",
+            "BTCUSD-1m-2024-01-01.zip",
         ),
     ],
 )

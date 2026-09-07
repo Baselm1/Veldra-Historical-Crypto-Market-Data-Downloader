@@ -4,9 +4,14 @@ from datetime import UTC, date, datetime
 
 import pandas as pd
 
-from crypto_downloader.datasets import CM_TRADES, UM_TRADES
+from crypto_downloader.datasets import (
+    CM_INDEX_PRICE_KLINES,
+    CM_TRADES,
+    UM_INDEX_PRICE_KLINES,
+    UM_TRADES,
+)
 from crypto_downloader.models import Market, Resource, Result
-from crypto_downloader.pair import _with_contract_size
+from crypto_downloader.pair import _archive_symbol, _with_contract_size
 
 
 def result() -> Result:
@@ -68,3 +73,35 @@ def test_um_trade_resources_do_not_need_contract_context() -> None:
 
     assert resources == [item]
     assert report.errors == []
+
+
+def test_index_price_archive_symbols_follow_the_declared_market_attribute() -> None:
+    """Confirm CM index files use a pair while UM files use the native symbol."""
+    um_report = result()
+    cm_report = result()
+
+    um_symbol = _archive_symbol(
+        Market("BTCUSDT", "BTCUSDT", pair="BTCUSDT"), UM_INDEX_PRICE_KLINES, um_report
+    )
+    cm_symbol = _archive_symbol(
+        Market("BTCUSD_PERP", "BTCUSDPERP", pair="BTCUSD"),
+        CM_INDEX_PRICE_KLINES,
+        cm_report,
+    )
+
+    assert um_symbol is None
+    assert cm_symbol == "BTCUSD"
+    assert um_report.errors == []
+    assert cm_report.errors == []
+
+
+def test_cm_index_price_request_reports_a_missing_pair_identifier() -> None:
+    """Confirm CM index routing does not guess an archive identifier."""
+    report = result()
+
+    archive_symbol = _archive_symbol(
+        Market("BTCUSD_PERP", "BTCUSDPERP"), CM_INDEX_PRICE_KLINES, report
+    )
+
+    assert archive_symbol is None
+    assert [message.code for message in report.errors] == ["archive_symbol_unavailable"]
