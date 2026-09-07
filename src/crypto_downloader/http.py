@@ -88,6 +88,22 @@ def retry_delay(
         return 30.0
 
 
+def _finite_number(value: object) -> bool:
+    """Return whether a value is a finite non-Boolean number.
+
+    Args:
+        value: The value to inspect.
+
+    Returns:
+        Whether the value can safely be used as a numeric HTTP setting.
+    """
+    return (
+        not isinstance(value, bool)
+        and isinstance(value, (int, float))
+        and math.isfinite(value)
+    )
+
+
 def _validate_settings(timeout: float, retries: int, backoff: float) -> None:
     """Reject invalid timeout and retry settings.
 
@@ -96,11 +112,11 @@ def _validate_settings(timeout: float, retries: int, backoff: float) -> None:
         retries: The number of retries after the first attempt.
         backoff: The initial exponential delay in seconds.
     """
-    if isinstance(timeout, bool) or not math.isfinite(timeout) or timeout <= 0:
+    if not _finite_number(timeout) or timeout <= 0:
         raise ValueError("timeout must be finite and greater than zero")
     if isinstance(retries, bool) or not isinstance(retries, int) or retries < 0:
         raise ValueError("retries must be a nonnegative integer")
-    if isinstance(backoff, bool) or not math.isfinite(backoff) or backoff < 0:
+    if not _finite_number(backoff) or backoff < 0:
         raise ValueError("backoff must be finite and nonnegative")
 
 
