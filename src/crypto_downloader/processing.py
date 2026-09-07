@@ -127,6 +127,7 @@ def _epoch(values: pd.Series, column: str) -> pd.Series:
 def _normalize_kline_chunk(
     frame: pd.DataFrame,
     dataset: DatasetSpec,
+    contract_size: float | None = None,
     *,
     volume_column: str,
     quote_volume_column: str,
@@ -138,6 +139,7 @@ def _normalize_kline_chunk(
     Args:
         frame: The raw source rows with source column names.
         dataset: The schema describing the source and stored columns.
+        contract_size: The optional COIN-M contract size, unused by Klines.
         volume_column: The canonical field receiving Binance's ``volume``.
         quote_volume_column: The canonical field receiving ``quote_volume``.
         taker_volume_column: The canonical field receiving ``taker_buy_volume``.
@@ -170,12 +172,15 @@ def _normalize_kline_chunk(
     return normalized
 
 
-def _normalize_spot_klines(frame: pd.DataFrame, dataset: DatasetSpec) -> pd.DataFrame:
+def _normalize_spot_klines(
+    frame: pd.DataFrame, dataset: DatasetSpec, contract_size: float | None = None
+) -> pd.DataFrame:
     """Normalize one Spot Kline source chunk.
 
     Args:
         frame: Headerless Spot CSV rows with declared source names.
         dataset: The Spot Kline schema declaration.
+        contract_size: The optional COIN-M contract size, unused by Spot data.
 
     Returns:
         Canonical Spot candle rows with base and quote volume fields.
@@ -190,12 +195,15 @@ def _normalize_spot_klines(frame: pd.DataFrame, dataset: DatasetSpec) -> pd.Data
     )
 
 
-def _normalize_um_klines(frame: pd.DataFrame, dataset: DatasetSpec) -> pd.DataFrame:
+def _normalize_um_klines(
+    frame: pd.DataFrame, dataset: DatasetSpec, contract_size: float | None = None
+) -> pd.DataFrame:
     """Normalize one USD-M perpetual Kline source chunk.
 
     Args:
         frame: Header-bearing USD-M CSV rows with declared source names.
         dataset: The USD-M Kline schema declaration.
+        contract_size: The optional COIN-M contract size, unused by USD-M data.
 
     Returns:
         Canonical USD-M candles with explicit base and quote volumes.
@@ -210,12 +218,15 @@ def _normalize_um_klines(frame: pd.DataFrame, dataset: DatasetSpec) -> pd.DataFr
     )
 
 
-def _normalize_cm_klines(frame: pd.DataFrame, dataset: DatasetSpec) -> pd.DataFrame:
+def _normalize_cm_klines(
+    frame: pd.DataFrame, dataset: DatasetSpec, contract_size: float | None = None
+) -> pd.DataFrame:
     """Normalize one COIN-M perpetual Kline source chunk.
 
     Args:
         frame: Header-bearing COIN-M CSV rows with declared source names.
         dataset: The COIN-M Kline schema declaration.
+        contract_size: The cataloged contract size, unused by Kline data.
 
     Returns:
         Canonical COIN-M candles with explicit contract and base volumes.
@@ -230,12 +241,15 @@ def _normalize_cm_klines(frame: pd.DataFrame, dataset: DatasetSpec) -> pd.DataFr
     )
 
 
-def _normalize_spot_trades(frame: pd.DataFrame, dataset: DatasetSpec) -> pd.DataFrame:
+def _normalize_spot_trades(
+    frame: pd.DataFrame, dataset: DatasetSpec, contract_size: float | None = None
+) -> pd.DataFrame:
     """Normalize one Spot trade or aggregate-trade source chunk.
 
     Args:
         frame: Headerless Binance rows with the declared source columns.
         dataset: The Spot trades or aggregate-trades declaration.
+        contract_size: The optional COIN-M contract size, unused by Spot data.
 
     Returns:
         Canonical event rows with exact IDs, UTC timestamps, and maker side.
@@ -259,6 +273,74 @@ def _normalize_spot_trades(frame: pd.DataFrame, dataset: DatasetSpec) -> pd.Data
         "Spot event chunk normalized: dataset=%s rows=%d", dataset.name, len(normalized)
     )
     return normalized
+
+
+def _contract_size(value: float | None) -> float:
+    """Return one positive finite COIN-M contract size.
+
+    Args:
+        value: The market contract size supplied through the catalog context.
+
+    Returns:
+        The validated contract size as a float.
+
+    Raises:
+        DataValidationError: If the required contract size is missing or invalid.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise DataValidationError("COIN-M contract size is unavailable")
+    size = float(value)
+    if not np.isfinite(size) or size <= 0:
+        raise DataValidationError("COIN-M contract size must be positive and finite")
+    return size
+
+
+def _normalize_um_trades(
+    frame: pd.DataFrame, dataset: DatasetSpec, contract_size: float | None = None
+) -> pd.DataFrame:
+    """Normalize one USD-M perpetual trade CSV chunk.
+
+    Args:
+        frame: Header-bearing USD-M source trade rows.
+        dataset: The USD-M trade schema declaration.
+        contract_size: The optional COIN-M contract size, unused by USD-M data.
+
+    Returns:
+        Canonical USD-M trades with base and quote quantities.
+    """
+    result = pd.DataFrame(index=frame.index)
+    result["trade_id"] = _integer(frame["id"], "id")
+    result["price"] = _number(frame["price"], "price")
+    result["base_quantity"] = _number(frame["qty"], "qty")
+    result["quote_quantity"] = _number(frame["quote_qty"], "quote_qty")
+    result["event_time"] = _epoch(frame["time"], "time")
+    result["buyer_is_maker"] = _boolean(frame["is_buyer_maker"], "is_buyer_maker")
+    return result.loc[:, dataset.stored_columns]
+
+
+def _normalize_cm_trades(
+    frame: pd.DataFrame, dataset: DatasetSpec, contract_size: float | None = None
+) -> pd.DataFrame:
+    """Normalize one COIN-M perpetual trade CSV chunk.
+
+    Args:
+        frame: Header-bearing COIN-M source trade rows.
+        dataset: The COIN-M trade schema declaration.
+        contract_size: The cataloged USD value of one contract.
+
+    Returns:
+        Canonical COIN-M trades with source quantities and derived quote notional.
+    """
+    size = _contract_size(contract_size)
+    result = pd.DataFrame(index=frame.index)
+    result["trade_id"] = _integer(frame["id"], "id")
+    result["price"] = _number(frame["price"], "price")
+    result["contract_quantity"] = _number(frame["qty"], "qty")
+    result["base_quantity"] = _number(frame["base_qty"], "base_qty")
+    result["quote_notional"] = result["contract_quantity"] * size
+    result["event_time"] = _epoch(frame["time"], "time")
+    result["buyer_is_maker"] = _boolean(frame["is_buyer_maker"], "is_buyer_maker")
+    return result.loc[:, dataset.stored_columns]
 
 
 def _validate_timestamps(
@@ -498,7 +580,55 @@ def _validate_spot_event_chunk(
     return last
 
 
-type Normalizer = Callable[[pd.DataFrame, DatasetSpec], pd.DataFrame]
+def _validate_futures_trade_rows(frame: pd.DataFrame, dataset: DatasetSpec) -> None:
+    """Validate numeric, ID, and maker-side rules for Futures trade rows.
+
+    Args:
+        frame: Canonical USD-M or COIN-M trade rows.
+        dataset: The matching Futures trade schema declaration.
+    """
+    identifiers = frame["trade_id"]
+    if (identifiers < 0).any() or not identifiers.is_monotonic_increasing:
+        raise DataValidationError("trade_id must be nonnegative and increasing")
+    quantities = [
+        column
+        for column in dataset.stored_columns
+        if column not in {"trade_id", "price", "event_time", "buyer_is_maker"}
+    ]
+    values = frame[["price", *quantities]]
+    if not np.isfinite(values.to_numpy(dtype="float64")).all():
+        raise DataValidationError("trade values must be finite")
+    if (frame["price"] <= 0).any():
+        raise DataValidationError("trade price must be greater than zero")
+    if (frame[quantities] < 0).any().any():
+        raise DataValidationError("trade quantities must be nonnegative")
+    if not pd.api.types.is_bool_dtype(frame["buyer_is_maker"]):
+        raise DataValidationError("buyer_is_maker must be boolean")
+
+
+def _validate_futures_trade_chunk(
+    frame: pd.DataFrame,
+    dataset: DatasetSpec,
+    day: date,
+    previous_timestamp: pd.Timestamp | None,
+) -> pd.Timestamp:
+    """Validate one canonical USD-M or COIN-M trade chunk.
+
+    Args:
+        frame: Canonical Futures event rows to validate.
+        dataset: The Futures trade dataset declaration.
+        day: The UTC archive day that must contain all events.
+        previous_timestamp: The final timestamp from the preceding CSV chunk.
+
+    Returns:
+        The final event timestamp in the chunk.
+    """
+    last = _validate_event_timestamps(frame["event_time"], day, previous_timestamp)
+    _validate_futures_trade_rows(frame, dataset)
+    return last
+
+
+type Normalizer = Callable[[pd.DataFrame, DatasetSpec, float | None], pd.DataFrame]
 type Validator = Callable[
     [pd.DataFrame, DatasetSpec, date, pd.Timestamp | None], pd.Timestamp
 ]
@@ -509,6 +639,8 @@ _NORMALIZERS: dict[tuple[str, str], Normalizer] = {
     ("cm", "klines"): _normalize_cm_klines,
     ("spot", "trades"): _normalize_spot_trades,
     ("spot", "agg_trades"): _normalize_spot_trades,
+    ("um", "trades"): _normalize_um_trades,
+    ("cm", "trades"): _normalize_cm_trades,
 }
 _VALIDATORS: dict[tuple[str, str], Validator] = {
     ("spot", "klines"): _validate_kline_chunk,
@@ -516,15 +648,23 @@ _VALIDATORS: dict[tuple[str, str], Validator] = {
     ("cm", "klines"): _validate_kline_chunk,
     ("spot", "trades"): _validate_spot_event_chunk,
     ("spot", "agg_trades"): _validate_spot_event_chunk,
+    ("um", "trades"): _validate_futures_trade_chunk,
+    ("cm", "trades"): _validate_futures_trade_chunk,
 }
 
 
-def normalize_chunk(frame: pd.DataFrame, dataset: DatasetSpec) -> pd.DataFrame:
+def normalize_chunk(
+    frame: pd.DataFrame,
+    dataset: DatasetSpec,
+    *,
+    contract_size: float | None = None,
+) -> pd.DataFrame:
     """Convert one declared source CSV chunk into its stored schema.
 
     Args:
         frame: The raw source rows with declared source column names.
         dataset: The dataset declaration selecting a normalizer.
+        contract_size: The cataloged COIN-M contract size when required.
 
     Returns:
         A new DataFrame containing canonical stored columns.
@@ -541,7 +681,7 @@ def normalize_chunk(frame: pd.DataFrame, dataset: DatasetSpec) -> pd.DataFrame:
         raise ValueError(
             f"unsupported normalizer: {dataset.product}/{dataset.name}"
         ) from error
-    return normalizer(frame, dataset)
+    return normalizer(frame, dataset, contract_size)
 
 
 def validate_chunk(

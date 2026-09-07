@@ -281,6 +281,7 @@ class DatasetSpec:
     schema_version: int = 1
     supports_resampling: bool = False
     supports_gap_policy: bool = False
+    requires_contract_size: bool = False
     resample_sum_columns: Columns = ()
     ordering_columns: Columns = ()
     timestamp_columns: Columns = ()
@@ -557,6 +558,60 @@ CM_KLINES = DatasetSpec(
     integer_columns=("trade_count",),
 )
 
+UM_TRADES = DatasetSpec(
+    product="um",
+    name="trades",
+    remote_name="trades",
+    source_columns=("id", "price", "qty", "quote_qty", "time", "is_buyer_maker"),
+    stored_columns=(
+        "trade_id",
+        "price",
+        "base_quantity",
+        "quote_quantity",
+        "event_time",
+        "buyer_is_maker",
+    ),
+    time_column="event_time",
+    base_interval=None,
+    output_intervals=(),
+    aliases=MappingProxyType({"id": "trade_id", "quantity": "base_quantity"}),
+    max_concurrency=8,
+    csv_header="present",
+    schema_version=1,
+    ordering_columns=("event_time", "trade_id"),
+    timestamp_columns=("event_time",),
+    integer_columns=("trade_id",),
+    boolean_columns=("buyer_is_maker",),
+)
+
+CM_TRADES = DatasetSpec(
+    product="cm",
+    name="trades",
+    remote_name="trades",
+    source_columns=("id", "price", "qty", "base_qty", "time", "is_buyer_maker"),
+    stored_columns=(
+        "trade_id",
+        "price",
+        "contract_quantity",
+        "base_quantity",
+        "quote_notional",
+        "event_time",
+        "buyer_is_maker",
+    ),
+    time_column="event_time",
+    base_interval=None,
+    output_intervals=(),
+    aliases=MappingProxyType({"id": "trade_id", "quantity": "contract_quantity"}),
+    max_concurrency=8,
+    csv_header="present",
+    schema_version=1,
+    requires_contract_size=True,
+    ordering_columns=("event_time", "trade_id"),
+    timestamp_columns=("event_time",),
+    integer_columns=("trade_id",),
+    boolean_columns=("buyer_is_maker",),
+)
+
 SPOT_TRADES = DatasetSpec(
     product="spot",
     name="trades",
@@ -602,6 +657,8 @@ DATASETS: Mapping[tuple[str, str], DatasetSpec] = MappingProxyType(
         ("spot", "agg_trades"): SPOT_AGG_TRADES,
         ("um", "klines"): UM_KLINES,
         ("cm", "klines"): CM_KLINES,
+        ("um", "trades"): UM_TRADES,
+        ("cm", "trades"): CM_TRADES,
     }
 )
 

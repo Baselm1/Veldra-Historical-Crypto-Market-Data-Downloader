@@ -60,6 +60,7 @@ class Resource:
     first_timestamp: datetime | None = None
     last_timestamp: datetime | None = None
     archive_symbol: str | None = None
+    contract_size: float | None = None
     timestamp_column: str | None = None
     schema_version: int = 1
     error: str | None = None

@@ -2,7 +2,14 @@
 
 import pytest
 
-from crypto_downloader.datasets import CM_KLINES, UM_KLINES, DatasetSpec, get_dataset
+from crypto_downloader.datasets import (
+    CM_KLINES,
+    CM_TRADES,
+    UM_KLINES,
+    UM_TRADES,
+    DatasetSpec,
+    get_dataset,
+)
 from crypto_downloader.request import Request
 
 SOURCE_COLUMNS = (
@@ -261,10 +268,36 @@ def test_perpetual_kline_schemas_declare_product_specific_quantity_units() -> No
     assert "volume" not in CM_KLINES.stored_columns
 
 
+def test_perpetual_trade_schemas_declare_native_and_derived_quantity_units() -> None:
+    """Confirm Futures trade schemas describe their distinct source semantics."""
+    assert get_dataset("um", "trades") is UM_TRADES
+    assert get_dataset("cm", "trades") is CM_TRADES
+    assert UM_TRADES.csv_header == "present"
+    assert CM_TRADES.csv_header == "present"
+    assert UM_TRADES.requires_contract_size is False
+    assert CM_TRADES.requires_contract_size is True
+    assert UM_TRADES.stored_columns == (
+        "trade_id",
+        "price",
+        "base_quantity",
+        "quote_quantity",
+        "event_time",
+        "buyer_is_maker",
+    )
+    assert CM_TRADES.stored_columns == (
+        "trade_id",
+        "price",
+        "contract_quantity",
+        "base_quantity",
+        "quote_notional",
+        "event_time",
+        "buyer_is_maker",
+    )
+
+
 @pytest.mark.parametrize(
     ("product", "dataset"),
     [
-        ("um", "trades"),
         ("cm", "agg_trades"),
         ("unknown", "unknown"),
     ],

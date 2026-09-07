@@ -1,9 +1,10 @@
 """Run the download workflow for one requested pair."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, time, timedelta
 from difflib import get_close_matches
 import logging
+import math
 from pathlib import Path
 from time import perf_counter
 
@@ -399,6 +400,50 @@ def _resources_in_range(
     return [resource for resource in resources if first <= resource.day <= last]
 
 
+def _with_contract_size(
+    resources: list[Resource],
+    market: Market,
+    dataset: DatasetSpec,
+    result: Result,
+) -> list[Resource] | None:
+    """Attach cataloged COIN-M contract size to resources that need it.
+
+    Args:
+        resources: The discovered daily resources required by the request.
+        market: The resolved current or archived market metadata.
+        dataset: The requested dataset capability declaration.
+        result: The result receiving an unavailable-contract diagnostic.
+
+    Returns:
+        Original resources when no context is needed, enriched resources when a
+        valid contract size exists, or ``None`` after recording an error.
+    """
+    if not dataset.requires_contract_size:
+        return resources
+    size = market.contract_size
+    if (
+        isinstance(size, bool)
+        or not isinstance(size, (int, float))
+        or not math.isfinite(size)
+        or size <= 0
+    ):
+        result.errors.append(
+            Message(
+                "contract_size_unavailable",
+                f"Contract size is unavailable for {market.symbol}; COIN-M "
+                "quote notional cannot be derived.",
+            )
+        )
+        LOGGER.error(
+            "COIN-M contract size unavailable: symbol=%s dataset=%s value=%s",
+            market.symbol,
+            dataset.name,
+            size,
+        )
+        return None
+    return [replace(resource, contract_size=float(size)) for resource in resources]
+
+
 def _usable_range(
     result: Result,
     request: Request,
@@ -788,6 +833,15 @@ def process_pair(
     noun = "file" if len(resources) == 1 else "files"
     display.info(f"{market.symbol}: found {len(resources):,} daily {noun}")
     requested_resources = _resources_in_range(resources, *used_range)
+    contextual_resources = _with_contract_size(
+        requested_resources,
+        market,
+        dataset,
+        result,
+    )
+    if contextual_resources is None:
+        return _finish(result, display, started)
+    requested_resources = contextual_resources
     result.problems.extend(_missing_resources(requested_resources, *used_range))
     coverage = cache_resources(
         source,

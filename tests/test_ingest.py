@@ -12,9 +12,11 @@ import pandas as pd
 import pytest
 
 from crypto_downloader.datasets import (
+    CM_TRADES,
     SPOT_AGG_TRADES,
     SPOT_KLINES,
     SPOT_TRADES,
+    UM_TRADES,
     DatasetSpec,
 )
 from crypto_downloader.http import ChecksumError
@@ -196,6 +198,75 @@ def test_ingest_archive_writes_canonical_spot_event_parquet(
     assert len(frame) == metadata.row_count == 3
     assert metadata.timestamp_column == "event_time"
     assert metadata.schema_version == dataset.schema_version
+
+
+@pytest.mark.parametrize(
+    ("dataset", "fixture", "archive_name", "contract_size", "notional_column"),
+    [
+        (
+            UM_TRADES,
+            "binance_um_trades_2024-01-01.csv",
+            "BTCUSDT-trades-2024-01-01.zip",
+            None,
+            "quote_quantity",
+        ),
+        (
+            CM_TRADES,
+            "binance_cm_trades_2024-01-01.csv",
+            "BTCUSD_PERP-trades-2024-01-01.zip",
+            100.0,
+            "quote_notional",
+        ),
+    ],
+)
+def test_ingest_archive_writes_canonical_futures_trade_parquet(
+    dataset: DatasetSpec,
+    fixture: str,
+    archive_name: str,
+    contract_size: float | None,
+    notional_column: str,
+    tmp_path: Path,
+) -> None:
+    """Confirm Futures archive ingestion honors headers and contract context.
+
+    Args:
+        dataset: The USD-M or COIN-M trade declaration.
+        fixture: The representative header-bearing CSV fixture.
+        archive_name: The matching Binance daily ZIP basename.
+        contract_size: The optional cataloged COIN-M contract size.
+        notional_column: The native or derived quote-facing output column.
+        tmp_path: The isolated output directory.
+    """
+    content = (FIXTURES / fixture).read_bytes()
+    payload = archive_bytes(
+        content,
+        names=(archive_name.removesuffix(".zip") + ".csv",),
+    )
+    day = date.fromisoformat(archive_name[-14:-4])
+    resource = Resource(
+        day,
+        f"https://data.example/{archive_name}",
+        f"https://data.example/{archive_name}.CHECKSUM",
+        contract_size=contract_size,
+    )
+    digest = hashlib.sha256(payload).hexdigest()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        """Serve the matching checksum or daily archive payload."""
+        if str(request.url).endswith(".CHECKSUM"):
+            return httpx.Response(200, text=f"{digest}  {archive_name}\n")
+        return httpx.Response(200, content=payload)
+
+    destination = tmp_path / f"{dataset.product}-trades.parquet"
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        metadata = ingest_archive(client, resource, dataset, destination, chunk_rows=1)
+
+    frame = pd.read_parquet(destination)
+    assert tuple(frame.columns) == dataset.stored_columns
+    assert len(frame) == metadata.row_count == 2
+    assert frame[notional_column].notna().all()
+    if dataset is CM_TRADES:
+        assert frame[notional_column].tolist() == [300.0, 200.0]
 
 
 def test_ingest_archive_rejects_a_wrong_declared_csv_header(tmp_path: Path) -> None:

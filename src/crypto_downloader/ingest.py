@@ -109,7 +109,11 @@ def _write_chunks(
                     raise ArchiveError("CSV does not have the expected field count")
                 if dataset.csv_header == "absent":
                     raw.columns = dataset.source_columns
-                frame = normalize_chunk(raw, dataset)
+                frame = normalize_chunk(
+                    raw,
+                    dataset,
+                    contract_size=resource.contract_size,
+                )
                 previous = validate_chunk(
                     frame, dataset, resource.day, previous_timestamp=previous
                 )
