@@ -124,27 +124,39 @@ def _epoch(values: pd.Series, column: str) -> pd.Series:
         raise DataValidationError(f"invalid {column} value") from error
 
 
-def _normalize_spot_klines(frame: pd.DataFrame, dataset: DatasetSpec) -> pd.DataFrame:
-    """Convert one source CSV chunk into its canonical stored schema.
+def _normalize_kline_chunk(
+    frame: pd.DataFrame,
+    dataset: DatasetSpec,
+    *,
+    volume_column: str,
+    quote_volume_column: str,
+    taker_volume_column: str,
+    taker_quote_volume_column: str,
+) -> pd.DataFrame:
+    """Convert one product-specific Kline CSV chunk into canonical columns.
 
     Args:
         frame: The raw source rows with source column names.
         dataset: The schema describing the source and stored columns.
+        volume_column: The canonical field receiving Binance's ``volume``.
+        quote_volume_column: The canonical field receiving ``quote_volume``.
+        taker_volume_column: The canonical field receiving ``taker_buy_volume``.
+        taker_quote_volume_column: The canonical field receiving Binance's
+            ``taker_buy_quote_volume``.
 
     Returns:
         A new DataFrame containing normalized values and column names.
     """
     result = pd.DataFrame(index=frame.index)
     result["open_time"] = _epoch(frame["open_time"], "open_time")
-    for column in ("open", "high", "low", "close", "volume"):
+    for column in ("open", "high", "low", "close"):
         result[column] = _number(frame[column], column)
+    result[volume_column] = _number(frame["volume"], "volume")
     result["close_time"] = _epoch(frame["close_time"], "close_time")
-    result["quote_volume"] = _number(frame["quote_volume"], "quote_volume")
+    result[quote_volume_column] = _number(frame["quote_volume"], "quote_volume")
     result["trade_count"] = _integer(frame["count"], "count")
-    result["taker_buy_base_volume"] = _number(
-        frame["taker_buy_volume"], "taker_buy_volume"
-    )
-    result["taker_buy_quote_volume"] = _number(
+    result[taker_volume_column] = _number(frame["taker_buy_volume"], "taker_buy_volume")
+    result[taker_quote_volume_column] = _number(
         frame["taker_buy_quote_volume"], "taker_buy_quote_volume"
     )
     normalized = result.loc[:, dataset.stored_columns]
@@ -156,6 +168,66 @@ def _normalize_spot_klines(frame: pd.DataFrame, dataset: DatasetSpec) -> pd.Data
         len(normalized.columns),
     )
     return normalized
+
+
+def _normalize_spot_klines(frame: pd.DataFrame, dataset: DatasetSpec) -> pd.DataFrame:
+    """Normalize one Spot Kline source chunk.
+
+    Args:
+        frame: Headerless Spot CSV rows with declared source names.
+        dataset: The Spot Kline schema declaration.
+
+    Returns:
+        Canonical Spot candle rows with base and quote volume fields.
+    """
+    return _normalize_kline_chunk(
+        frame,
+        dataset,
+        volume_column="volume",
+        quote_volume_column="quote_volume",
+        taker_volume_column="taker_buy_base_volume",
+        taker_quote_volume_column="taker_buy_quote_volume",
+    )
+
+
+def _normalize_um_klines(frame: pd.DataFrame, dataset: DatasetSpec) -> pd.DataFrame:
+    """Normalize one USD-M perpetual Kline source chunk.
+
+    Args:
+        frame: Header-bearing USD-M CSV rows with declared source names.
+        dataset: The USD-M Kline schema declaration.
+
+    Returns:
+        Canonical USD-M candles with explicit base and quote volumes.
+    """
+    return _normalize_kline_chunk(
+        frame,
+        dataset,
+        volume_column="base_volume",
+        quote_volume_column="quote_volume",
+        taker_volume_column="taker_buy_base_volume",
+        taker_quote_volume_column="taker_buy_quote_volume",
+    )
+
+
+def _normalize_cm_klines(frame: pd.DataFrame, dataset: DatasetSpec) -> pd.DataFrame:
+    """Normalize one COIN-M perpetual Kline source chunk.
+
+    Args:
+        frame: Header-bearing COIN-M CSV rows with declared source names.
+        dataset: The COIN-M Kline schema declaration.
+
+    Returns:
+        Canonical COIN-M candles with explicit contract and base volumes.
+    """
+    return _normalize_kline_chunk(
+        frame,
+        dataset,
+        volume_column="contract_volume",
+        quote_volume_column="base_volume",
+        taker_volume_column="taker_buy_contract_volume",
+        taker_quote_volume_column="taker_buy_base_volume",
+    )
 
 
 def _normalize_spot_trades(frame: pd.DataFrame, dataset: DatasetSpec) -> pd.DataFrame:
@@ -294,19 +366,11 @@ def _validate_numbers(frame: pd.DataFrame, dataset: DatasetSpec) -> None:
     numeric_columns = [
         column
         for column in dataset.stored_columns
-        if column not in {"open_time", "close_time"}
+        if column not in dataset.timestamp_columns
     ]
     if not np.isfinite(frame[numeric_columns].to_numpy(dtype="float64")).all():
         raise DataValidationError("numeric values must be finite")
-    nonnegative = frame[
-        [
-            "volume",
-            "quote_volume",
-            "trade_count",
-            "taker_buy_base_volume",
-            "taker_buy_quote_volume",
-        ]
-    ]
+    nonnegative = frame.loc[:, dataset.resample_sum_columns]
     if (nonnegative < 0).any().any():
         raise DataValidationError("volume and count values must be nonnegative")
 
@@ -326,17 +390,17 @@ def _validate_ohlc(frame: pd.DataFrame) -> None:
         raise DataValidationError("low is above another OHLC price")
 
 
-def _validate_spot_kline_chunk(
+def _validate_kline_chunk(
     frame: pd.DataFrame,
     dataset: DatasetSpec,
     day: date,
     previous_timestamp: pd.Timestamp | None = None,
 ) -> pd.Timestamp:
-    """Validate one canonical daily data chunk.
+    """Validate one canonical daily Kline chunk.
 
     Args:
         frame: The normalized rows to validate.
-        dataset: The schema describing the canonical rows.
+        dataset: The Spot, USD-M, or COIN-M Kline schema.
         day: The UTC source day that must contain every row.
         previous_timestamp: The final timestamp from the preceding chunk.
 
@@ -441,11 +505,15 @@ type Validator = Callable[
 
 _NORMALIZERS: dict[tuple[str, str], Normalizer] = {
     ("spot", "klines"): _normalize_spot_klines,
+    ("um", "klines"): _normalize_um_klines,
+    ("cm", "klines"): _normalize_cm_klines,
     ("spot", "trades"): _normalize_spot_trades,
     ("spot", "agg_trades"): _normalize_spot_trades,
 }
 _VALIDATORS: dict[tuple[str, str], Validator] = {
-    ("spot", "klines"): _validate_spot_kline_chunk,
+    ("spot", "klines"): _validate_kline_chunk,
+    ("um", "klines"): _validate_kline_chunk,
+    ("cm", "klines"): _validate_kline_chunk,
     ("spot", "trades"): _validate_spot_event_chunk,
     ("spot", "agg_trades"): _validate_spot_event_chunk,
 }

@@ -251,7 +251,7 @@ def _filled_fields(dataset: DatasetSpec, step: int, policy: str) -> str:
             )
         else:
             value = f"CASE WHEN is_synthetic THEN 0 ELSE {_identifier(name)} END"
-        cast = "::BIGINT" if name == "trade_count" and policy != "nan" else ""
+        cast = "::BIGINT" if name in dataset.integer_columns and policy != "nan" else ""
         fields.append(f"({value}){cast} AS {_identifier(name)}")
     fields.append("is_synthetic")
     return ", ".join(fields)
@@ -391,6 +391,47 @@ def _aggregate(expression: str, gap_policy: str, *, integer: bool = False) -> st
     return f"({value})::BIGINT" if integer else value
 
 
+def _resampled_fields(
+    dataset: DatasetSpec, interval: str, gap_policy: str
+) -> list[str]:
+    """Build declared price and additive fields for one resampled Kline row.
+
+    Args:
+        dataset: The schema declaring candle fields and quantity units.
+        interval: The supported output interval.
+        gap_policy: The missing-candle policy applied to base rows.
+
+    Returns:
+        Canonical SQL expressions in stored-column order.
+    """
+    fields: list[str] = []
+    for column in dataset.stored_columns:
+        if column == dataset.time_column:
+            expression = f"{_bucket_expression(interval)} AS {_identifier(column)}"
+        elif column == "open":
+            expression = f"{_aggregate('arg_min(open, open_time)', gap_policy)} AS open"
+        elif column == "high":
+            expression = f"{_aggregate('max(high)', gap_policy)} AS high"
+        elif column == "low":
+            expression = f"{_aggregate('min(low)', gap_policy)} AS low"
+        elif column == "close":
+            expression = (
+                f"{_aggregate('arg_max(close, open_time)', gap_policy)} AS close"
+            )
+        elif column == "close_time":
+            expression = f"{_aggregate('max(close_time)', gap_policy)} AS close_time"
+        elif column in dataset.resample_sum_columns:
+            expression = (
+                f"{_aggregate(f'sum({_identifier(column)})', gap_policy, integer=column in dataset.integer_columns)} "
+                f"AS {_identifier(column)}"
+            )
+        else:
+            raise ValueError(f"cannot resample undeclared Kline column '{column}'")
+        fields.append(expression)
+    fields.append("bool_or(is_synthetic) AS is_synthetic")
+    return fields
+
+
 def _resampled_query(
     source_sql: str,
     dataset: DatasetSpec,
@@ -410,22 +451,7 @@ def _resampled_query(
     Returns:
         DuckDB SQL returning projected resampled candles.
     """
-    fields = [
-        f"{_bucket_expression(interval)} AS open_time",
-        f"{_aggregate('arg_min(open, open_time)', gap_policy)} AS open",
-        f"{_aggregate('max(high)', gap_policy)} AS high",
-        f"{_aggregate('min(low)', gap_policy)} AS low",
-        f"{_aggregate('arg_max(close, open_time)', gap_policy)} AS close",
-        f"{_aggregate('sum(volume)', gap_policy)} AS volume",
-        f"{_aggregate('max(close_time)', gap_policy)} AS close_time",
-        f"{_aggregate('sum(quote_volume)', gap_policy)} AS quote_volume",
-        f"{_aggregate('sum(trade_count)', gap_policy, integer=True)} AS trade_count",
-        f"{_aggregate('sum(taker_buy_base_volume)', gap_policy)} "
-        "AS taker_buy_base_volume",
-        f"{_aggregate('sum(taker_buy_quote_volume)', gap_policy)} "
-        "AS taker_buy_quote_volume",
-        "bool_or(is_synthetic) AS is_synthetic",
-    ]
+    fields = _resampled_fields(dataset, interval, gap_policy)
     projection = _projection(columns, synthetic_column=True)
     return (
         f"WITH base AS ({source_sql}), resampled AS ("

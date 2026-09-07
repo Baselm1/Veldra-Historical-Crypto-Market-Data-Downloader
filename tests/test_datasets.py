@@ -2,7 +2,7 @@
 
 import pytest
 
-from crypto_downloader.datasets import DatasetSpec, get_dataset
+from crypto_downloader.datasets import CM_KLINES, UM_KLINES, DatasetSpec, get_dataset
 from crypto_downloader.request import Request
 
 SOURCE_COLUMNS = (
@@ -101,6 +101,13 @@ def test_spot_kline_schema_matches_the_daily_archive_and_cache() -> None:
     assert spec.schema_version == 1
     assert spec.supports_resampling is True
     assert spec.supports_gap_policy is True
+    assert spec.resample_sum_columns == (
+        "volume",
+        "quote_volume",
+        "trade_count",
+        "taker_buy_base_volume",
+        "taker_buy_quote_volume",
+    )
     assert spec.ordering_columns == ("open_time",)
     assert spec.timestamp_columns == ("open_time", "close_time")
     assert spec.integer_columns == ("trade_count",)
@@ -156,6 +163,7 @@ def test_capabilities_apply_dataset_specific_interval_and_gap_defaults() -> None
         ({"output_intervals": ("1m",)}, "interval-less"),
         ({"supports_resampling": True}, "raw datasets"),
         ({"supports_gap_policy": True}, "raw datasets"),
+        ({"resample_sum_columns": ("value",)}, "non-resampled"),
         ({"ordering_columns": ("missing",)}, "ordering columns"),
         ({"timestamp_columns": ("missing",)}, "timestamp columns"),
         ({"integer_columns": ("missing",)}, "integer columns"),
@@ -241,18 +249,30 @@ def test_unknown_and_duplicate_resolved_columns_are_rejected() -> None:
         spec.resolve_columns({"volume": "volume", "base_volume": "base_volume"})
 
 
+def test_perpetual_kline_schemas_declare_product_specific_quantity_units() -> None:
+    """Confirm USD-M and COIN-M Klines do not expose ambiguous volume fields."""
+    assert get_dataset("um", "klines") is UM_KLINES
+    assert get_dataset("cm", "klines") is CM_KLINES
+    assert UM_KLINES.csv_header == "present"
+    assert CM_KLINES.csv_header == "present"
+    assert UM_KLINES.stored_columns[5] == "base_volume"
+    assert CM_KLINES.stored_columns[5] == "contract_volume"
+    assert "volume" not in UM_KLINES.stored_columns
+    assert "volume" not in CM_KLINES.stored_columns
+
+
 @pytest.mark.parametrize(
     ("product", "dataset"),
     [
-        ("um", "klines"),
-        ("cm", "klines"),
+        ("um", "trades"),
+        ("cm", "agg_trades"),
         ("unknown", "unknown"),
     ],
 )
 def test_unimplemented_product_dataset_combinations_are_rejected(
     product: str, dataset: str
 ) -> None:
-    """Confirm only the current Spot kline vertical slice is registered.
+    """Confirm unsupported product and dataset combinations are rejected.
 
     Args:
         product: An unimplemented product identifier.

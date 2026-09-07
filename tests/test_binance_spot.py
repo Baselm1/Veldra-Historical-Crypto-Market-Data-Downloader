@@ -736,7 +736,7 @@ def test_daily_listing_ignores_prior_and_impossible_dates() -> None:
             "source",
         ),
         (
-            ResourceKey("binance", "um", "klines", "BTCUSDT", "1m"),
+                ResourceKey("binance", "um", "trades", "BTCUSDT", None),
             date(2025, 1, 1),
             date(2025, 1, 2),
             "dataset",

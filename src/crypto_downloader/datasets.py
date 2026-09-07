@@ -170,6 +170,39 @@ def _validate_kline_capabilities(
         raise ValueError("raw datasets cannot support kline-only capabilities")
 
 
+def _validate_resample_columns(
+    stored_columns: Columns,
+    time_column: str,
+    supports_resampling: bool,
+    resample_sum_columns: Columns,
+) -> None:
+    """Require resampled candle schemas to declare every additive field.
+
+    Args:
+        stored_columns: The canonical fields retained in Parquet.
+        time_column: The candle opening timestamp field.
+        supports_resampling: Whether the dataset can produce larger candles.
+        resample_sum_columns: The canonical numeric fields summed per bucket.
+
+    Raises:
+        ValueError: If additive fields are missing or invalid for the dataset.
+    """
+    if not supports_resampling:
+        if resample_sum_columns:
+            raise ValueError("non-resampled datasets cannot declare resample columns")
+        return
+    if not resample_sum_columns:
+        raise ValueError("resampled datasets must declare resample columns")
+    if len(set(resample_sum_columns)) != len(resample_sum_columns):
+        raise ValueError("resample columns cannot contain duplicates")
+    if any(column not in stored_columns for column in resample_sum_columns):
+        raise ValueError("resample columns must be stored")
+    structural = {time_column, "open", "high", "low", "close", "close_time"}
+    unhandled = set(stored_columns) - structural - set(resample_sum_columns)
+    if unhandled:
+        raise ValueError("resample columns must cover every additive candle field")
+
+
 def _validate_ordering(stored_columns: Columns, ordering_columns: Columns) -> None:
     """Reject ordering columns that do not exist in the stored schema.
 
@@ -248,6 +281,7 @@ class DatasetSpec:
     schema_version: int = 1
     supports_resampling: bool = False
     supports_gap_policy: bool = False
+    resample_sum_columns: Columns = ()
     ordering_columns: Columns = ()
     timestamp_columns: Columns = ()
     integer_columns: Columns = ()
@@ -266,6 +300,12 @@ class DatasetSpec:
             self.base_interval,
             self.supports_resampling,
             self.supports_gap_policy,
+        )
+        _validate_resample_columns(
+            self.stored_columns,
+            self.time_column,
+            self.supports_resampling,
+            self.resample_sum_columns,
         )
         if not self.ordering_columns:
             object.__setattr__(self, "ordering_columns", (self.time_column,))
@@ -427,6 +467,91 @@ SPOT_KLINES = DatasetSpec(
     schema_version=1,
     supports_resampling=True,
     supports_gap_policy=True,
+    resample_sum_columns=(
+        "volume",
+        "quote_volume",
+        "trade_count",
+        "taker_buy_base_volume",
+        "taker_buy_quote_volume",
+    ),
+    ordering_columns=("open_time",),
+    timestamp_columns=("open_time", "close_time"),
+    integer_columns=("trade_count",),
+)
+
+UM_KLINES = DatasetSpec(
+    product="um",
+    name="klines",
+    remote_name="klines",
+    source_columns=SPOT_KLINE_SOURCE_COLUMNS,
+    stored_columns=(
+        "open_time",
+        "open",
+        "high",
+        "low",
+        "close",
+        "base_volume",
+        "close_time",
+        "quote_volume",
+        "trade_count",
+        "taker_buy_base_volume",
+        "taker_buy_quote_volume",
+    ),
+    time_column="open_time",
+    base_interval="1m",
+    output_intervals=SPOT_KLINE_OUTPUT_INTERVALS,
+    aliases=MappingProxyType({}),
+    max_concurrency=32,
+    csv_header="present",
+    schema_version=1,
+    supports_resampling=True,
+    supports_gap_policy=True,
+    resample_sum_columns=(
+        "base_volume",
+        "quote_volume",
+        "trade_count",
+        "taker_buy_base_volume",
+        "taker_buy_quote_volume",
+    ),
+    ordering_columns=("open_time",),
+    timestamp_columns=("open_time", "close_time"),
+    integer_columns=("trade_count",),
+)
+
+CM_KLINES = DatasetSpec(
+    product="cm",
+    name="klines",
+    remote_name="klines",
+    source_columns=SPOT_KLINE_SOURCE_COLUMNS,
+    stored_columns=(
+        "open_time",
+        "open",
+        "high",
+        "low",
+        "close",
+        "contract_volume",
+        "close_time",
+        "base_volume",
+        "trade_count",
+        "taker_buy_contract_volume",
+        "taker_buy_base_volume",
+    ),
+    time_column="open_time",
+    base_interval="1m",
+    output_intervals=SPOT_KLINE_OUTPUT_INTERVALS,
+    aliases=MappingProxyType({}),
+    max_concurrency=32,
+    csv_header="present",
+    schema_version=1,
+    supports_resampling=True,
+    supports_gap_policy=True,
+    resample_sum_columns=(
+        "contract_volume",
+        "base_volume",
+        "trade_count",
+        "taker_buy_contract_volume",
+        "taker_buy_base_volume",
+    ),
     ordering_columns=("open_time",),
     timestamp_columns=("open_time", "close_time"),
     integer_columns=("trade_count",),
@@ -475,6 +600,8 @@ DATASETS: Mapping[tuple[str, str], DatasetSpec] = MappingProxyType(
         ("spot", "klines"): SPOT_KLINES,
         ("spot", "trades"): SPOT_TRADES,
         ("spot", "agg_trades"): SPOT_AGG_TRADES,
+        ("um", "klines"): UM_KLINES,
+        ("cm", "klines"): CM_KLINES,
     }
 )
 
