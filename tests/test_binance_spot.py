@@ -1,7 +1,7 @@
 """Test Binance Spot market and daily kline discovery."""
 
 from copy import deepcopy
-from datetime import date
+from datetime import UTC, date, datetime
 import json
 from pathlib import Path
 from typing import cast
@@ -15,13 +15,14 @@ from crypto_downloader.source import Source
 from crypto_downloader.sources.binance import (
     ARCHIVE_URL,
     BUCKET_URL,
-    EXCHANGE_INFO_URL,
+    EXCHANGE_INFO_URLS,
     Binance,
 )
 
 FIXTURES = Path(__file__).parent / "fixtures"
 KEY = ResourceKey("binance", "spot", "klines", "BTCUSDT", "1m")
 SPOT_KLINES_PREFIX = "data/spot/daily/klines/"
+SPOT_EXCHANGE_INFO_URL = EXCHANGE_INFO_URLS["spot"]
 
 
 def fixture_text(name: str) -> str:
@@ -46,6 +47,22 @@ def exchange_info() -> dict[str, object]:
         dict[str, object],
         json.loads(fixture_text("binance_spot_exchange_info.json")),
     )
+
+
+def futures_exchange_info(product: str) -> dict[str, object]:
+    """Return a fresh copy of one perpetual Futures exchange-info fixture.
+
+    Args:
+        product: The Futures product whose fixture is required.
+
+    Returns:
+        The parsed USD-M or COIN-M exchange-info response.
+    """
+    filenames = {
+        "um": "binance_um_exchange_info.json",
+        "cm": "binance_cm_exchange_info.json",
+    }
+    return cast(dict[str, object], json.loads(fixture_text(filenames[product])))
 
 
 def listing(
@@ -81,12 +98,12 @@ def listing(
     )
 
 
-def test_binance_declares_only_the_current_spot_scope() -> None:
-    """Confirm the first source advertises only Binance Spot support."""
+def test_binance_declares_supported_market_products() -> None:
+    """Confirm Binance advertises Spot and perpetual Futures products."""
     source = Binance(timeout=12.0, retries=2, backoff=0.25)
 
     assert source.code == "binance"
-    assert source.products == ("spot",)
+    assert source.products == ("spot", "um", "cm")
     assert source.active_statuses == frozenset({"TRADING"})
     assert source.timeout == 12.0
     assert source.retries == 2
@@ -112,7 +129,7 @@ def test_market_discovery_preserves_native_metadata_and_merges_archive_only() ->
     def handler(request: httpx.Request) -> httpx.Response:
         """Return exchange metadata and two symbol-folder pages."""
         requests.append(request)
-        if str(request.url).startswith(EXCHANGE_INFO_URL):
+        if str(request.url).startswith(SPOT_EXCHANGE_INFO_URL):
             return httpx.Response(200, json=exchange_info())
         marker = request.url.params.get("marker")
         filename = (
@@ -140,6 +157,155 @@ def test_market_discovery_preserves_native_metadata_and_merges_archive_only() ->
         assert request.url.params["prefix"] == SPOT_KLINES_PREFIX
         assert request.url.params["delimiter"] == "/"
     assert requests[2].url.params["marker"] == f"{SPOT_KLINES_PREFIX}BTCUSDT/"
+
+
+@pytest.mark.parametrize(
+    ("product", "archive_symbols", "expected"),
+    [
+        (
+            "um",
+            ("ARCHIVEUSDT", "BTCUSDT", "BTCUSDT_260626", "TRADIFIUSDT"),
+            [
+                Market(
+                    symbol="ARCHIVEUSDT",
+                    normalized_symbol="ARCHIVEUSDT",
+                    pair="ARCHIVEUSDT",
+                    contract_type="PERPETUAL",
+                ),
+                Market(
+                    symbol="BTCUSDT",
+                    normalized_symbol="BTCUSDT",
+                    base_asset="BTC",
+                    quote_asset="USDT",
+                    status="TRADING",
+                    pair="BTCUSDT",
+                    contract_type="PERPETUAL",
+                    onboard_time=datetime(2019, 9, 8, 17, 55, tzinfo=UTC),
+                ),
+                Market(
+                    symbol="ETHUSDT",
+                    normalized_symbol="ETHUSDT",
+                    base_asset="ETH",
+                    quote_asset="USDT",
+                    status="SETTLING",
+                    pair="ETHUSDT",
+                    contract_type="PERPETUAL",
+                    onboard_time=datetime(2019, 11, 27, 7, 45, tzinfo=UTC),
+                ),
+            ],
+        ),
+        (
+            "cm",
+            ("ARCHIVEUSD_PERP", "BTCUSD_PERP", "BTCUSD_260626", "ETHUSD_PERP"),
+            [
+                Market(
+                    symbol="ARCHIVEUSD_PERP",
+                    normalized_symbol="ARCHIVEUSDPERP",
+                    pair="ARCHIVEUSD",
+                    contract_type="PERPETUAL",
+                ),
+                Market(
+                    symbol="BTCUSD_PERP",
+                    normalized_symbol="BTCUSDPERP",
+                    base_asset="BTC",
+                    quote_asset="USD",
+                    status="TRADING",
+                    pair="BTCUSD",
+                    contract_type="PERPETUAL",
+                    contract_size=100.0,
+                    onboard_time=datetime(2020, 8, 10, 7, tzinfo=UTC),
+                ),
+                Market(
+                    symbol="ETHUSD_PERP",
+                    normalized_symbol="ETHUSDPERP",
+                    base_asset="ETH",
+                    quote_asset="USD",
+                    status="TRADING",
+                    pair="ETHUSD",
+                    contract_type="PERPETUAL",
+                    contract_size=10.0,
+                    onboard_time=datetime(2020, 8, 10, 7, tzinfo=UTC),
+                ),
+            ],
+        ),
+    ],
+)
+def test_perpetual_market_discovery_reads_product_endpoints_and_filters_contracts(
+    product: str,
+    archive_symbols: tuple[str, ...],
+    expected: list[Market],
+) -> None:
+    """Confirm Futures discovery keeps only standard perpetual contracts.
+
+    Args:
+        product: The Futures product under test.
+        archive_symbols: Symbols supplied by the product's Kline folders.
+        expected: The perpetual snapshot expected after archive-only merging.
+    """
+    requests: list[httpx.Request] = []
+    archive_root = f"data/futures/{product}/daily/klines/"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        """Return product metadata followed by an archive folder listing."""
+        requests.append(request)
+        if str(request.url).startswith(EXCHANGE_INFO_URLS[product]):
+            return httpx.Response(200, json=futures_exchange_info(product))
+        return httpx.Response(
+            200,
+            text=listing(
+                prefixes=tuple(f"{archive_root}{symbol}/" for symbol in archive_symbols)
+            ),
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        markets = Binance().markets(client, product)
+
+    assert markets == expected
+    assert str(requests[0].url) == EXCHANGE_INFO_URLS[product]
+    assert not requests[0].url.params
+    assert requests[1].url.params["prefix"] == archive_root
+    assert requests[1].url.params["delimiter"] == "/"
+    assert all(market.delivery_time is None for market in markets)
+
+
+@pytest.mark.parametrize(
+    ("product", "row"),
+    [
+        (
+            "um",
+            {
+                "symbol": "BTCUSDT",
+                "baseAsset": "BTC",
+                "quoteAsset": "USDT",
+                "status": "TRADING",
+                "contractType": "PERPETUAL",
+                "onboardDate": "not-a-timestamp",
+            },
+        ),
+        (
+            "cm",
+            {
+                "symbol": "BTCUSD_PERP",
+                "baseAsset": "BTC",
+                "quoteAsset": "USD",
+                "contractType": "PERPETUAL",
+                "contractSize": 100,
+                "onboardDate": 1597042800000,
+            },
+        ),
+    ],
+)
+def test_invalid_perpetual_market_metadata_is_rejected(
+    product: str, row: dict[str, object]
+) -> None:
+    """Confirm malformed retained perpetual markets cannot enter the catalog.
+
+    Args:
+        product: The Futures product represented by the malformed row.
+        row: The incomplete or invalid exchange-info market object.
+    """
+    with pytest.raises(ValueError, match="exchangeInfo"):
+        Binance._exchange_markets({"symbols": [row]}, product)
 
 
 @pytest.mark.parametrize(
@@ -223,13 +389,13 @@ def test_non_ascii_exchange_symbols_are_ignored_without_rejecting_snapshot() -> 
         }
     )
 
-    markets = Binance._exchange_markets(payload)
+    markets, _ = Binance._exchange_markets(payload, "spot")
 
     assert [market.symbol for market in markets.values()] == ["BTCUSDT", "XRPTUSD"]
 
 
 def test_unsupported_market_product_fails_without_http() -> None:
-    """Confirm this phase cannot accidentally request futures metadata."""
+    """Confirm unsupported Binance products cannot request metadata."""
     calls = 0
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -240,7 +406,7 @@ def test_unsupported_market_product_fails_without_http() -> None:
 
     with httpx.Client(transport=httpx.MockTransport(handler)) as client:
         with pytest.raises(ValueError, match="product"):
-            Binance().markets(client, "um")
+            Binance().markets(client, "options")
 
     assert calls == 0
 
@@ -263,7 +429,7 @@ def test_malformed_symbol_listing_is_not_treated_as_empty(body: str) -> None:
 
     def handler(request: httpx.Request) -> httpx.Response:
         """Return valid exchange metadata followed by malformed XML."""
-        if str(request.url).startswith(EXCHANGE_INFO_URL):
+        if str(request.url).startswith(SPOT_EXCHANGE_INFO_URL):
             return httpx.Response(200, json=exchange_info())
         return httpx.Response(200, text=body)
 
@@ -277,7 +443,7 @@ def test_truncated_listing_without_new_marker_is_rejected() -> None:
 
     def handler(request: httpx.Request) -> httpx.Response:
         """Return an empty truncated page after valid exchange metadata."""
-        if str(request.url).startswith(EXCHANGE_INFO_URL):
+        if str(request.url).startswith(SPOT_EXCHANGE_INFO_URL):
             return httpx.Response(200, json=exchange_info())
         return httpx.Response(200, text=listing(truncated="true"))
 
@@ -293,7 +459,7 @@ def test_pagination_cycle_is_rejected() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         """Return two truncated pages with the same next marker."""
         nonlocal bucket_calls
-        if str(request.url).startswith(EXCHANGE_INFO_URL):
+        if str(request.url).startswith(SPOT_EXCHANGE_INFO_URL):
             return httpx.Response(200, json=exchange_info())
         bucket_calls += 1
         return httpx.Response(
@@ -567,7 +733,7 @@ def test_daily_listing_ignores_prior_and_impossible_dates() -> None:
             ResourceKey("binance", "um", "klines", "BTCUSDT", "1m"),
             date(2025, 1, 1),
             date(2025, 1, 2),
-            "product",
+            "dataset",
         ),
         (
             ResourceKey("binance", "spot", "trades", "BTCUSDT", "1m"),
@@ -661,7 +827,7 @@ def test_binance_metadata_uses_shared_http_retries() -> None:
         calls += 1
         if calls == 1:
             return httpx.Response(503)
-        if str(request.url).startswith(EXCHANGE_INFO_URL):
+        if str(request.url).startswith(SPOT_EXCHANGE_INFO_URL):
             return httpx.Response(200, json=exchange_info())
         return httpx.Response(200, text=listing())
 

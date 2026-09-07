@@ -1,0 +1,44 @@
+{
+  "symbols": [
+    {
+      "symbol": "BTCUSDT",
+      "pair": "BTCUSDT",
+      "baseAsset": "BTC",
+      "quoteAsset": "USDT",
+      "status": "TRADING",
+      "contractType": "PERPETUAL",
+      "onboardDate": 1567965300000,
+      "deliveryDate": 4133404800000
+    },
+    {
+      "symbol": "ETHUSDT",
+      "pair": "ETHUSDT",
+      "baseAsset": "ETH",
+      "quoteAsset": "USDT",
+      "status": "SETTLING",
+      "contractType": "PERPETUAL",
+      "onboardDate": 1574840700000,
+      "deliveryDate": 4133404800000
+    },
+    {
+      "symbol": "BTCUSDT_260626",
+      "pair": "BTCUSDT",
+      "baseAsset": "BTC",
+      "quoteAsset": "USDT",
+      "status": "TRADING",
+      "contractType": "CURRENT_QUARTER",
+      "onboardDate": 1761264000000,
+      "deliveryDate": 1782432000000
+    },
+    {
+      "symbol": "TRADIFIUSDT",
+      "pair": "TRADIFIUSDT",
+      "baseAsset": "TRADIFI",
+      "quoteAsset": "USDT",
+      "status": "TRADING",
+      "contractType": "TRADIFI_PERPETUAL",
+      "onboardDate": 1761264000000,
+      "deliveryDate": 4133404800000
+    }
+  ]
+}

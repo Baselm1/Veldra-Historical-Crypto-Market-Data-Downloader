@@ -1,8 +1,9 @@
-"""Discover Binance Spot markets and daily kline archives."""
+"""Discover Binance market metadata and daily archives."""
 
 from collections.abc import Iterator, Mapping
-from datetime import date
+from datetime import UTC, date, datetime
 import logging
+import math
 from pathlib import Path
 import re
 from urllib.parse import quote
@@ -16,10 +17,18 @@ from ..ingest import ingest_archive
 from ..models import IngestedResource, Market, Resource, ResourceKey
 from ..request import normalize_pair
 
-EXCHANGE_INFO_URL = "https://api.binance.com/api/v3/exchangeInfo"
+EXCHANGE_INFO_URLS: Mapping[str, str] = {
+    "spot": "https://api.binance.com/api/v3/exchangeInfo",
+    "um": "https://fapi.binance.com/fapi/v1/exchangeInfo",
+    "cm": "https://dapi.binance.com/dapi/v1/exchangeInfo",
+}
 BUCKET_URL = "https://s3-ap-northeast-1.amazonaws.com/data.binance.vision"
 ARCHIVE_URL = "https://data.binance.vision"
-DAILY_ROOTS: Mapping[str, str] = {"spot": "data/spot/daily"}
+DAILY_ROOTS: Mapping[str, str] = {
+    "spot": "data/spot/daily",
+    "um": "data/futures/um/daily",
+    "cm": "data/futures/cm/daily",
+}
 LOGGER = logging.getLogger(__name__)
 
 
@@ -27,7 +36,7 @@ class Binance:
     """Discover metadata from Binance and its public archive bucket."""
 
     code: str = "binance"
-    products: tuple[str, ...] = ("spot",)
+    products: tuple[str, ...] = ("spot", "um", "cm")
     active_statuses: frozenset[str] = frozenset({"TRADING"})
     max_concurrency: int = 32
 
@@ -87,14 +96,13 @@ class Binance:
         self._check_product(product)
         response = self._get(
             client,
-            EXCHANGE_INFO_URL,
-            {"showPermissionSets": "false"},
+            self._exchange_url(product),
+            self._exchange_params(product),
         )
-        current = self._exchange_markets(response.json())
+        current, excluded = self._exchange_markets(response.json(), product)
         exchange_count = len(current)
         archive_symbols = self._archive_symbols(client, product)
-        for symbol in archive_symbols:
-            current.setdefault(symbol, Market(symbol, normalize_pair(symbol)))
+        self._merge_archive_only(current, excluded, archive_symbols, product)
         markets = [current[symbol] for symbol in sorted(current)]
         LOGGER.info(
             "Binance markets loaded: product=%s exchange=%d archive=%d merged=%d",
@@ -217,54 +225,211 @@ class Binance:
         )
 
     @staticmethod
-    def _exchange_markets(payload: object) -> dict[str, Market]:
-        """Parse and validate a complete Spot exchange-info response.
+    def _exchange_markets(
+        payload: object, product: str
+    ) -> tuple[dict[str, Market], set[str]]:
+        """Parse a complete product-specific exchange-info response.
+
+        Args:
+            payload: The decoded exchange-info JSON value.
+            product: The Binance product represented by the response.
+
+        Returns:
+            Included markets and deliberately excluded native symbols.
+        """
+        Binance._exchange_url(product)
+        markets: dict[str, Market] = {}
+        excluded: set[str] = set()
+        for value in Binance._exchange_rows(payload):
+            parsed = Binance._parsed_exchange_market(value, product)
+            if parsed is None:
+                continue
+            symbol, market = parsed
+            if symbol in markets or symbol in excluded:
+                raise ValueError("exchangeInfo contains a duplicate symbol")
+            if market is None:
+                excluded.add(symbol)
+            else:
+                markets[symbol] = market
+        return markets, excluded
+
+    @staticmethod
+    def _exchange_rows(payload: object) -> list[object]:
+        """Read the nonempty market rows from an exchange-info response.
 
         Args:
             payload: The decoded exchange-info JSON value.
 
         Returns:
-            Valid markets indexed by their native symbols.
+            The source market objects in their source order.
         """
         rows = payload.get("symbols") if isinstance(payload, dict) else None
         if not isinstance(rows, list) or not rows:
             raise ValueError("exchangeInfo contains no market snapshot")
-
-        markets: dict[str, Market] = {}
-        for row in rows:
-            market = Binance._exchange_market(row)
-            if market is None:
-                continue
-            if market.symbol in markets:
-                raise ValueError("exchangeInfo contains a duplicate symbol")
-            markets[market.symbol] = market
-        return markets
+        return rows
 
     @staticmethod
-    def _exchange_market(value: object) -> Market | None:
-        """Parse one supported Spot market from exchange-info.
+    def _parsed_exchange_market(
+        value: object, product: str
+    ) -> tuple[str, Market | None] | None:
+        """Parse one source row or classify it outside the perpetual scope.
+
+        Args:
+            value: The decoded exchange market object.
+            product: The Binance product represented by the market.
+
+        Returns:
+            The native symbol and included market, the symbol and ``None`` when
+            excluded, or ``None`` for a non-ASCII symbol.
+        """
+        if not isinstance(value, dict):
+            raise ValueError("exchangeInfo contains an invalid market")
+        symbol = Binance._exchange_symbol(value)
+        if symbol is None:
+            return None
+        if (
+            product != "spot"
+            and Binance._required_text(value, "contractType") != "PERPETUAL"
+        ):
+            return symbol, None
+        return symbol, Binance._exchange_market(value, product, symbol)
+
+    @staticmethod
+    def _exchange_url(product: str) -> str:
+        """Return the exchange-info endpoint for one Binance product.
+
+        Args:
+            product: The Binance product identifier.
+
+        Returns:
+            The public exchange-info endpoint URL.
+        """
+        try:
+            return EXCHANGE_INFO_URLS[product]
+        except KeyError as error:
+            raise ValueError(f"unsupported Binance product: {product}") from error
+
+    @staticmethod
+    def _exchange_params(product: str) -> Mapping[str, str] | None:
+        """Return optional exchange-info parameters for one product.
+
+        Args:
+            product: The Binance product identifier.
+
+        Returns:
+            The optional query parameters required by the endpoint.
+        """
+        return {"showPermissionSets": "false"} if product == "spot" else None
+
+    @staticmethod
+    def _exchange_symbol(value: object) -> str | None:
+        """Read one safe native symbol from exchange-info.
 
         Args:
             value: The decoded market object.
 
         Returns:
-            The validated market metadata, or ``None`` for a non-ASCII symbol.
+            The native ASCII symbol, or ``None`` for a non-ASCII symbol.
         """
         if not isinstance(value, dict):
             raise ValueError("exchangeInfo contains an invalid market")
         symbol = Binance._required_text(value, "symbol")
-        if not all(character.isalnum() or character == "_" for character in symbol):
+        if re.fullmatch(r"[A-Za-z0-9_]+", symbol) is None:
+            if not symbol.isascii():
+                LOGGER.debug(
+                    "Ignoring unsupported non-ASCII Binance symbol: %s", symbol
+                )
+                return None
             raise ValueError("exchangeInfo contains an unsafe symbol")
-        if not symbol.isascii():
-            LOGGER.debug("Ignoring unsupported non-ASCII Binance symbol: %s", symbol)
-            return None
+        return symbol
+
+    @staticmethod
+    def _exchange_market(value: object, product: str, symbol: str) -> Market:
+        """Parse one supported Spot or perpetual Futures market.
+
+        Args:
+            value: The decoded exchange market object.
+            product: The Binance product represented by the market.
+            symbol: The already validated native market symbol.
+
+        Returns:
+            The canonical market metadata for the included market.
+        """
+        if not isinstance(value, dict):
+            raise ValueError("exchangeInfo contains an invalid market")
+        if product == "spot":
+            return Market(
+                symbol=symbol,
+                normalized_symbol=normalize_pair(symbol),
+                base_asset=Binance._required_text(value, "baseAsset"),
+                quote_asset=Binance._required_text(value, "quoteAsset"),
+                status=Binance._required_text(value, "status"),
+            )
+
+        status_field = "contractStatus" if product == "cm" else "status"
         return Market(
             symbol=symbol,
             normalized_symbol=normalize_pair(symbol),
             base_asset=Binance._required_text(value, "baseAsset"),
             quote_asset=Binance._required_text(value, "quoteAsset"),
-            status=Binance._required_text(value, "status"),
+            status=Binance._required_text(value, status_field),
+            pair=Binance._required_text(value, "pair"),
+            contract_type="PERPETUAL",
+            contract_size=Binance._contract_size(value, product),
+            onboard_time=Binance._source_time(value.get("onboardDate")),
+            delivery_time=Binance._delivery_time(value.get("deliveryDate")),
         )
+
+    @staticmethod
+    def _contract_size(value: Mapping[object, object], product: str) -> float | None:
+        """Return the explicit COIN-M contract size when required.
+
+        Args:
+            value: The decoded perpetual Futures market object.
+            product: The Binance Futures product represented by the object.
+
+        Returns:
+            The positive COIN-M contract size, or ``None`` for USD-M.
+        """
+        if product == "um":
+            return None
+        raw_size = value.get("contractSize")
+        if isinstance(raw_size, bool) or not isinstance(raw_size, (int, float)):
+            raise ValueError("exchangeInfo contains an invalid market")
+        size = float(raw_size)
+        if not math.isfinite(size) or size <= 0:
+            raise ValueError("exchangeInfo contains an invalid market")
+        return size
+
+    @staticmethod
+    def _source_time(value: object) -> datetime:
+        """Convert one required Binance millisecond timestamp to UTC.
+
+        Args:
+            value: The millisecond timestamp supplied by exchange-info.
+
+        Returns:
+            The matching UTC timestamp.
+        """
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError("exchangeInfo contains an invalid market")
+        try:
+            return datetime.fromtimestamp(value / 1000, UTC)
+        except (OverflowError, OSError, ValueError) as error:
+            raise ValueError("exchangeInfo contains an invalid market") from error
+
+    @staticmethod
+    def _delivery_time(value: object) -> datetime | None:
+        """Discard Binance's far-future perpetual delivery placeholder.
+
+        Args:
+            value: The millisecond delivery timestamp supplied by exchange-info.
+
+        Returns:
+            A real delivery timestamp, or ``None`` for the perpetual placeholder.
+        """
+        timestamp = Binance._source_time(value)
+        return None if timestamp.year >= 2100 else timestamp
 
     @staticmethod
     def _required_text(value: Mapping[object, object], field: str) -> str:
@@ -283,7 +448,7 @@ class Binance:
         return result
 
     def _archive_symbols(self, client: httpx.Client, product: str) -> set[str]:
-        """Return safe symbols represented by Spot kline folders.
+        """Return safe symbols represented by a product's Kline folders.
 
         Args:
             client: The HTTPX client used for bucket listings.
@@ -292,17 +457,79 @@ class Binance:
         Returns:
             The unique archive symbol names.
         """
-        dataset = get_dataset(product, "klines")
-        prefix = self._dataset_root(product, dataset)
+        prefix = self._market_archive_root(product)
         symbols: set[str] = set()
         for _, prefixes in self._pages(client, prefix, delimiter="/"):
             for prefix in prefixes:
-                symbol = self._folder_symbol(
-                    prefix, self._dataset_root(product, dataset)
-                )
+                symbol = self._folder_symbol(prefix, self._market_archive_root(product))
                 if symbol is not None:
                     symbols.add(symbol)
         return symbols
+
+    @staticmethod
+    def _market_archive_root(product: str) -> str:
+        """Return the Kline folder root used to enumerate market symbols.
+
+        Args:
+            product: The Binance product identifier.
+
+        Returns:
+            The slash-terminated Kline archive folder root.
+        """
+        try:
+            return f"{DAILY_ROOTS[product]}/klines/"
+        except KeyError as error:
+            raise ValueError(f"unsupported Binance product: {product}") from error
+
+    @staticmethod
+    def _merge_archive_only(
+        current: dict[str, Market],
+        excluded: set[str],
+        archive_symbols: set[str],
+        product: str,
+    ) -> None:
+        """Merge valid archive-only perpetual or Spot markets into a snapshot.
+
+        Args:
+            current: Current included markets indexed by native symbol.
+            excluded: Current endpoint symbols deliberately outside the scope.
+            archive_symbols: Valid symbols found in the archive Kline folders.
+            product: The Binance product represented by the snapshot.
+        """
+        for symbol in archive_symbols:
+            if (
+                symbol in current
+                or symbol in excluded
+                or not Binance._is_archive_perpetual(symbol, product)
+            ):
+                continue
+            current[symbol] = Market(
+                symbol=symbol,
+                normalized_symbol=normalize_pair(symbol),
+                pair=(
+                    symbol.removesuffix("_PERP")
+                    if product == "cm"
+                    else symbol if product == "um" else None
+                ),
+                contract_type="PERPETUAL" if product != "spot" else None,
+            )
+
+    @staticmethod
+    def _is_archive_perpetual(symbol: str, product: str) -> bool:
+        """Return whether an archive symbol belongs to the current scope.
+
+        Args:
+            symbol: The safe archive folder symbol to inspect.
+            product: The Binance product represented by the archive folder.
+
+        Returns:
+            True for Spot symbols or a standard perpetual Futures symbol.
+        """
+        if product == "spot":
+            return True
+        if product == "um":
+            return re.search(r"_\d{6}$", symbol) is None
+        return symbol.endswith("_PERP")
 
     @staticmethod
     def _folder_symbol(prefix: str, dataset_root: str) -> str | None:
