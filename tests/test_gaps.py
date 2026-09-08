@@ -15,7 +15,7 @@ import pytest
 
 from crypto_downloader._core.datasets import DatasetSpec
 from crypto_downloader.binance.datasets import SPOT_KLINES
-from crypto_downloader._core.engine import Downloader
+from crypto_downloader._core.engine import RetrievalEngine
 from crypto_downloader._core.models import (
     IngestedResource,
     Market,
@@ -497,7 +497,7 @@ def test_pipeline_reports_filled_gaps_and_remains_incomplete(tmp_path: Path) -> 
     Args:
         tmp_path: The isolated downloader directory.
     """
-    result = Downloader(
+    result = RetrievalEngine(
         tmp_path, source=GapSource(), dataset_resolver=get_dataset
     ).get_results(
         "BTCUSDT",
@@ -529,7 +529,7 @@ def test_raise_policy_raises_the_structured_missing_candles_error(
         tmp_path: The isolated downloader directory.
     """
     with pytest.raises(MissingCandlesError) as caught:
-        Downloader(
+        RetrievalEngine(
             tmp_path, source=GapSource(), dataset_resolver=get_dataset
         ).get_results("BTCUSDT", START, END, gap_policy="raise")
 

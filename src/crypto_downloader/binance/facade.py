@@ -1,15 +1,12 @@
 """Provide the public facade for Binance historical data."""
 
-from crypto_downloader.binance.datasets import get_dataset
-
-
 from datetime import date, datetime
 from pathlib import Path
 from typing import Literal, overload
 
 import pandas as pd
 
-from crypto_downloader._core.engine import Downloader
+from crypto_downloader._core.engine import RetrievalEngine
 from crypto_downloader._core.download import _validate_settings
 from crypto_downloader._core.inspection import (
     discover_availability as _discover_availability,
@@ -19,6 +16,7 @@ from crypto_downloader._core.inspection import (
 )
 from crypto_downloader._core.models import Availability, Market
 from crypto_downloader.binance.connector import BinanceConnector
+from crypto_downloader.binance.datasets import get_dataset
 
 type DateInput = str | date | datetime
 type ColumnSelection = list[str] | dict[str, str] | None
@@ -62,7 +60,7 @@ class Binance:
         if not isinstance(progress, bool):
             raise TypeError("progress must be a Boolean")
         source = BinanceConnector(timeout=timeout, retries=retries, backoff=backoff)
-        self._downloader = Downloader(
+        self._downloader = RetrievalEngine(
             data_dir,
             source=source,
             config_path=config_path,

@@ -19,7 +19,7 @@ from crypto_downloader._core.models import (
     Resource,
     ResourceKey,
 )
-from crypto_downloader._core.source import Source
+from crypto_downloader._core.connector import Connector
 
 LOGGER = logging.getLogger(__name__)
 
@@ -143,7 +143,7 @@ def valid_cached_path(resource: Resource, dataset: DatasetSpec) -> Path | None:
 
 
 def _ingest_resource(
-    source: Source,
+    source: Connector,
     client: httpx.Client,
     dataset: DatasetSpec,
     resource: Resource,
@@ -181,7 +181,7 @@ def _ingest_resource(
         return None, error
 
 
-def _worker_count(source: Source, dataset: DatasetSpec, max_workers: object) -> int:
+def _worker_count(source: Connector, dataset: DatasetSpec, max_workers: object) -> int:
     """Return the lowest valid caller, dataset, and source concurrency limit.
 
     Args:
@@ -249,7 +249,7 @@ def _cache_plan(
 
 
 def _revalidate_cached_resource(
-    source: Source,
+    source: Connector,
     client: httpx.Client,
     resource: Resource,
 ) -> tuple[bool, Message | None]:
@@ -295,7 +295,7 @@ def _revalidate_cached_resource(
 
 
 def _revalidate_cached_resources(
-    source: Source,
+    source: Connector,
     client: httpx.Client,
     cached: list[tuple[Resource, Path]],
     worker_count: int,
@@ -339,7 +339,7 @@ def _revalidate_cached_resources(
 
 
 def _cached_coverage(
-    source: Source,
+    source: Connector,
     client: httpx.Client,
     dataset: DatasetSpec,
     resources: list[Resource],
@@ -452,7 +452,7 @@ def _record_outcomes(
 
 
 def cache_resources(
-    source: Source,
+    source: Connector,
     catalog: Catalog,
     client: httpx.Client,
     key: ResourceKey,
@@ -565,7 +565,7 @@ def cache_resources(
 
 
 def _daily_fallback(
-    source: Source,
+    source: Connector,
     catalog: Catalog,
     client: httpx.Client,
     key: ResourceKey,

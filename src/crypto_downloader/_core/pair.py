@@ -33,7 +33,7 @@ from crypto_downloader._core.query import (
     empty_archive_days,
 )
 from crypto_downloader._core.request import Request, normalize_pair
-from crypto_downloader._core.source import Source
+from crypto_downloader._core.connector import Connector
 
 from .planner import plan_archives, covered_days, catalog_archives
 
@@ -233,7 +233,7 @@ def _availability(
 
 
 def _first_resource(
-    source: Source,
+    source: Connector,
     catalog: Catalog,
     client: httpx.Client,
     key: ResourceKey,
@@ -293,7 +293,7 @@ def _first_resource(
 
 
 def _availability_range(
-    source: Source,
+    source: Connector,
     catalog: Catalog,
     client: httpx.Client,
     key: ResourceKey,
@@ -731,7 +731,7 @@ def _match_market(
 
 
 def _discover(
-    source: Source,
+    source: Connector,
     catalog: Catalog,
     client: httpx.Client,
     key: ResourceKey,
@@ -934,7 +934,7 @@ def _populate_cached_query(
 
 def _query_with_recovery(
     result: Result,
-    source: Source,
+    source: Connector,
     catalog: Catalog,
     client: httpx.Client,
     key: ResourceKey,
@@ -1045,7 +1045,7 @@ def _query_with_recovery(
 
 
 def process_pair(
-    source: Source,
+    source: Connector,
     catalog: Catalog,
     client: httpx.Client,
     data_dir: Path,

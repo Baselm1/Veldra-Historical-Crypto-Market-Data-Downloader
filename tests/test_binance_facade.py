@@ -9,7 +9,7 @@ import pandas as pd
 import pytest
 
 from crypto_downloader.binance.facade import Binance
-from crypto_downloader._core.engine import Downloader
+from crypto_downloader._core.engine import RetrievalEngine
 from crypto_downloader.binance.connector import BinanceConnector
 
 
@@ -70,7 +70,7 @@ def test_facade_construction_wires_validated_settings_without_io(
     assert service.earliest_date == date(2019, 1, 1)
     assert service.kline_base_interval == "1m"
     assert service.max_workers == 12
-    assert isinstance(service._downloader, Downloader)
+    assert isinstance(service._downloader, RetrievalEngine)
     assert isinstance(service._downloader.source, BinanceConnector)
     assert service._downloader.source.timeout == 8
     assert service._downloader.source.retries == 1

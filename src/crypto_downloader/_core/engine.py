@@ -21,7 +21,7 @@ from crypto_downloader._core.reporting import Reporter
 from crypto_downloader._core.models import Market, Result
 from crypto_downloader._core.pair import process_pair
 from crypto_downloader._core.request import Request, normalize_pair, parse_timestamp
-from crypto_downloader._core.source import Source
+from crypto_downloader._core.connector import Connector
 
 LOGGER = logging.getLogger(__name__)
 
@@ -121,7 +121,7 @@ def _history_date(value: object) -> date | None:
     return parsed.date()
 
 
-def _source_limit(source: Source, max_workers: int) -> int:
+def _source_limit(source: Connector, max_workers: int) -> int:
     """Return the effective source-wide concurrency limit.
 
     Args:
@@ -142,7 +142,7 @@ def _source_limit(source: Source, max_workers: int) -> int:
 
 
 def _load_markets(
-    source: Source,
+    source: Connector,
     catalog: Catalog,
     client: httpx.Client,
     product: str,
@@ -198,7 +198,7 @@ def _load_markets(
 
 
 def _run_pair(
-    source: Source,
+    source: Connector,
     catalog: Catalog,
     client: httpx.Client,
     data_dir: Path,
@@ -288,7 +288,7 @@ def _pair_workflow_keys(
 
 
 def _process_pairs(
-    source: Source,
+    source: Connector,
     catalog_path: Path,
     client: httpx.Client,
     data_dir: Path,
@@ -388,14 +388,14 @@ def _process_pairs(
     return [by_key[key] for key in workflow_keys]
 
 
-class Downloader:
+class RetrievalEngine:
     """Provide reusable downloader paths, source, and HTTP settings."""
 
     def __init__(
         self,
         data_dir: str | Path = "data",
         *,
-        source: Source,
+        source: Connector,
         dataset_resolver: DatasetResolver,
         transport: httpx.BaseTransport | None = None,
         config_path: str | Path | None = None,

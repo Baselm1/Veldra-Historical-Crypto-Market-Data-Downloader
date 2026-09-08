@@ -12,7 +12,7 @@ import pytest
 from crypto_downloader._core.datasets import DatasetSpec
 from crypto_downloader.binance.datasets import SPOT_KLINES, get_dataset
 from crypto_downloader._core.models import Market, Resource, ResourceKey
-from crypto_downloader._core.source import Source
+from crypto_downloader._core.connector import Connector
 from crypto_downloader.binance.connector import (
     ARCHIVE_URL,
     BUCKET_URL,
@@ -117,7 +117,7 @@ def test_source_contract_remains_limited_to_five_operations() -> None:
     """Confirm sources expose bounded discovery and ingestion without orchestration."""
     operations = {
         name
-        for name, value in vars(Source).items()
+        for name, value in vars(Connector).items()
         if callable(value) and not name.startswith("_")
     }
 

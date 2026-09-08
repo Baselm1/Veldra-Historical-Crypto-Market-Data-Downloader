@@ -18,7 +18,7 @@ import pytest
 import crypto_downloader._core.engine as downloader_module
 from crypto_downloader._core.datasets import DatasetSpec
 from crypto_downloader.binance.datasets import SPOT_KLINES
-from crypto_downloader._core.engine import Downloader
+from crypto_downloader._core.engine import RetrievalEngine
 from crypto_downloader._core.catalog import Catalog, open_catalog
 from crypto_downloader._core.models import (
     IngestedResource,
@@ -267,7 +267,7 @@ def market(symbol: str, status: str = "TRADING") -> Market:
     return Market(symbol, normalize_pair(symbol), "BTC", "USDT", status)
 
 
-def service(tmp_path: Path, source: RangeSource) -> Downloader:
+def service(tmp_path: Path, source: RangeSource) -> RetrievalEngine:
     """Create a downloader using deterministic availability.
 
     Args:
@@ -277,7 +277,7 @@ def service(tmp_path: Path, source: RangeSource) -> Downloader:
     Returns:
         A downloader with the 2020 history boundary.
     """
-    return Downloader(
+    return RetrievalEngine(
         tmp_path,
         source=source,
         earliest_date=date(2020, 1, 1),
@@ -521,7 +521,7 @@ base_interval = "1m"
     source = RangeSource([market("BTCUSDT")], {"BTCUSDT": [date(2017, 8, 17)]})
 
     result = one_result(
-        Downloader(
+        RetrievalEngine(
             tmp_path / "data",
             source=source,
             config_path=config,
@@ -836,7 +836,7 @@ def test_dataset_ingestion_limit_is_shared_by_every_pair(
     )
     specification = replace(SPOT_KLINES, max_concurrency=2)
 
-    results = Downloader(
+    results = RetrievalEngine(
         tmp_path,
         source=source,
         earliest_date=date(2020, 1, 1),
@@ -865,7 +865,7 @@ def test_shared_ingestion_executor_isolates_failures_and_preserves_order(
         failed_symbols={"ETHUSDT"},
     )
 
-    results = Downloader(
+    results = RetrievalEngine(
         tmp_path,
         source=source,
         earliest_date=date(2020, 1, 1),
@@ -913,7 +913,7 @@ def test_pair_catalog_connections_are_bounded_by_active_workers(
 
     monkeypatch.setattr(downloader_module, "open_catalog", counted_catalog)
 
-    results = Downloader(
+    results = RetrievalEngine(
         tmp_path,
         source=source,
         earliest_date=date(2020, 1, 1),
@@ -990,7 +990,7 @@ def test_invalid_earliest_history_boundary_is_rejected(
         earliest: The invalid proposed history boundary.
     """
     with pytest.raises((TypeError, ValueError), match="earliest_date"):
-        Downloader(
+        RetrievalEngine(
             tmp_path,
             earliest_date=earliest,
             dataset_resolver=get_dataset,

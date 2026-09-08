@@ -15,7 +15,7 @@ from crypto_downloader._core.models import (
 )
 
 
-class Source(Protocol):
+class Connector(Protocol):
     """Describe the operations supplied by a historical data source."""
 
     code: str

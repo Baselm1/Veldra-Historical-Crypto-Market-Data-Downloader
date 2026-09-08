@@ -9,7 +9,8 @@ from pathlib import Path
 from threading import RLock
 
 import duckdb
-import pandas as pd
+import pyarrow as pa
+from typing import Any
 
 from crypto_downloader._core.models import (
     IngestedResource,
@@ -38,6 +39,19 @@ type ResourceOutcomeRow = tuple[
     int | None,
     str | None,
 ]
+
+
+def _arrow_rows(rows: Sequence[Sequence[object]], columns: Sequence[str]) -> Any:
+    """Build an Arrow table from metadata rows, preserving nullable integers.
+
+    Args:
+        rows: Values in the same order as the column names.
+        columns: Names used when DuckDB reads the table.
+
+    Returns:
+        An Arrow table ready to register with DuckDB.
+    """
+    return pa.table({name: [row[i] for row in rows] for i, name in enumerate(columns)})
 
 
 def _key_values(key: ResourceKey) -> tuple[str, str, str, str, str, str]:
@@ -251,19 +265,6 @@ class Catalog:
                 PRIMARY KEY (source, product, dataset, symbol, interval, cadence, day)
             );
 
-            CREATE TABLE IF NOT EXISTS discoveries (
-                source VARCHAR NOT NULL,
-                product VARCHAR NOT NULL,
-                dataset VARCHAR NOT NULL,
-                symbol VARCHAR NOT NULL,
-                interval VARCHAR NOT NULL,
-                cadence VARCHAR NOT NULL DEFAULT 'daily',
-                start_day DATE NOT NULL,
-                end_day DATE NOT NULL,
-                scanned_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
-                PRIMARY KEY (source, product, dataset, symbol, interval, cadence)
-            );
-
             CREATE TABLE IF NOT EXISTS discovery_segments (
                 source VARCHAR NOT NULL,
                 product VARCHAR NOT NULL,
@@ -316,26 +317,31 @@ class Catalog:
             "ALTER TABLE resources DROP COLUMN IF EXISTS parquet_sha256"
         )
         self._migrate_archive_keys()
-        self.connection.execute("""
-            INSERT INTO discovery_segments
-                (source, product, dataset, symbol, interval, cadence,
-                 start_day, end_day, scanned_at)
-            SELECT d.source, d.product, d.dataset, d.symbol, d.interval, d.cadence,
-                   d.start_day, d.end_day, d.scanned_at
-            FROM discoveries AS d
-            WHERE NOT EXISTS (
-                SELECT 1
-                FROM discovery_segments AS s
-                WHERE s.source = d.source
-                  AND s.product = d.product
-                  AND s.dataset = d.dataset
-                  AND s.symbol = d.symbol
-                  AND s.interval = d.interval
-                  AND s.cadence = d.cadence
-            )
-            ON CONFLICT DO NOTHING
-            """)
-        self.connection.execute("DROP TABLE discoveries")
+        if "discoveries" in self._tables():
+            self.connection.execute("""
+                INSERT INTO discovery_segments
+                    (source, product, dataset, symbol, interval, cadence,
+                     start_day, end_day, scanned_at)
+                SELECT d.source, d.product, d.dataset, d.symbol, d.interval, d.cadence,
+                       d.start_day, d.end_day, d.scanned_at
+                FROM discoveries AS d
+                WHERE NOT EXISTS (
+                    SELECT 1
+                    FROM discovery_segments AS s
+                    WHERE s.source = d.source
+                      AND s.product = d.product
+                      AND s.dataset = d.dataset
+                      AND s.symbol = d.symbol
+                      AND s.interval = d.interval
+                      AND s.cadence = d.cadence
+                )
+                ON CONFLICT DO NOTHING
+                """)
+            self.connection.execute("DROP TABLE discoveries")
+
+    def _tables(self) -> set[str]:
+        """Return the names of tables already present in this catalog."""
+        return {row[0] for row in self.connection.execute("SHOW TABLES").fetchall()}
 
     def _migrate_archive_keys(self) -> None:
         """Retain legacy daily cache rows while adding cadence to archive identities."""
@@ -346,7 +352,10 @@ class Catalog:
             "source_bounds": "source, product, dataset, symbol, interval, cadence",
         }
         with self._transaction():
+            tables = self._tables()
             for table, key_columns in keys.items():
+                if table not in tables:
+                    continue
                 columns = {
                     row[1]
                     for row in self.connection.execute(
@@ -481,7 +490,7 @@ class Catalog:
             volumes: Nonnegative quote volumes indexed by native symbol.
         """
         rows = [_quote_volume_row(symbol, volume) for symbol, volume in volumes.items()]
-        frame = pd.DataFrame.from_records(
+        frame = _arrow_rows(
             rows,
             columns=("symbol", "quote_volume_24h"),
         )
@@ -549,7 +558,7 @@ class Catalog:
             )
             for market in markets
         ]
-        frame = pd.DataFrame.from_records(
+        frame = _arrow_rows(
             rows,
             columns=(
                 "source",
@@ -746,7 +755,7 @@ class Catalog:
             [*_key_values(key), first_day, last_day],
         )
         LOGGER.debug(
-            "Source boundaries stored: key=%s first=%s last=%s",
+            "Connector boundaries stored: key=%s first=%s last=%s",
             key,
             first_day,
             last_day,
@@ -785,7 +794,7 @@ class Catalog:
             )
             for resource in resources
         ]
-        frame = pd.DataFrame.from_records(
+        frame = _arrow_rows(
             rows,
             columns=(
                 "source",
@@ -1014,14 +1023,7 @@ class Catalog:
             (day, "failed", None, None, None, None, None, None, None, None, None, error)
             for day, error in failed
         )
-        frame = pd.DataFrame.from_records(rows, columns=columns)
-        for index, column in (
-            (4, "parquet_size"),
-            (5, "parquet_mtime_ns"),
-            (6, "row_count"),
-            (10, "schema_version"),
-        ):
-            frame[column] = pd.array([row[index] for row in rows], dtype="Int64")
+        frame = _arrow_rows(rows, columns=columns)
         self.connection.register("incoming_resource_outcomes", frame)
         try:
             with self._transaction():

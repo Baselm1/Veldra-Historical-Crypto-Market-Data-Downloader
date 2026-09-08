@@ -24,7 +24,7 @@ from crypto_downloader._core.cache import parquet_path, valid_cached_path
 from crypto_downloader._core.catalog import open_catalog
 from crypto_downloader.binance.datasets import SPOT_KLINES
 from crypto_downloader._core.discovery import _validate_resources, requested_days
-from crypto_downloader._core.engine import Downloader
+from crypto_downloader._core.engine import RetrievalEngine
 from crypto_downloader._core.models import Resource, ResourceKey, Result
 from crypto_downloader.binance.connector import BinanceConnector
 
@@ -138,7 +138,7 @@ class BinanceServer:
         raise AssertionError(f"unexpected request: {request.url}")
 
 
-def downloader(tmp_path: Path, server: BinanceServer) -> Downloader:
+def downloader(tmp_path: Path, server: BinanceServer) -> RetrievalEngine:
     """Create a downloader connected to one mocked Binance server.
 
     Args:
@@ -148,7 +148,7 @@ def downloader(tmp_path: Path, server: BinanceServer) -> Downloader:
     Returns:
         A configured downloader service.
     """
-    return Downloader(
+    return RetrievalEngine(
         tmp_path,
         source=BinanceConnector(retries=0),
         transport=httpx.MockTransport(server),
@@ -440,7 +440,7 @@ def test_malformed_discovery_returns_a_pair_error(tmp_path: Path) -> None:
             return httpx.Response(200, text="not XML")
         return server(request)
 
-    service = Downloader(
+    service = RetrievalEngine(
         tmp_path,
         source=BinanceConnector(retries=0),
         transport=httpx.MockTransport(malformed),
@@ -619,7 +619,7 @@ def test_source_product_mismatch_is_rejected_before_network_access(
     monkeypatch.setattr(source, "products", ("um",))
 
     with pytest.raises(ValueError, match="unsupported product"):
-        Downloader(
+        RetrievalEngine(
             tmp_path,
             source=source,
             transport=httpx.MockTransport(server),
@@ -631,7 +631,7 @@ def test_source_product_mismatch_is_rejected_before_network_access(
 
 def test_downloader_defaults_to_the_binance_source(tmp_path: Path) -> None:
     """Confirm callers do not need to construct the default strategy."""
-    service = Downloader(
+    service = RetrievalEngine(
         tmp_path, dataset_resolver=get_dataset, source=BinanceConnector()
     )
 
@@ -650,7 +650,7 @@ def test_downloader_construction_does_not_create_its_data_directory(
     """
     data_dir = tmp_path / "not-created"
 
-    service = Downloader(
+    service = RetrievalEngine(
         data_dir, dataset_resolver=get_dataset, source=BinanceConnector()
     )
 
@@ -680,7 +680,7 @@ def test_downloader_rejects_invalid_durability_settings(
         value: The proposed invalid value.
     """
     with pytest.raises((TypeError, ValueError), match=setting):
-        Downloader(tmp_path, **{setting: value}, dataset_resolver=get_dataset, source=BinanceConnector())  # type: ignore[arg-type]
+        RetrievalEngine(tmp_path, **{setting: value}, dataset_resolver=get_dataset, source=BinanceConnector())  # type: ignore[arg-type]
 
 
 @pytest.mark.parametrize(("option", "value"), [("refresh", 1), ("offline", "yes")])
@@ -881,4 +881,4 @@ def test_downloader_rejects_invalid_data_directories(data_dir: object) -> None:
         data_dir: The invalid local storage value.
     """
     with pytest.raises((TypeError, ValueError), match="data_dir"):
-        Downloader(data_dir, dataset_resolver=get_dataset, source=BinanceConnector())  # type: ignore[arg-type]
+        RetrievalEngine(data_dir, dataset_resolver=get_dataset, source=BinanceConnector())  # type: ignore[arg-type]

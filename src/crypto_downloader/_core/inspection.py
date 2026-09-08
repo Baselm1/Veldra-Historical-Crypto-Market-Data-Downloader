@@ -17,7 +17,7 @@ from crypto_downloader._core.discovery import (
 )
 from crypto_downloader._core.reporting import Reporter
 from crypto_downloader._core.engine import (
-    Downloader,
+    RetrievalEngine,
     _load_markets,
     _source_limit,
     utc_now,
@@ -64,7 +64,7 @@ def _boolean(value: object, name: str) -> bool:
     return value
 
 
-def _product(downloader: Downloader, value: object) -> str:
+def _product(downloader: RetrievalEngine, value: object) -> str:
     """Validate one product supported by the configured source.
 
     Args:
@@ -144,7 +144,7 @@ def _sort_by(value: object) -> str:
 
 
 def _load_quote_volumes(
-    downloader: Downloader,
+    downloader: RetrievalEngine,
     catalog: Catalog,
     client: httpx.Client,
     product: str,
@@ -200,7 +200,7 @@ def _query(value: object) -> str:
 
 
 def _snapshot(
-    downloader: Downloader,
+    downloader: RetrievalEngine,
     product: str,
     *,
     refresh: bool,
@@ -320,7 +320,7 @@ def _ordered_markets(
 
 
 def get_markets(
-    downloader: Downloader,
+    downloader: RetrievalEngine,
     *,
     product: object = "spot",
     status: object = None,
@@ -368,7 +368,7 @@ def get_markets(
     return _ordered_markets(filtered, selected_sort, selected_limit)
 
 
-def _search_products(downloader: Downloader, product: object) -> tuple[str, ...]:
+def _search_products(downloader: RetrievalEngine, product: object) -> tuple[str, ...]:
     """Return one selected product or every source product.
 
     Args:
@@ -404,7 +404,7 @@ def _matches_filters(
 
 
 def _search_snapshots(
-    downloader: Downloader,
+    downloader: RetrievalEngine,
     products: tuple[str, ...],
     status: str | None,
     quote_asset: str | None,
@@ -456,7 +456,7 @@ def _search_snapshots(
 
 
 def find_markets(
-    downloader: Downloader,
+    downloader: RetrievalEngine,
     query: object,
     *,
     product: object = None,
@@ -552,7 +552,7 @@ def _resolve_market(pair: object, markets: list[Market]) -> Market:
 
 
 def _dataset(
-    downloader: Downloader,
+    downloader: RetrievalEngine,
     product: object,
     dataset: object,
     interval: object,
@@ -814,7 +814,7 @@ def _local_coverage(resources: list[Resource], dataset: DatasetSpec) -> _LocalCo
 
 
 def _availability(
-    downloader: Downloader,
+    downloader: RetrievalEngine,
     catalog: Catalog,
     key: ResourceKey,
     dataset: DatasetSpec,
@@ -893,7 +893,7 @@ def _availability(
 
 
 def get_availability(
-    downloader: Downloader,
+    downloader: RetrievalEngine,
     pair: object,
     *,
     product: object,
@@ -942,7 +942,7 @@ def get_availability(
 
 
 def _source_boundary(
-    downloader: Downloader,
+    downloader: RetrievalEngine,
     catalog: Catalog,
     client: httpx.Client,
     key: ResourceKey,
@@ -976,7 +976,7 @@ def _source_boundary(
 
 
 def discover_availability(
-    downloader: Downloader,
+    downloader: RetrievalEngine,
     pair: object,
     start: object,
     end: object,

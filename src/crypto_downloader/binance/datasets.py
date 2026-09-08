@@ -1,6 +1,7 @@
 """Declare Binance archive schemas and dataset capabilities."""
 
 from collections.abc import Mapping
+from dataclasses import replace
 import logging
 from types import MappingProxyType
 from crypto_downloader._core.datasets import DatasetSpec, Columns
@@ -123,11 +124,9 @@ SPOT_KLINES = DatasetSpec(
     integer_columns=("trade_count",),
 )
 
-UM_KLINES = DatasetSpec(
+UM_KLINES = replace(
+    SPOT_KLINES,
     product="um",
-    name="klines",
-    remote_name="klines",
-    source_columns=SPOT_KLINE_SOURCE_COLUMNS,
     stored_columns=(
         "open_time",
         "open",
@@ -141,15 +140,8 @@ UM_KLINES = DatasetSpec(
         "taker_buy_base_volume",
         "taker_buy_quote_volume",
     ),
-    time_column="open_time",
-    base_interval="1m",
-    output_intervals=SPOT_KLINE_OUTPUT_INTERVALS,
     aliases=MappingProxyType({}),
-    max_concurrency=64,
     csv_header="present",
-    schema_version=1,
-    supports_resampling=True,
-    supports_gap_policy=True,
     resample_sum_columns=(
         "base_volume",
         "quote_volume",
@@ -157,16 +149,11 @@ UM_KLINES = DatasetSpec(
         "taker_buy_base_volume",
         "taker_buy_quote_volume",
     ),
-    ordering_columns=("open_time",),
-    timestamp_columns=("open_time", "close_time"),
-    integer_columns=("trade_count",),
 )
 
-CM_KLINES = DatasetSpec(
+CM_KLINES = replace(
+    SPOT_KLINES,
     product="cm",
-    name="klines",
-    remote_name="klines",
-    source_columns=SPOT_KLINE_SOURCE_COLUMNS,
     stored_columns=(
         "open_time",
         "open",
@@ -180,15 +167,8 @@ CM_KLINES = DatasetSpec(
         "taker_buy_contract_volume",
         "taker_buy_base_volume",
     ),
-    time_column="open_time",
-    base_interval="1m",
-    output_intervals=SPOT_KLINE_OUTPUT_INTERVALS,
     aliases=MappingProxyType({}),
-    max_concurrency=64,
     csv_header="present",
-    schema_version=1,
-    supports_resampling=True,
-    supports_gap_policy=True,
     resample_sum_columns=(
         "contract_volume",
         "base_volume",
@@ -196,9 +176,6 @@ CM_KLINES = DatasetSpec(
         "taker_buy_contract_volume",
         "taker_buy_base_volume",
     ),
-    ordering_columns=("open_time",),
-    timestamp_columns=("open_time", "close_time"),
-    integer_columns=("trade_count",),
 )
 
 UM_MARK_PRICE_KLINES = DatasetSpec(
@@ -230,110 +207,32 @@ UM_MARK_PRICE_KLINES = DatasetSpec(
     integer_columns=("sample_count",),
 )
 
-CM_MARK_PRICE_KLINES = DatasetSpec(
+CM_MARK_PRICE_KLINES = replace(
+    UM_MARK_PRICE_KLINES,
     product="cm",
-    name="mark_price_klines",
-    remote_name="markPriceKlines",
-    source_columns=SPOT_KLINE_SOURCE_COLUMNS,
-    stored_columns=UM_MARK_PRICE_KLINES.stored_columns,
-    time_column="open_time",
-    base_interval="1m",
-    output_intervals=SPOT_KLINE_OUTPUT_INTERVALS,
-    aliases=MappingProxyType({"count": "sample_count"}),
-    max_concurrency=64,
-    csv_header="present",
-    schema_version=1,
-    supports_resampling=True,
-    supports_gap_policy=True,
-    resample_sum_columns=("sample_count",),
-    ordering_columns=("open_time",),
-    timestamp_columns=("open_time", "close_time"),
-    integer_columns=("sample_count",),
 )
 
-UM_INDEX_PRICE_KLINES = DatasetSpec(
-    product="um",
+UM_INDEX_PRICE_KLINES = replace(
+    UM_MARK_PRICE_KLINES,
     name="index_price_klines",
     remote_name="indexPriceKlines",
-    source_columns=SPOT_KLINE_SOURCE_COLUMNS,
-    stored_columns=UM_MARK_PRICE_KLINES.stored_columns,
-    time_column="open_time",
-    base_interval="1m",
-    output_intervals=SPOT_KLINE_OUTPUT_INTERVALS,
-    aliases=MappingProxyType({"count": "sample_count"}),
-    max_concurrency=64,
-    csv_header="present",
-    schema_version=1,
-    supports_resampling=True,
-    supports_gap_policy=True,
-    resample_sum_columns=("sample_count",),
-    ordering_columns=("open_time",),
-    timestamp_columns=("open_time", "close_time"),
-    integer_columns=("sample_count",),
 )
 
-CM_INDEX_PRICE_KLINES = DatasetSpec(
+CM_INDEX_PRICE_KLINES = replace(
+    UM_INDEX_PRICE_KLINES,
     product="cm",
-    name="index_price_klines",
-    remote_name="indexPriceKlines",
-    source_columns=SPOT_KLINE_SOURCE_COLUMNS,
-    stored_columns=UM_MARK_PRICE_KLINES.stored_columns,
-    time_column="open_time",
-    base_interval="1m",
-    output_intervals=SPOT_KLINE_OUTPUT_INTERVALS,
-    aliases=MappingProxyType({"count": "sample_count"}),
-    max_concurrency=64,
-    csv_header="present",
-    schema_version=1,
-    supports_resampling=True,
-    supports_gap_policy=True,
-    resample_sum_columns=("sample_count",),
-    ordering_columns=("open_time",),
-    timestamp_columns=("open_time", "close_time"),
-    integer_columns=("sample_count",),
     archive_symbol_attribute="pair",
 )
 
-UM_PREMIUM_INDEX_KLINES = DatasetSpec(
-    product="um",
+UM_PREMIUM_INDEX_KLINES = replace(
+    UM_MARK_PRICE_KLINES,
     name="premium_index_klines",
     remote_name="premiumIndexKlines",
-    source_columns=SPOT_KLINE_SOURCE_COLUMNS,
-    stored_columns=UM_MARK_PRICE_KLINES.stored_columns,
-    time_column="open_time",
-    base_interval="1m",
-    output_intervals=SPOT_KLINE_OUTPUT_INTERVALS,
-    aliases=MappingProxyType({"count": "sample_count"}),
-    max_concurrency=64,
-    csv_header="present",
-    schema_version=1,
-    supports_resampling=True,
-    supports_gap_policy=True,
-    resample_sum_columns=("sample_count",),
-    ordering_columns=("open_time",),
-    timestamp_columns=("open_time", "close_time"),
-    integer_columns=("sample_count",),
 )
 
-CM_PREMIUM_INDEX_KLINES = DatasetSpec(
+CM_PREMIUM_INDEX_KLINES = replace(
+    UM_PREMIUM_INDEX_KLINES,
     product="cm",
-    name="premium_index_klines",
-    remote_name="premiumIndexKlines",
-    source_columns=SPOT_KLINE_SOURCE_COLUMNS,
-    stored_columns=UM_MARK_PRICE_KLINES.stored_columns,
-    time_column="open_time",
-    base_interval="1m",
-    output_intervals=SPOT_KLINE_OUTPUT_INTERVALS,
-    aliases=MappingProxyType({"count": "sample_count"}),
-    max_concurrency=64,
-    csv_header="present",
-    schema_version=1,
-    supports_resampling=True,
-    supports_gap_policy=True,
-    resample_sum_columns=("sample_count",),
-    ordering_columns=("open_time",),
-    timestamp_columns=("open_time", "close_time"),
-    integer_columns=("sample_count",),
 )
 
 METRICS_SOURCE_COLUMNS: Columns = (
@@ -376,26 +275,15 @@ UM_METRICS = DatasetSpec(
     timestamp_columns=("event_time",),
 )
 
-CM_METRICS = DatasetSpec(
+CM_METRICS = replace(
+    UM_METRICS,
     product="cm",
-    name="metrics",
-    remote_name="metrics",
-    source_columns=METRICS_SOURCE_COLUMNS,
     stored_columns=(
         "event_time",
         "open_interest_contract_quantity",
         "open_interest_base_quantity",
         *METRICS_RATIO_COLUMNS,
     ),
-    time_column="event_time",
-    base_interval=None,
-    output_intervals=(),
-    aliases=MappingProxyType({}),
-    max_concurrency=16,
-    csv_header="present",
-    schema_version=1,
-    ordering_columns=("event_time",),
-    timestamp_columns=("event_time",),
 )
 
 BOOK_DEPTH_SOURCE_COLUMNS: Columns = (
@@ -428,27 +316,15 @@ UM_BOOK_DEPTH = DatasetSpec(
     integer_columns=("percentage_bucket",),
 )
 
-CM_BOOK_DEPTH = DatasetSpec(
+CM_BOOK_DEPTH = replace(
+    UM_BOOK_DEPTH,
     product="cm",
-    name="book_depth",
-    remote_name="bookDepth",
-    source_columns=BOOK_DEPTH_SOURCE_COLUMNS,
     stored_columns=(
         "event_time",
         "percentage_bucket",
         "contract_depth",
         "base_notional",
     ),
-    time_column="event_time",
-    base_interval=None,
-    output_intervals=(),
-    aliases=MappingProxyType({"percentage": "percentage_bucket"}),
-    max_concurrency=16,
-    csv_header="present",
-    schema_version=1,
-    ordering_columns=("event_time", "percentage_bucket"),
-    timestamp_columns=("event_time",),
-    integer_columns=("percentage_bucket",),
 )
 
 UM_TRADES = DatasetSpec(
@@ -477,10 +353,9 @@ UM_TRADES = DatasetSpec(
     boolean_columns=("buyer_is_maker",),
 )
 
-CM_TRADES = DatasetSpec(
+CM_TRADES = replace(
+    UM_TRADES,
     product="cm",
-    name="trades",
-    remote_name="trades",
     source_columns=("id", "price", "qty", "base_qty", "time", "is_buyer_maker"),
     stored_columns=(
         "trade_id",
@@ -491,18 +366,8 @@ CM_TRADES = DatasetSpec(
         "event_time",
         "buyer_is_maker",
     ),
-    time_column="event_time",
-    base_interval=None,
-    output_intervals=(),
     aliases=MappingProxyType({"id": "trade_id", "quantity": "contract_quantity"}),
-    max_concurrency=8,
-    csv_header="present",
-    schema_version=1,
     requires_contract_size=True,
-    ordering_columns=("event_time", "trade_id"),
-    timestamp_columns=("event_time",),
-    integer_columns=("trade_id",),
-    boolean_columns=("buyer_is_maker",),
 )
 
 UM_AGG_TRADES = DatasetSpec(
@@ -541,19 +406,9 @@ UM_AGG_TRADES = DatasetSpec(
     boolean_columns=("buyer_is_maker",),
 )
 
-CM_AGG_TRADES = DatasetSpec(
+CM_AGG_TRADES = replace(
+    UM_AGG_TRADES,
     product="cm",
-    name="agg_trades",
-    remote_name="aggTrades",
-    source_columns=(
-        "agg_trade_id",
-        "price",
-        "quantity",
-        "first_trade_id",
-        "last_trade_id",
-        "transact_time",
-        "is_buyer_maker",
-    ),
     stored_columns=(
         "agg_trade_id",
         "first_trade_id",
@@ -565,56 +420,22 @@ CM_AGG_TRADES = DatasetSpec(
         "event_time",
         "buyer_is_maker",
     ),
-    time_column="event_time",
-    base_interval=None,
-    output_intervals=(),
     aliases=MappingProxyType({"id": "agg_trade_id", "quantity": "contract_quantity"}),
-    max_concurrency=8,
-    csv_header="present",
-    schema_version=1,
     requires_contract_size=True,
-    ordering_columns=("event_time", "agg_trade_id"),
-    timestamp_columns=("event_time",),
-    integer_columns=("agg_trade_id", "first_trade_id", "last_trade_id"),
-    boolean_columns=("buyer_is_maker",),
 )
 
-SPOT_TRADES = DatasetSpec(
+SPOT_TRADES = replace(
+    UM_TRADES,
     product="spot",
-    name="trades",
-    remote_name="trades",
     source_columns=SPOT_TRADE_SOURCE_COLUMNS,
-    stored_columns=SPOT_TRADE_STORED_COLUMNS,
-    time_column="event_time",
-    base_interval=None,
-    output_intervals=(),
-    aliases=MappingProxyType({"id": "trade_id", "quantity": "base_quantity"}),
-    max_concurrency=8,
     csv_header="absent",
-    schema_version=1,
-    ordering_columns=("event_time", "trade_id"),
-    timestamp_columns=("event_time",),
-    integer_columns=("trade_id",),
-    boolean_columns=("buyer_is_maker",),
 )
 
-SPOT_AGG_TRADES = DatasetSpec(
+SPOT_AGG_TRADES = replace(
+    UM_AGG_TRADES,
     product="spot",
-    name="agg_trades",
-    remote_name="aggTrades",
     source_columns=SPOT_AGG_TRADE_SOURCE_COLUMNS,
-    stored_columns=SPOT_AGG_TRADE_STORED_COLUMNS,
-    time_column="event_time",
-    base_interval=None,
-    output_intervals=(),
-    aliases=MappingProxyType({"id": "agg_trade_id", "quantity": "base_quantity"}),
-    max_concurrency=8,
     csv_header="absent",
-    schema_version=1,
-    ordering_columns=("event_time", "agg_trade_id"),
-    timestamp_columns=("event_time",),
-    integer_columns=("agg_trade_id", "first_trade_id", "last_trade_id"),
-    boolean_columns=("buyer_is_maker",),
 )
 
 DATASETS: Mapping[tuple[str, str], DatasetSpec] = MappingProxyType(

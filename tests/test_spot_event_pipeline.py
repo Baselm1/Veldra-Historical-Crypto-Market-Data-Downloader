@@ -15,7 +15,7 @@ import pytest
 
 from crypto_downloader._core.datasets import DatasetSpec
 from crypto_downloader.binance.datasets import SPOT_AGG_TRADES, SPOT_TRADES
-from crypto_downloader._core.engine import Downloader
+from crypto_downloader._core.engine import RetrievalEngine
 from crypto_downloader.binance.connector import BinanceConnector
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -144,7 +144,7 @@ def test_spot_event_pipeline_downloads_queries_and_reuses_cached_parquet(
         tmp_path: The isolated downloader data directory.
     """
     server = EventServer(dataset, fixture, day)
-    downloader = Downloader(
+    downloader = RetrievalEngine(
         tmp_path,
         source=BinanceConnector(retries=0),
         transport=httpx.MockTransport(server),

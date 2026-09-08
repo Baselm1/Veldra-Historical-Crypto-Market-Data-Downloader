@@ -18,7 +18,7 @@ from .discovery import (
 )
 from .models import Resource, ResourceKey
 from .reporting import Reporter
-from .source import Source
+from .connector import Connector
 
 LOGGER = logging.getLogger(__name__)
 
@@ -60,12 +60,12 @@ def select_archives(resources: list[Resource], dataset: DatasetSpec) -> list[Res
         ),
     )
     selected: list[Resource] = []
+    occupied: set[date] = set()
     for resource in ordered:
-        if not any(
-            resource.day <= other.last_day and other.day <= resource.last_day
-            for other in selected
-        ):
+        days = covered_days([resource])
+        if occupied.isdisjoint(days):
             selected.append(resource)
+            occupied.update(days)
     return sorted(selected, key=lambda r: r.day)
 
 
@@ -81,8 +81,42 @@ def _months(first: date, last: date) -> list[tuple[date, date]]:
     return months
 
 
+def _monthly_candidates(
+    resources: list[Resource],
+    dataset: DatasetSpec,
+    first: date,
+    last: date,
+    *,
+    refresh: bool,
+) -> list[Resource]:
+    """Select ready files and usable whole-month downloads without overlaps.
+
+    Args:
+        resources: Known daily and monthly archives.
+        dataset: Expected cache schema.
+        first: First requested calendar day.
+        last: Last requested calendar day.
+        refresh: Whether failed monthly downloads should be retried.
+
+    Returns:
+        Ready files plus monthly downloads worth attempting.
+    """
+    candidates = []
+    for resource in resources:
+        ready = valid_cached_path(resource, dataset) is not None
+        usable_month = (
+            resource.cadence == "monthly"
+            and (refresh or resource.status != "failed")
+            and first <= resource.day
+            and resource.last_day <= last
+        )
+        if ready or usable_month:
+            candidates.append(resource)
+    return select_archives(candidates, dataset)
+
+
 def plan_archives(
-    source: Source,
+    source: Connector,
     catalog: Catalog,
     client: httpx.Client,
     key: ResourceKey,
@@ -161,19 +195,12 @@ def plan_archives(
                 error,
             )
     candidates = catalog_archives(catalog, key, first, last)
-    selected = select_archives(
-        [
-            r
-            for r in candidates
-            if valid_cached_path(r, dataset) is not None
-            or (
-                r.cadence == "monthly"
-                and (refresh or r.status != "failed")
-                and r.day >= first
-                and r.last_day <= last
-            )
-        ],
+    selected = _monthly_candidates(
+        candidates,
         dataset,
+        first,
+        last,
+        refresh=refresh,
     )
     for gap_start, gap_end in _uncovered_ranges(
         first, last, [(r.day, r.last_day) for r in selected if r.cadence == "monthly"]

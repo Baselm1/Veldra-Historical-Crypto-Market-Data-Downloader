@@ -8,7 +8,7 @@ import httpx
 from crypto_downloader._core.catalog import Catalog, DiscoveryCheckpoint
 from crypto_downloader._core.reporting import Reporter
 from crypto_downloader._core.models import Resource, ResourceKey
-from crypto_downloader._core.source import Source
+from crypto_downloader._core.connector import Connector
 
 LOGGER = logging.getLogger(__name__)
 DISCOVERY_TTL = timedelta(hours=24)
@@ -47,7 +47,7 @@ def _validate_resources(
 
 
 def discover_resources(
-    source: Source,
+    source: Connector,
     catalog: Catalog,
     client: httpx.Client,
     key: ResourceKey,
@@ -106,7 +106,7 @@ def discover_resources(
     )
     display = reporter if reporter is not None else Reporter(False)
     if scan_ranges:
-        with display.status(f"Discovering {key.symbol} daily files"):
+        with display.status(f"Discovering {key.symbol} {key.cadence} files"):
             for scan_start, scan_end in scan_ranges:
                 resources = source.resources(client, key, scan_start, scan_end)
                 _validate_resources(resources, scan_start, scan_end)
@@ -119,7 +119,7 @@ def discover_resources(
                     len(resources),
                 )
     elif not offline:
-        display.info(f"{key.symbol}: reused cached daily-file discovery")
+        display.info(f"{key.symbol}: reused cached {key.cadence}-file discovery")
     resources = catalog.resources(key, start_day, end_day)
     LOGGER.info(
         "Resource discovery complete: key=%s resources=%d scans=%d",
