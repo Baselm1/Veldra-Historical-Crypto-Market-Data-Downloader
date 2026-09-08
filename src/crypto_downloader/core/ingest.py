@@ -1,5 +1,6 @@
 """Convert verified source ZIP archives into atomic Parquet files."""
 
+import csv as text_csv
 import logging
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -7,14 +8,15 @@ from urllib.parse import unquote, urlsplit
 import zipfile
 
 import httpx
-from collections.abc import Callable
+from collections.abc import Callable, Iterable, Iterator
 from datetime import date, datetime
 from typing import Any
 import pyarrow.csv as csv
 import pyarrow as pa
+import pyarrow.compute as pc
 import pyarrow.parquet as pq
 
-from crypto_downloader.core.datasets import DatasetSpec
+from crypto_downloader.core.datasets import CsvSchema, DatasetSpec
 from crypto_downloader.core.download import download
 from crypto_downloader.core.models import (
     DataValidationError,
@@ -32,6 +34,60 @@ LOGGER = logging.getLogger(__name__)
 
 class ArchiveError(DataValidationError):
     """Report an unsafe or malformed source archive."""
+
+
+def _source_schema(
+    archive: zipfile.ZipFile, member: zipfile.ZipInfo, dataset: DatasetSpec
+) -> CsvSchema:
+    """Select a declared CSV schema from the archive's first row.
+
+    Args:
+        archive: The verified ZIP archive.
+        member: The verified single CSV member.
+        dataset: The dataset declaring accepted source layouts.
+
+    Returns:
+        The structurally matching source CSV schema.
+    """
+    with archive.open(member, "r") as source:
+        first_line = source.readline()
+    try:
+        fields = next(text_csv.reader([first_line.decode("utf-8-sig")]))
+    except (UnicodeDecodeError, StopIteration, text_csv.Error) as error:
+        raise ArchiveError("CSV has no readable first row") from error
+    present = [
+        schema
+        for schema in dataset.csv_schemas
+        if schema.header == "present" and tuple(fields) == schema.columns
+    ]
+    if present:
+        return present[0]
+    absent = [
+        schema
+        for schema in dataset.csv_schemas
+        if schema.header == "absent" and len(fields) == len(schema.columns)
+    ]
+    if absent:
+        return absent[0]
+    raise ArchiveError("CSV does not match the expected source columns or field count")
+
+
+def _timestamp_bounds(table: Any, column: str) -> tuple[datetime, datetime]:
+    """Return the true minimum and maximum timestamp in one Arrow table.
+
+    Args:
+        table: The normalized Arrow table.
+        column: The canonical timestamp column.
+
+    Returns:
+        The minimum and maximum timestamps present in the table.
+    """
+    bounds = pc.min_max(table[column]).as_py()
+    first = bounds["min"]
+    last = bounds["max"]
+    if not isinstance(first, datetime) or not isinstance(last, datetime):
+        raise ArchiveError("normalized timestamps cannot be empty")
+    return first, last
 
 
 def _positive_integer(value: object, name: str) -> int:
@@ -107,61 +163,163 @@ def _write_chunks(
     Returns:
         Row count and first/last UTC timestamps.
     """
-    writer: pq.ParquetWriter | None = None
-    rows = 0
-    first: datetime | None = None
-    previous: datetime | None = None
+    schema = _source_schema(archive, member, dataset)
+    try:
+        with archive.open(member, "r") as source:
+            reader = _csv_reader(source, schema, chunk_rows)
+            tables = _normalized_tables(
+                reader, dataset, resource, chunk_rows, normalizer
+            )
+            if dataset.sort_source_rows:
+                return _write_sorted(tables, resource, dataset, partial, validator)
+            return _write_ordered(tables, resource, dataset, partial, validator)
+    except pa.ArrowException as error:
+        raise ArchiveError(f"invalid or empty CSV: {error}") from error
+
+
+def _csv_reader(source: Any, schema: CsvSchema, chunk_rows: int) -> Any:
+    """Open one Arrow streaming reader for a selected source schema.
+
+    Args:
+        source: The open binary CSV stream.
+        schema: The structurally selected source schema.
+        chunk_rows: The normalization chunk size.
+
+    Returns:
+        A validated Arrow streaming CSV reader.
+    """
     read_options = csv.ReadOptions(
-        column_names=(
-            list(dataset.source_columns) if dataset.csv_header == "absent" else None
-        ),
+        column_names=list(schema.columns) if schema.header == "absent" else None,
         block_size=max(1024, min(chunk_rows * 128, 8 * 1024 * 1024)),
         use_threads=False,
     )
     convert_options = csv.ConvertOptions(
-        column_types={name: pa.string() for name in dataset.source_columns},
+        column_types={name: pa.string() for name in schema.columns},
         strings_can_be_null=True,
         null_values=[""],
     )
+    reader = csv.open_csv(
+        source, read_options=read_options, convert_options=convert_options
+    )
+    if tuple(reader.schema.names) != schema.columns:
+        raise ArchiveError(
+            "CSV does not match the expected source columns or field count"
+        )
+    return reader
+
+
+def _normalized_tables(
+    reader: Iterable[Any],
+    dataset: DatasetSpec,
+    resource: Resource,
+    chunk_rows: int,
+    normalizer: Normalizer,
+) -> Iterator[Any]:
+    """Yield normalized tables no larger than the configured chunk size.
+
+    Args:
+        reader: The Arrow record batches read from the CSV.
+        dataset: The canonical dataset declaration.
+        resource: The physical archive providing source context.
+        chunk_rows: The largest normalized table size.
+        normalizer: The exchange-specific Arrow conversion function.
+
+    Yields:
+        Canonical Arrow tables.
+    """
+    for batch in reader:
+        for offset in range(0, batch.num_rows, chunk_rows):
+            raw = pa.Table.from_batches([batch.slice(offset, chunk_rows)])
+            yield normalizer(raw, dataset, resource.contract_size)
+
+
+def _write_ordered(
+    tables: Iterable[Any],
+    resource: Resource,
+    dataset: DatasetSpec,
+    partial: Path,
+    validator: Validator,
+) -> tuple[int, datetime, datetime]:
+    """Validate and stream already ordered canonical tables to Parquet.
+
+    Args:
+        tables: Canonical source-order tables.
+        resource: The physical source archive.
+        dataset: The canonical dataset declaration.
+        partial: The temporary Parquet path.
+        validator: The exchange-specific validation function.
+
+    Returns:
+        Row count and true minimum/maximum timestamps.
+    """
+    writer: pq.ParquetWriter | None = None
+    rows = 0
+    first: datetime | None = None
+    last: datetime | None = None
+    previous: datetime | None = None
     try:
-        with archive.open(member, "r") as source:
-            reader = csv.open_csv(
-                source, read_options=read_options, convert_options=convert_options
+        for table in tables:
+            previous = validator(
+                table,
+                dataset,
+                resource.day,
+                previous,
+                resource.end_day,
             )
-            if tuple(reader.schema.names) != dataset.source_columns:
-                raise ArchiveError(
-                    "CSV does not match the expected source columns or field count"
+            chunk_first, chunk_last = _timestamp_bounds(table, dataset.time_column)
+            first = chunk_first if first is None else min(first, chunk_first)
+            last = chunk_last if last is None else max(last, chunk_last)
+            if writer is None:
+                writer = pq.ParquetWriter(
+                    partial,
+                    table.schema,
+                    compression="zstd",
+                    use_dictionary=False,
                 )
-            for batch in reader:
-                for offset in range(0, batch.num_rows, chunk_rows):
-                    raw = pa.Table.from_batches([batch.slice(offset, chunk_rows)])
-                    table = normalizer(raw, dataset, resource.contract_size)
-                    previous = validator(
-                        table,
-                        dataset,
-                        resource.day,
-                        previous,
-                        getattr(resource, "end_day", None),
-                    )
-                    if first is None:
-                        first = table[dataset.time_column][0].as_py()
-                    if writer is None:
-                        writer = pq.ParquetWriter(
-                            partial,
-                            table.schema,
-                            compression="zstd",
-                            use_dictionary=False,
-                        )
-                    writer.write_table(table)
-                    rows += table.num_rows
-    except pa.ArrowException as error:
-        raise ArchiveError(f"invalid or empty CSV: {error}") from error
+            writer.write_table(table)
+            rows += table.num_rows
     finally:
         if writer is not None:
             writer.close()
-    if first is None or previous is None:
+    if first is None or last is None or previous is None:
         raise ArchiveError("CSV cannot be empty")
-    return rows, first, previous
+    return rows, first, last
+
+
+def _write_sorted(
+    tables: Iterable[Any],
+    resource: Resource,
+    dataset: DatasetSpec,
+    partial: Path,
+    validator: Validator,
+) -> tuple[int, datetime, datetime]:
+    """Sort an unordered archive before validation and Parquet storage.
+
+    Args:
+        tables: Canonical tables in arbitrary source order.
+        resource: The physical source archive.
+        dataset: The canonical dataset declaration.
+        partial: The temporary Parquet path.
+        validator: The exchange-specific validation function.
+
+    Returns:
+        Row count and true minimum/maximum timestamps.
+    """
+    pending = list(tables)
+    if not pending:
+        raise ArchiveError("CSV cannot be empty")
+    table = pa.concat_tables(pending).sort_by(
+        [(column, "ascending") for column in dataset.ordering_columns]
+    )
+    validator(table, dataset, resource.day, None, resource.end_day)
+    first, last = _timestamp_bounds(table, dataset.time_column)
+    pq.write_table(
+        table,
+        partial,
+        compression="zstd",
+        use_dictionary=False,
+    )
+    return table.num_rows, first, last
 
 
 def ingest_archive(

@@ -1,6 +1,6 @@
 """Test verified ZIP-to-Parquet ingestion."""
 
-from datetime import date
+from datetime import UTC, date, datetime
 from dataclasses import replace
 import hashlib
 from io import BytesIO
@@ -10,9 +10,10 @@ import zipfile
 from crypto_downloader.binance.processing import normalize_chunk, validate_chunk
 import httpx
 import pandas as pd
+import pyarrow as pa
 import pytest
 
-from crypto_downloader.core.datasets import DatasetSpec
+from crypto_downloader.core.datasets import CsvSchema, DatasetSpec
 from crypto_downloader.binance.datasets import (
     CM_BOOK_DEPTH,
     CM_INDEX_PRICE_KLINES,
@@ -166,6 +167,87 @@ def test_ingest_archive_reads_a_dataset_declared_csv_header(tmp_path: Path) -> N
     assert len(frame) == metadata.row_count == 2
     assert metadata.timestamp_column == "open_time"
     assert metadata.schema_version == 2
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        b"1735689660,2\n1735689600,1\n",
+        b"timestamp,amount\n1735689660,2\n1735689600,1\n",
+    ],
+)
+def test_ingest_selects_csv_variants_and_sorts_unordered_rows(
+    content: bytes, tmp_path: Path
+) -> None:
+    """Confirm structural variants produce one deterministically ordered Parquet.
+
+    Args:
+        content: A headerless or header-bearing unordered CSV.
+        tmp_path: The isolated output directory.
+    """
+    dataset = DatasetSpec(
+        product="spot",
+        name="events",
+        remote_name="events",
+        source_columns=("time", "amount"),
+        source_schemas=(CsvSchema(("timestamp", "amount"), "present"),),
+        stored_columns=("event_time", "amount"),
+        time_column="event_time",
+        base_interval=None,
+        output_intervals=(),
+        aliases={},
+        ordering_columns=("event_time",),
+        timestamp_columns=("event_time",),
+        sort_source_rows=True,
+    )
+    payload = archive_bytes(content)
+
+    def normalize(table: object, _dataset: DatasetSpec, _size: float | None) -> object:
+        """Convert either source timestamp name into canonical Arrow columns."""
+        assert isinstance(table, pa.Table)
+        time_name = "time" if "time" in table.column_names else "timestamp"
+        timestamps = [
+            datetime.fromtimestamp(int(value), UTC)
+            for value in table[time_name].to_pylist()
+        ]
+        return pa.table(
+            {
+                "event_time": pa.array(timestamps, type=pa.timestamp("us", tz="UTC")),
+                "amount": pa.array(
+                    [float(value) for value in table["amount"].to_pylist()]
+                ),
+            }
+        )
+
+    def validate(
+        table: object,
+        _dataset: DatasetSpec,
+        _day: date,
+        _previous: datetime | None,
+        _end_day: date | None,
+    ) -> datetime:
+        """Require sorted canonical event timestamps and return the last one."""
+        assert isinstance(table, pa.Table)
+        values = table["event_time"].to_pylist()
+        assert values == sorted(values)
+        return values[-1]
+
+    destination = tmp_path / "variant.parquet"
+    with client_for(payload) as client:
+        metadata = ingest_archive(
+            client,
+            RESOURCE,
+            dataset,
+            destination,
+            chunk_rows=1,
+            normalizer=normalize,
+            validator=validate,
+        )
+
+    frame = pd.read_parquet(destination)
+    assert frame["amount"].tolist() == [1.0, 2.0]
+    assert metadata.first_timestamp == datetime(2025, 1, 1, tzinfo=UTC)
+    assert metadata.last_timestamp == datetime(2025, 1, 1, 0, 1, tzinfo=UTC)
 
 
 @pytest.mark.parametrize(

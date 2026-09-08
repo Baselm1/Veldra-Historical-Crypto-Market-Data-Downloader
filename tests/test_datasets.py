@@ -2,7 +2,7 @@
 
 import pytest
 
-from crypto_downloader.core.datasets import DatasetSpec
+from crypto_downloader.core.datasets import CsvSchema, DatasetSpec
 from crypto_downloader.binance.datasets import (
     CM_BOOK_DEPTH,
     CM_INDEX_PRICE_KLINES,
@@ -154,6 +154,29 @@ def test_interval_less_snapshot_capabilities_are_declared_without_a_subclass() -
     assert snapshot.supports_gap_policy is False
     assert snapshot.output_columns == ("event_time", "value")
     assert snapshot.timestamp_columns == ("event_time",)
+
+
+def test_dataset_declares_multiple_structural_csv_schemas() -> None:
+    """Confirm source layout variants remain ordered and independently validated."""
+    variant = CsvSchema(("timestamp", "amount"), "present")
+    snapshot = minimal_snapshot(source_schemas=(variant,), sort_source_rows=True)
+
+    assert snapshot.csv_schemas == (
+        CsvSchema(("event_time", "value")),
+        variant,
+    )
+    assert snapshot.sort_source_rows is True
+
+
+@pytest.mark.parametrize("columns", [(), ("time", "time")])
+def test_invalid_source_csv_schema_is_rejected(columns: tuple[str, ...]) -> None:
+    """Confirm empty and duplicate source columns cannot be declared.
+
+    Args:
+        columns: The malformed source columns.
+    """
+    with pytest.raises(ValueError, match="columns"):
+        CsvSchema(columns)
 
 
 def test_capabilities_apply_dataset_specific_interval_and_gap_defaults() -> None:

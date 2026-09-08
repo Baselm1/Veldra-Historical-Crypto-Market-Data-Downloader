@@ -199,6 +199,22 @@ def _validate_archive_symbol_attribute(value: str) -> None:
 
 
 @dataclass(frozen=True)
+class CsvSchema:
+    """Describe one accepted source CSV layout."""
+
+    columns: Columns
+    header: CsvHeader = "absent"
+
+    def __post_init__(self) -> None:
+        """Reject empty columns and unsupported header behavior."""
+        if not self.columns:
+            raise ValueError("source CSV schema columns cannot be empty")
+        if len(self.columns) != len(set(self.columns)):
+            raise ValueError("source CSV schema columns cannot contain duplicates")
+        _validate_header(self.header)
+
+
+@dataclass(frozen=True)
 class DatasetSpec:
     """Describe one product and dataset combination."""
 
@@ -223,6 +239,8 @@ class DatasetSpec:
     integer_columns: Columns = ()
     boolean_columns: Columns = ()
     archive_symbol_attribute: ArchiveSymbolAttribute = "symbol"
+    source_schemas: tuple[CsvSchema, ...] = ()
+    sort_source_rows: bool = False
 
     def __post_init__(self) -> None:
         """Validate the immutable capability declaration.
@@ -258,6 +276,22 @@ class DatasetSpec:
         )
         _validate_schema_version(self.schema_version)
         _validate_archive_symbol_attribute(self.archive_symbol_attribute)
+        schemas = self.csv_schemas
+        identities = [(schema.columns, schema.header) for schema in schemas]
+        if len(identities) != len(set(identities)):
+            raise ValueError("source CSV schemas cannot contain duplicates")
+
+    @property
+    def csv_schemas(self) -> tuple[CsvSchema, ...]:
+        """Return every accepted source CSV layout.
+
+        Returns:
+            The primary layout followed by additional structural variants.
+        """
+        return (
+            CsvSchema(self.source_columns, self.csv_header),
+            *self.source_schemas,
+        )
 
     @property
     def needs_interval(self) -> bool:
