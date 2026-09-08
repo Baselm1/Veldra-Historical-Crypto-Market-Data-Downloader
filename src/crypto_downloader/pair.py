@@ -231,6 +231,7 @@ def _first_resource(
     result: Result,
     reporter: Reporter,
     *,
+    refresh: bool,
     offline: bool,
 ) -> Resource | None:
     """Return and catalog the first source archive without a configured cutoff.
@@ -243,16 +244,24 @@ def _first_resource(
         today: The current UTC date and exclusive active boundary.
         result: The result receiving discovery failures.
         reporter: The optional Rich activity reporter.
+        refresh: Whether to repeat source-boundary discovery.
         offline: Whether source access is forbidden.
 
     Returns:
         The first known resource, or ``None`` when no source file is available.
     """
-    cached = catalog.resource_bounds(key)
+    source_bounds = catalog.source_bounds(key)
+    cached_day = source_bounds[0] if source_bounds is not None else None
+    if cached_day is not None and not refresh:
+        resources = catalog.resources(key, cached_day, cached_day)
+        if resources:
+            LOGGER.debug("Reused source boundary: key=%s day=%s", key, cached_day)
+            return resources[0]
     if offline:
-        if cached is None:
+        fallback = catalog.resource_bounds(key)
+        if fallback is None:
             return None
-        day = cached[0]
+        day = fallback[0]
         resources = catalog.resources(key, day, day)
         return resources[0] if resources else None
     try:
@@ -315,6 +324,7 @@ def _availability_range(
         today,
         result,
         reporter,
+        refresh=refresh,
         offline=offline,
     )
     if result.errors or first is None:
@@ -736,19 +746,19 @@ def _discover(
         The known resources, or ``None`` after an isolated failure.
     """
     try:
-        with reporter.status(f"Discovering {key.symbol} daily files"):
-            return discover_resources(
-                source,
-                catalog,
-                client,
-                key,
-                start,
-                end,
-                active=active,
-                refresh=refresh,
-                offline=offline,
-                tail_days=tail_days,
-            )
+        return discover_resources(
+            source,
+            catalog,
+            client,
+            key,
+            start,
+            end,
+            active=active,
+            refresh=refresh,
+            offline=offline,
+            tail_days=tail_days,
+            reporter=reporter,
+        )
     except Exception as error:
         LOGGER.exception("Resource discovery failed: key=%s", key)
         result.errors.append(Message("discovery_failed", str(error)))

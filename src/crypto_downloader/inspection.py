@@ -947,6 +947,7 @@ def discover_availability(
                     active=market.active and recent,
                     refresh=selected_refresh,
                     tail_days=downloader.discovery_tail_days,
+                    reporter=Reporter(progress),
                 )
                 result = _availability(
                     downloader,

@@ -600,6 +600,38 @@ def test_fresh_market_snapshot_is_reused_until_refresh_is_requested(
     assert source.market_calls == 2
 
 
+def test_source_boundary_is_reused_until_refresh_is_requested(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Confirm ordinary online requests do not repeat the earliest-file probe.
+
+    Args:
+        tmp_path: The isolated downloader directory.
+        capsys: The pytest helper used to inspect progress output.
+    """
+    source = RangeSource([market("BTCUSDT")], {"BTCUSDT": [date(2024, 1, 1)]})
+    downloader = service(tmp_path, source)
+
+    downloader.get_results("BTCUSDT", "2024-01-01", "2024-01-01")
+    downloader.get_results("BTCUSDT", "2024-01-01", "2024-01-01")
+    downloader.get_results(
+        "BTCUSDT",
+        "2024-01-01",
+        "2024-01-01",
+        refresh=True,
+    )
+
+    assert source.first_calls == [
+        ("BTCUSDT", None, date(2025, 1, 4)),
+        ("BTCUSDT", None, date(2025, 1, 4)),
+    ]
+    output = capsys.readouterr().err
+    assert output.count("Finding the first BTCUSDT daily file") == 2
+    assert output.count("Discovering BTCUSDT daily files") == 1
+    assert "reused cached daily-file discovery" in output
+
+
 def test_stale_market_snapshot_is_refreshed_automatically(tmp_path: Path) -> None:
     """Confirm expired market metadata is replaced before pair resolution."""
     source = RangeSource([market("BTCUSDT")], {"BTCUSDT": [date(2024, 1, 1)]})

@@ -314,7 +314,7 @@ def test_downloader_completes_and_reuses_one_spot_kline_day(
     assert first.data["price"].tolist() == [42298.61, 42320.0]
     pd.testing.assert_frame_equal(first.data, second.data)
     assert server.archive_requests == 1
-    assert server.resource_requests == 2
+    assert server.resource_requests == 1
     assert server.market_requests == 1
 
     expected = parquet_path(tmp_path, KEY, DAY)

@@ -6,6 +6,7 @@ import logging
 import httpx
 
 from .catalog import Catalog
+from .display import Reporter
 from .models import Resource, ResourceKey
 from .source import Source
 
@@ -56,6 +57,7 @@ def discover_resources(
     refresh: bool = False,
     offline: bool = False,
     tail_days: int = 7,
+    reporter: Reporter | None = None,
 ) -> list[Resource]:
     """Discover and persist resources overlapping one request.
 
@@ -70,6 +72,7 @@ def discover_resources(
         refresh: Whether to rescan the complete range explicitly.
         offline: Whether all source access must be skipped.
         tail_days: The number of recent active-market days to rescan.
+        reporter: The optional activity reporter for actual source scans.
 
     Returns:
         All cataloged resources in the requested daily range.
@@ -99,17 +102,22 @@ def discover_resources(
         refresh,
         offline,
     )
-    for scan_start, scan_end in scan_ranges:
-        resources = source.resources(client, key, scan_start, scan_end)
-        _validate_resources(resources, scan_start, scan_end)
-        catalog.save_discovery(key, scan_start, scan_end, resources)
-        LOGGER.debug(
-            "Resource range discovered: key=%s range=[%s, %s] resources=%d",
-            key,
-            scan_start,
-            scan_end,
-            len(resources),
-        )
+    display = reporter if reporter is not None else Reporter(False)
+    if scan_ranges:
+        with display.status(f"Discovering {key.symbol} daily files"):
+            for scan_start, scan_end in scan_ranges:
+                resources = source.resources(client, key, scan_start, scan_end)
+                _validate_resources(resources, scan_start, scan_end)
+                catalog.save_discovery(key, scan_start, scan_end, resources)
+                LOGGER.debug(
+                    "Resource range discovered: key=%s range=[%s, %s] resources=%d",
+                    key,
+                    scan_start,
+                    scan_end,
+                    len(resources),
+                )
+    elif not offline:
+        display.info(f"{key.symbol}: reused cached daily-file discovery")
     resources = catalog.resources(key, start_day, end_day)
     LOGGER.info(
         "Resource discovery complete: key=%s resources=%d scans=%d",
