@@ -89,6 +89,23 @@ NEW_KLINE_COLUMNS = (
 )
 OLD_TRADE_COLUMNS = ("id", "ts", "price", "amount", "direction")
 NEW_TRADE_COLUMNS = ("instId", "tradeId", "px", "side", "size", "ts")
+OLD_LINEAR_TRADE_COLUMNS = (
+    "id",
+    "ts",
+    "price",
+    "amount",
+    "quantity",
+    "trade_turnover",
+    "direction",
+)
+OLD_COIN_TRADE_COLUMNS = (
+    "id",
+    "ts",
+    "price",
+    "amount",
+    "quantity",
+    "direction",
+)
 SPOT_KLINES = DatasetSpec(
     product="spot",
     name="klines",
@@ -151,10 +168,107 @@ SPOT_TRADES = DatasetSpec(
     sort_source_rows=True,
 )
 
+
+def _perpetual_klines(product: str) -> DatasetSpec:
+    """Build one perpetual Kline declaration.
+
+    Args:
+        product: The linear- or coin-margined product.
+
+    Returns:
+        A canonical Kline schema shared by both perpetual products.
+    """
+    return DatasetSpec(
+        product=product,
+        name="klines",
+        remote_name="klines",
+        source_columns=OLD_KLINE_COLUMNS,
+        stored_columns=(
+            "open_time",
+            "open",
+            "high",
+            "low",
+            "close",
+            "contract_volume",
+            "base_volume",
+        ),
+        time_column="open_time",
+        base_interval="1m",
+        output_intervals=KLINE_OUTPUT_INTERVALS,
+        aliases=MappingProxyType({"volume": "contract_volume"}),
+        max_concurrency=32,
+        supports_resampling=True,
+        supports_gap_policy=True,
+        resample_sum_columns=("contract_volume", "base_volume"),
+        ordering_columns=("open_time",),
+        timestamp_columns=("open_time",),
+        archive_symbol_attribute="pair",
+        source_schemas=(
+            CsvSchema(OLD_KLINE_COLUMNS, "present"),
+            CsvSchema(NEW_KLINE_COLUMNS, "present"),
+        ),
+        sort_source_rows=True,
+    )
+
+
+def _perpetual_trades(product: str) -> DatasetSpec:
+    """Build one perpetual trade declaration with explicit quantity units.
+
+    Args:
+        product: The linear- or coin-margined product.
+
+    Returns:
+        The product-specific canonical trade schema.
+    """
+    linear = product == "linear_swap"
+    old_columns = OLD_LINEAR_TRADE_COLUMNS if linear else OLD_COIN_TRADE_COLUMNS
+    quote_column = "quote_quantity" if linear else "quote_notional"
+    return DatasetSpec(
+        product=product,
+        name="trades",
+        remote_name="trades",
+        source_columns=old_columns,
+        stored_columns=(
+            "event_time",
+            "trade_id",
+            "price",
+            "contract_quantity",
+            "base_quantity",
+            quote_column,
+            "side",
+        ),
+        time_column="event_time",
+        base_interval=None,
+        output_intervals=(),
+        aliases=MappingProxyType({}),
+        max_concurrency=16,
+        requires_contract_size=True,
+        ordering_columns=("event_time", "trade_id"),
+        timestamp_columns=("event_time",),
+        integer_columns=("trade_id",),
+        string_columns=("side",),
+        archive_symbol_attribute="pair",
+        source_schemas=(
+            CsvSchema(old_columns, "present"),
+            CsvSchema(NEW_TRADE_COLUMNS, "present"),
+        ),
+        sort_source_rows=True,
+    )
+
+
+LINEAR_KLINES = _perpetual_klines("linear_swap")
+COIN_KLINES = _perpetual_klines("coin_swap")
+LINEAR_TRADES = _perpetual_trades("linear_swap")
+COIN_TRADES = _perpetual_trades("coin_swap")
+
 DATASETS: Mapping[tuple[str, str], DatasetSpec] = MappingProxyType(
     {
         ("spot", "klines"): SPOT_KLINES,
         ("spot", "trades"): SPOT_TRADES,
+        ("linear_swap", "klines"): LINEAR_KLINES,
+        ("linear_swap", "trades"): LINEAR_TRADES,
+        ("coin_swap", "klines"): COIN_KLINES,
+        ("coin_swap", "trades"): COIN_TRADES,
     }
 )
 

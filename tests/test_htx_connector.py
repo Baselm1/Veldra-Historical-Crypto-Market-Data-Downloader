@@ -116,7 +116,7 @@ def test_htx_declares_products_datasets_and_interval_translations() -> None:
                         "contract_status": 1,
                         "contract_size": 0.001,
                         "create_date": "20201021",
-                        "delivery_time": "",
+                        "delivery_time": "1700000000000",
                     },
                     {
                         "contract_code": "ETH-USDT-260925",
@@ -138,6 +138,7 @@ def test_htx_declares_products_datasets_and_interval_translations() -> None:
                     "PERPETUAL",
                     0.001,
                     datetime(2020, 10, 21, tzinfo=UTC),
+                    datetime.fromtimestamp(1_700_000_000, UTC),
                     active=True,
                     product="linear_swap",
                 )
@@ -149,7 +150,6 @@ def test_htx_declares_products_datasets_and_interval_translations() -> None:
                 "data": [
                     {
                         "contract_code": "BTC-USD",
-                        "contract_type": "swap",
                         "contract_status": 3,
                         "contract_size": 100,
                         "create_date": 20200325,
@@ -425,3 +425,29 @@ def test_market_and_ticker_payload_validation_is_strict() -> None:
             HTXConnector().quote_volumes(client, "spot")
         with pytest.raises(ValueError, match="only for spot"):
             HTXConnector().quote_volumes(client, "linear_swap")
+
+
+def test_swap_markets_ignore_non_ascii_campaign_symbols() -> None:
+    """Confirm HTX promotional symbols do not abort Futures discovery."""
+    payload = {
+        "data": [
+            {
+                "contract_code": "\u725b\u6765-USDT",
+                "contract_type": "swap",
+                "contract_status": 1,
+                "contract_size": 1,
+                "create_date": "20260901",
+            },
+            {
+                "contract_code": "BTC-USDT",
+                "contract_type": "swap",
+                "contract_status": 1,
+                "contract_size": 0.001,
+                "create_date": "20201021",
+            },
+        ]
+    }
+
+    markets = HTXConnector._current_markets(payload, "linear_swap")
+
+    assert list(markets) == ["BTC-USDT"]

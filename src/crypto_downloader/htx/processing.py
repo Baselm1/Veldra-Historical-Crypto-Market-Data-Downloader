@@ -117,16 +117,22 @@ def _text(values: Any, column: str) -> Any:
     return result
 
 
-def _kline_mapping(table: Any) -> dict[str, str]:
+def _kline_mapping(table: Any, dataset: DatasetSpec) -> dict[str, str]:
     """Return the canonical mapping for one HTX Kline source variant.
 
     Args:
         table: The raw Arrow source table.
+        dataset: The product-specific Kline declaration.
 
     Returns:
         Canonical column names mapped to source fields.
     """
     names = set(table.column_names)
+    volumes = (
+        {"base_volume": "amount", "quote_volume": "vol"}
+        if dataset.product == "spot"
+        else {"contract_volume": "vol", "base_volume": "amount"}
+    )
     if "id" in names:
         return {
             "open_time": "id",
@@ -134,18 +140,21 @@ def _kline_mapping(table: Any) -> dict[str, str]:
             "high": "high",
             "low": "low",
             "close": "close",
-            "base_volume": "amount",
-            "quote_volume": "vol",
+            **volumes,
         }
     if "instId" in names and "open" in names:
+        volumes = (
+            {"base_volume": "vol", "quote_volume": "volCcyQuote"}
+            if dataset.product == "spot"
+            else {"contract_volume": "vol", "base_volume": "volCcy"}
+        )
         return {
             "open_time": "ts",
             "open": "open",
             "high": "high",
             "low": "low",
             "close": "close",
-            "base_volume": "vol",
-            "quote_volume": "volCcyQuote",
+            **volumes,
         }
     raise DataValidationError("CSV does not match an HTX Kline schema")
 
@@ -166,42 +175,109 @@ def _normalize_klines(table: Any, dataset: DatasetSpec) -> Any:
             if target == "open_time"
             else _number(table[source], target)
         )
-        for target, source in _kline_mapping(table).items()
+        for target, source in _kline_mapping(table, dataset).items()
     }
     return pa.table({column: result[column] for column in dataset.stored_columns})
 
 
-def _normalize_trades(table: Any, dataset: DatasetSpec) -> Any:
-    """Normalize an old or new HTX Spot trade source table.
+def _valid_contract_size(value: float | None) -> float:
+    """Return a positive finite market contract size.
+
+    Args:
+        value: The contract size supplied by market metadata.
+
+    Returns:
+        The validated floating-point contract size.
+    """
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(value)
+        or value <= 0
+    ):
+        raise DataValidationError("perpetual contract size is unavailable")
+    return float(value)
+
+
+def _trade_mapping(table: Any, dataset: DatasetSpec) -> dict[str, str]:
+    """Return canonical fields mapped to one trade source variant.
+
+    Args:
+        table: The raw Arrow source table.
+        dataset: The product-specific trade declaration.
+
+    Returns:
+        Canonical column names mapped to source fields.
+    """
+    names = set(table.column_names)
+    if "tradeId" in names:
+        quantity = "base_quantity" if dataset.product == "spot" else "contract_quantity"
+        return {
+            "trade_id": "tradeId",
+            "price": "px",
+            quantity: "size",
+            "side": "side",
+            "event_time": "ts",
+        }
+    if "id" not in names or "direction" not in names:
+        raise DataValidationError("CSV does not match an HTX trade schema")
+    result = {
+        "trade_id": "id",
+        "price": "price",
+        "side": "direction",
+        "event_time": "ts",
+    }
+    if dataset.product == "spot":
+        result["base_quantity"] = "amount"
+    else:
+        result.update({"contract_quantity": "amount", "base_quantity": "quantity"})
+        if dataset.product == "linear_swap":
+            result["quote_quantity"] = "trade_turnover"
+    return result
+
+
+def _derive_trade_quantities(
+    result: dict[str, Any], dataset: DatasetSpec, contract_size: float | None
+) -> None:
+    """Derive quantities omitted by an HTX trade source variant.
+
+    Args:
+        result: The partially normalized canonical columns.
+        dataset: The product-specific trade declaration.
+        contract_size: Market contract size used by perpetual products.
+    """
+    if dataset.product == "spot":
+        result["quote_quantity"] = pc.multiply(result["base_quantity"], result["price"])
+        return
+    size = _valid_contract_size(contract_size)
+    if dataset.product == "linear_swap":
+        if "base_quantity" not in result:
+            result["base_quantity"] = pc.multiply(result["contract_quantity"], size)
+        if "quote_quantity" not in result:
+            result["quote_quantity"] = pc.multiply(
+                result["base_quantity"], result["price"]
+            )
+        return
+    result["quote_notional"] = pc.multiply(result["contract_quantity"], size)
+    if "base_quantity" not in result:
+        result["base_quantity"] = pc.divide(result["quote_notional"], result["price"])
+
+
+def _normalize_trades(
+    table: Any, dataset: DatasetSpec, contract_size: float | None
+) -> Any:
+    """Normalize an old or new HTX trade source table.
 
     Args:
         table: The raw Arrow source table.
         dataset: The canonical trade declaration.
+        contract_size: Required perpetual contract size, when applicable.
 
     Returns:
         Canonical trade columns with derived quote quantity.
     """
-    names = set(table.column_names)
-    if "tradeId" in names:
-        mapping = {
-            "trade_id": "tradeId",
-            "price": "px",
-            "base_quantity": "size",
-            "side": "side",
-            "event_time": "ts",
-        }
-    elif "id" in names and "direction" in names:
-        mapping = {
-            "trade_id": "id",
-            "price": "price",
-            "base_quantity": "amount",
-            "side": "direction",
-            "event_time": "ts",
-        }
-    else:
-        raise DataValidationError("CSV does not match an HTX trade schema")
     result: dict[str, Any] = {}
-    for target, source in mapping.items():
+    for target, source in _trade_mapping(table, dataset).items():
         if target in dataset.integer_columns:
             result[target] = _integer(table[source], target)
         elif target in dataset.timestamp_columns:
@@ -210,7 +286,7 @@ def _normalize_trades(table: Any, dataset: DatasetSpec) -> Any:
             result[target] = _text(table[source], target)
         else:
             result[target] = _number(table[source], target)
-    result["quote_quantity"] = pc.multiply(result["base_quantity"], result["price"])
+    _derive_trade_quantities(result, dataset, contract_size)
     return pa.table({column: result[column] for column in dataset.stored_columns})
 
 
@@ -227,11 +303,16 @@ def normalize_chunk(
     Returns:
         A canonical Arrow table ready for validation.
     """
-    del contract_size
-    if dataset.product == "spot" and dataset.name == "klines":
+    if (
+        dataset.product in {"spot", "linear_swap", "coin_swap"}
+        and dataset.name == "klines"
+    ):
         return _normalize_klines(table, dataset)
-    if dataset.product == "spot" and dataset.name == "trades":
-        return _normalize_trades(table, dataset)
+    if (
+        dataset.product in {"spot", "linear_swap", "coin_swap"}
+        and dataset.name == "trades"
+    ):
+        return _normalize_trades(table, dataset, contract_size)
     raise ValueError(f"unsupported normalizer: {dataset.product}/{dataset.name}")
 
 
@@ -340,11 +421,12 @@ def _validate_times(
     return last
 
 
-def _validate_ohlc(table: Any) -> None:
-    """Validate positive OHLC values and nonnegative Spot volumes.
+def _validate_ohlc(table: Any, dataset: DatasetSpec) -> None:
+    """Validate positive OHLC values and nonnegative declared volumes.
 
     Args:
         table: The canonical Kline table.
+        dataset: The product-specific Kline declaration.
     """
     for column in ("open", "high", "low", "close"):
         _reject(pc.less_equal(table[column], 0), "price values must be positive")
@@ -358,12 +440,12 @@ def _validate_ohlc(table: Any) -> None:
             pc.greater(table["low"], table[column]),
             "low is above another OHLC price",
         )
-    for column in ("base_volume", "quote_volume"):
+    for column in dataset.resample_sum_columns:
         _reject(pc.less(table[column], 0), "volume values must be nonnegative")
 
 
 def _validate_trades(table: Any) -> None:
-    """Validate Spot trade IDs, quantities, prices, and sides.
+    """Validate trade IDs, quantities, prices, and sides.
 
     Args:
         table: The canonical trade table.
@@ -373,16 +455,15 @@ def _validate_trades(table: Any) -> None:
     same_time = pc.equal(
         table["event_time"].slice(1), table["event_time"].slice(0, len(table) - 1)
     )
-    nonincreasing_id = pc.less_equal(
-        identifiers.slice(1), identifiers.slice(0, len(table) - 1)
-    )
+    decreasing_id = pc.less(identifiers.slice(1), identifiers.slice(0, len(table) - 1))
     _reject(
-        pc.and_(same_time, nonincreasing_id),
-        "trade_id must increase within a timestamp",
+        pc.and_(same_time, decreasing_id),
+        "trade_id must not decrease within a timestamp",
     )
     _reject(pc.less_equal(table["price"], 0), "trade price must be positive")
-    for column in ("base_quantity", "quote_quantity"):
-        _reject(pc.less(table[column], 0), "trade quantities must be nonnegative")
+    for column in table.column_names:
+        if column.endswith(("quantity", "notional")):
+            _reject(pc.less(table[column], 0), "trade quantities must be nonnegative")
     _reject(
         pc.invert(pc.is_in(table["side"], value_set=pa.array(["buy", "sell"]))),
         "trade side must be buy or sell",
@@ -408,13 +489,17 @@ def validate_chunk(
     Returns:
         The final UTC timestamp in the validated table.
     """
-    if dataset.product != "spot" or dataset.name not in {"klines", "trades"}:
+    if dataset.product not in {
+        "spot",
+        "linear_swap",
+        "coin_swap",
+    } or dataset.name not in {"klines", "trades"}:
         raise ValueError(f"unsupported validator: {dataset.product}/{dataset.name}")
     _validate_schema(table, dataset)
     _validate_values(table, dataset)
     last = _validate_times(table, dataset, day, previous_timestamp, end_day)
     if dataset.name == "klines":
-        _validate_ohlc(table)
+        _validate_ohlc(table, dataset)
     else:
         _validate_trades(table)
     return last

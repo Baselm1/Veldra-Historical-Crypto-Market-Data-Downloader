@@ -578,10 +578,16 @@ class HTXConnector:
         """
         if not isinstance(value, dict):
             raise ValueError("HTX market endpoint contains an invalid market")
-        contract_type = HTXConnector._required_text(value, "contract_type")
+        contract_type = (
+            "swap"
+            if product == "coin_swap" and value.get("contract_type") is None
+            else HTXConnector._required_text(value, "contract_type")
+        )
         if contract_type != "swap":
             return None
-        symbol = HTXConnector._required_symbol(value, "contract_code", compact=False)
+        symbol = HTXConnector._safe_symbol(value.get("contract_code"), compact=False)
+        if symbol is None:
+            return None
         status_value = value.get("contract_status")
         if (
             isinstance(status_value, bool)
@@ -831,6 +837,8 @@ class HTXConnector:
         """Convert an optional or required numeric source timestamp to UTC."""
         if optional and value in {None, "", 0}:
             return None
+        if isinstance(value, str) and value.isascii() and value.isdecimal():
+            value = int(value)
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             raise ValueError("HTX market endpoint contains an invalid market")
         try:

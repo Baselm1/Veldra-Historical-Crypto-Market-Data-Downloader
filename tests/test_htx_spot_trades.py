@@ -119,16 +119,18 @@ def test_spot_trade_validation_rejects_invalid_values(
         validate_chunk(table, SPOT_TRADES, date(2025, 1, 1))
 
 
-def test_duplicate_trade_id_at_one_timestamp_is_rejected() -> None:
-    """Confirm repeated identifiers cannot make ordering ambiguous."""
+def test_duplicate_trade_id_at_one_timestamp_is_preserved() -> None:
+    """Confirm HTX's repeated match identifiers do not discard trades."""
     rows = [
         (1, 1735660802822, 2, 3, "buy"),
         (1, 1735660802822, 2, 3, "sell"),
     ]
     table = normalize_chunk(raw_table(OLD_TRADE_COLUMNS, rows), SPOT_TRADES)
 
-    with pytest.raises(DataValidationError, match="increase"):
-        validate_chunk(table, SPOT_TRADES, date(2025, 1, 1))
+    last = validate_chunk(table, SPOT_TRADES, date(2025, 1, 1))
+
+    assert len(table) == 2
+    assert last == datetime(2024, 12, 31, 16, 0, 2, 822000, tzinfo=UTC)
 
 
 def test_spot_trade_schema_exposes_text_side_in_empty_frames() -> None:
