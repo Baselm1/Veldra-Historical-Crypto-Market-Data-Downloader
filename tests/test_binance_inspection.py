@@ -59,6 +59,7 @@ def market(
         status,
         pair=pair,
         contract_type="PERPETUAL" if pair is not None else None,
+        active=status == "TRADING",
     )
 
 

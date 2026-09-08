@@ -107,6 +107,49 @@ def test_catalog_creates_the_metadata_tables_and_uses_utc(catalog: Catalog) -> N
     assert {"archive_symbol", "timestamp_column", "schema_version"} <= resource_columns
 
 
+def test_catalog_migrates_binance_market_activity(tmp_path: Path) -> None:
+    """Confirm older status-only Binance catalogs gain explicit activity."""
+    path = tmp_path / "catalog.duckdb"
+    connection = duckdb.connect(str(path))
+    connection.execute("""
+        CREATE TABLE markets (
+            source VARCHAR NOT NULL,
+            product VARCHAR NOT NULL,
+            symbol VARCHAR NOT NULL,
+            normalized_symbol VARCHAR NOT NULL,
+            base_asset VARCHAR,
+            quote_asset VARCHAR,
+            status VARCHAR,
+            PRIMARY KEY (source, product, symbol)
+        )
+        """)
+    connection.execute(
+        "INSERT INTO markets VALUES "
+        "('binance', 'spot', 'BTCUSDT', 'BTCUSDT', 'BTC', 'USDT', 'TRADING'), "
+        "('binance', 'spot', 'OLDUSDT', 'OLDUSDT', 'OLD', 'USDT', 'BREAK')"
+    )
+    connection.close()
+
+    with open_catalog(path) as catalog:
+        markets = catalog.markets("binance", "spot")
+
+    assert [(market.symbol, market.active) for market in markets] == [
+        ("BTCUSDT", True),
+        ("OLDUSDT", False),
+    ]
+
+
+def test_catalog_round_trips_connector_market_activity(catalog: Catalog) -> None:
+    """Confirm native status text does not determine stored activity."""
+    values = [Market("BTCUSDT", "BTCUSDT", status="online", active=True)]
+
+    catalog.save_markets("htx", "spot", values)
+    stored = catalog.markets("htx", "spot")
+
+    assert stored[0].status == "online"
+    assert stored[0].active is True
+
+
 def test_catalog_round_trips_extended_market_and_resource_metadata(
     catalog: Catalog,
 ) -> None:
@@ -192,7 +235,7 @@ def test_catalog_migrates_existing_spot_metadata_without_losing_rows(
     }
 
     assert catalog.markets("binance", "spot") == [
-        Market("BTCUSDT", "BTCUSDT", "BTC", "USDT", "TRADING")
+        Market("BTCUSDT", "BTCUSDT", "BTC", "USDT", "TRADING", active=True)
     ]
     assert catalog.resources(KEY, date(2025, 1, 1), date(2025, 1, 1)) == [
         resource(name="one")

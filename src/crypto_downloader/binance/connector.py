@@ -71,7 +71,6 @@ class BinanceConnector:
 
     code: str = "binance"
     products: tuple[str, ...] = ("spot", "um", "cm")
-    active_statuses: frozenset[str] = frozenset({"TRADING"})
     max_concurrency: int = 64
     monthly_datasets = frozenset(
         {
@@ -505,26 +504,30 @@ class BinanceConnector:
         if not isinstance(value, dict):
             raise ValueError("exchangeInfo contains an invalid market")
         if product == "spot":
+            status = BinanceConnector._required_text(value, "status")
             return Market(
                 symbol=symbol,
                 normalized_symbol=normalize_pair(symbol),
                 base_asset=BinanceConnector._required_text(value, "baseAsset"),
                 quote_asset=BinanceConnector._required_text(value, "quoteAsset"),
-                status=BinanceConnector._required_text(value, "status"),
+                status=status,
+                active=status == "TRADING",
             )
 
         status_field = "contractStatus" if product == "cm" else "status"
+        status = BinanceConnector._required_text(value, status_field)
         return Market(
             symbol=symbol,
             normalized_symbol=normalize_pair(symbol),
             base_asset=BinanceConnector._required_text(value, "baseAsset"),
             quote_asset=BinanceConnector._required_text(value, "quoteAsset"),
-            status=BinanceConnector._required_text(value, status_field),
+            status=status,
             pair=BinanceConnector._required_text(value, "pair"),
             contract_type="PERPETUAL",
             contract_size=BinanceConnector._contract_size(value, product),
             onboard_time=BinanceConnector._source_time(value.get("onboardDate")),
             delivery_time=BinanceConnector._delivery_time(value.get("deliveryDate")),
+            active=status == "TRADING",
         )
 
     @staticmethod

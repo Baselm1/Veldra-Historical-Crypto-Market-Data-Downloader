@@ -413,7 +413,16 @@ class GapSource:
         Returns:
             The available BTCUSDT test market.
         """
-        return [Market("BTCUSDT", "BTCUSDT", "BTC", "USDT", "TRADING")]
+        return [
+            Market(
+                "BTCUSDT",
+                "BTCUSDT",
+                "BTC",
+                "USDT",
+                "TRADING",
+                active=True,
+            )
+        ]
 
     def resources(
         self,

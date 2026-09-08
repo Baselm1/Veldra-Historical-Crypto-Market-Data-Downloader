@@ -1108,7 +1108,7 @@ def process_pair(
     if resolved is None:
         return _finish(result, display, started)
     market, key = resolved
-    active = market.status in source.active_statuses
+    active = market.active
     availability = _availability_range(
         source,
         catalog,

@@ -264,7 +264,14 @@ def market(symbol: str, status: str = "TRADING") -> Market:
     Returns:
         A market with representative asset metadata.
     """
-    return Market(symbol, normalize_pair(symbol), "BTC", "USDT", status)
+    return Market(
+        symbol,
+        normalize_pair(symbol),
+        "BTC",
+        "USDT",
+        status,
+        active=status == "TRADING",
+    )
 
 
 def service(tmp_path: Path, source: RangeSource) -> RetrievalEngine:

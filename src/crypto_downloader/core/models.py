@@ -36,15 +36,7 @@ class Market:
     source: str | None = None
     product: str | None = None
     quote_volume_24h: float | None = None
-
-    @property
-    def active(self) -> bool:
-        """Return whether Binance currently reports the market as trading.
-
-        Returns:
-            True when the native market status is ``TRADING``.
-        """
-        return self.status == "TRADING"
+    active: bool = False
 
 
 @dataclass(frozen=True)

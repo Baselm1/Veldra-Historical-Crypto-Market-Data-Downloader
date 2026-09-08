@@ -133,7 +133,7 @@ def test_reporter_lines_are_colored_and_market_counts_are_sorted() -> None:
     reporter.error("failed")
     reporter.market_summary(
         [
-            Market("BTCUSDT", "BTCUSDT", status="TRADING"),
+            Market("BTCUSDT", "BTCUSDT", status="TRADING", active=True),
             Market("OLDUSDT", "OLDUSDT", status="BREAK"),
             Market("ARCHIVE", "ARCHIVE"),
         ],

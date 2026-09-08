@@ -6,11 +6,20 @@ import json
 import pandas as pd
 
 from crypto_downloader import Gap, Message, MissingCandlesError, Result
-from crypto_downloader.core.models import result_report
+from crypto_downloader.core.models import Market, result_report
 
 UTC = timezone.utc
 START = datetime(2025, 1, 1, tzinfo=UTC)
 END = datetime(2025, 1, 2, tzinfo=UTC)
+
+
+def test_market_activity_is_independent_from_native_status() -> None:
+    """Confirm connectors explicitly define activity without status conventions."""
+    online = Market("btcusdt", "BTCUSDT", status="online", active=True)
+    halted = Market("ETHUSDT", "ETHUSDT", status="TRADING", active=False)
+
+    assert online.active is True
+    assert halted.active is False
 
 
 def make_result() -> Result:

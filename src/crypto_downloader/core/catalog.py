@@ -227,6 +227,7 @@ class Catalog:
                 base_asset VARCHAR,
                 quote_asset VARCHAR,
                 status VARCHAR,
+                active BOOLEAN NOT NULL DEFAULT false,
                 pair VARCHAR,
                 contract_type VARCHAR,
                 contract_size DOUBLE,
@@ -299,6 +300,7 @@ class Catalog:
         )
         for statement in (
             "ALTER TABLE markets ADD COLUMN IF NOT EXISTS pair VARCHAR",
+            "ALTER TABLE markets ADD COLUMN IF NOT EXISTS active BOOLEAN",
             "ALTER TABLE markets ADD COLUMN IF NOT EXISTS contract_type VARCHAR",
             "ALTER TABLE markets ADD COLUMN IF NOT EXISTS contract_size DOUBLE",
             "ALTER TABLE markets ADD COLUMN IF NOT EXISTS onboard_time TIMESTAMP",
@@ -310,6 +312,17 @@ class Catalog:
             "ALTER TABLE resources ADD COLUMN IF NOT EXISTS schema_version INTEGER",
         ):
             self.connection.execute(statement)
+        self.connection.execute(
+            "UPDATE markets SET active = (status = 'TRADING') "
+            "WHERE active IS NULL AND source = 'binance'"
+        )
+        self.connection.execute(
+            "UPDATE markets SET active = false WHERE active IS NULL"
+        )
+        self.connection.execute(
+            "ALTER TABLE markets ALTER COLUMN active SET DEFAULT false"
+        )
+        self.connection.execute("ALTER TABLE markets ALTER COLUMN active SET NOT NULL")
         self.connection.execute(
             "UPDATE resources SET schema_version = 1 WHERE schema_version IS NULL"
         )
@@ -406,7 +419,7 @@ class Catalog:
         """
         rows = self.connection.execute(
             """
-            SELECT symbol, normalized_symbol, base_asset, quote_asset, status,
+            SELECT symbol, normalized_symbol, base_asset, quote_asset, status, active,
                    pair, contract_type, contract_size, onboard_time, delivery_time,
                    quote_volume_24h
             FROM markets
@@ -422,12 +435,13 @@ class Catalog:
                 base_asset=row[2],
                 quote_asset=row[3],
                 status=row[4],
-                pair=row[5],
-                contract_type=row[6],
-                contract_size=row[7],
-                onboard_time=_utc_timestamp(row[8]),
-                delivery_time=_utc_timestamp(row[9]),
-                quote_volume_24h=row[10],
+                active=row[5],
+                pair=row[6],
+                contract_type=row[7],
+                contract_size=row[8],
+                onboard_time=_utc_timestamp(row[9]),
+                delivery_time=_utc_timestamp(row[10]),
+                quote_volume_24h=row[11],
             )
             for row in rows
         ]
@@ -542,6 +556,7 @@ class Catalog:
                 market.base_asset,
                 market.quote_asset,
                 market.status,
+                market.active,
                 market.pair,
                 market.contract_type,
                 market.contract_size,
@@ -568,6 +583,7 @@ class Catalog:
                 "base_asset",
                 "quote_asset",
                 "status",
+                "active",
                 "pair",
                 "contract_type",
                 "contract_size",
@@ -579,18 +595,18 @@ class Catalog:
         try:
             with self._transaction():
                 self.connection.execute(
-                    "UPDATE markets SET status = NULL "
+                    "UPDATE markets SET status = NULL, active = false "
                     "WHERE source = ? AND product = ?",
                     [source, product],
                 )
                 self.connection.execute("""
                     INSERT INTO markets (
                         source, product, symbol, normalized_symbol,
-                        base_asset, quote_asset, status, pair, contract_type,
+                        base_asset, quote_asset, status, active, pair, contract_type,
                         contract_size, onboard_time, delivery_time, refreshed_at
                     )
                     SELECT source, product, symbol, normalized_symbol,
-                           base_asset, quote_asset, status, pair, contract_type,
+                           base_asset, quote_asset, status, active, pair, contract_type,
                            contract_size, onboard_time, delivery_time, current_timestamp
                     FROM incoming_markets
                     ON CONFLICT (source, product, symbol) DO UPDATE SET
@@ -598,6 +614,7 @@ class Catalog:
                         base_asset = excluded.base_asset,
                         quote_asset = excluded.quote_asset,
                         status = excluded.status,
+                        active = excluded.active,
                         pair = excluded.pair,
                         contract_type = excluded.contract_type,
                         contract_size = excluded.contract_size,

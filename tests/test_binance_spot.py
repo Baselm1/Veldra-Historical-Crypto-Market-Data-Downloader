@@ -106,7 +106,6 @@ def test_binance_declares_supported_market_products() -> None:
 
     assert source.code == "binance"
     assert source.products == ("spot", "um", "cm")
-    assert source.active_statuses == frozenset({"TRADING"})
     assert source.timeout == 12.0
     assert source.retries == 2
     assert source.backoff == 0.25
@@ -234,7 +233,7 @@ def test_market_discovery_preserves_native_metadata_and_merges_archive_only() ->
         markets = BinanceConnector(timeout=9.0).markets(client, "spot")
 
     assert markets == [
-        Market("BTCUSDT", "BTCUSDT", "BTC", "USDT", "TRADING"),
+        Market("BTCUSDT", "BTCUSDT", "BTC", "USDT", "TRADING", active=True),
         Market("OLDUSDT", "OLDUSDT"),
         Market("XRPTUSD", "XRPTUSD", "XRP", "TUSD", "BREAK"),
     ]
@@ -272,6 +271,7 @@ def test_market_discovery_preserves_native_metadata_and_merges_archive_only() ->
                     pair="BTCUSDT",
                     contract_type="PERPETUAL",
                     onboard_time=datetime(2019, 9, 8, 17, 55, tzinfo=UTC),
+                    active=True,
                 ),
                 Market(
                     symbol="ETHUSDT",
@@ -305,6 +305,7 @@ def test_market_discovery_preserves_native_metadata_and_merges_archive_only() ->
                     contract_type="PERPETUAL",
                     contract_size=100.0,
                     onboard_time=datetime(2020, 8, 10, 7, tzinfo=UTC),
+                    active=True,
                 ),
                 Market(
                     symbol="ETHUSD_PERP",
@@ -316,6 +317,7 @@ def test_market_discovery_preserves_native_metadata_and_merges_archive_only() ->
                     contract_type="PERPETUAL",
                     contract_size=10.0,
                     onboard_time=datetime(2020, 8, 10, 7, tzinfo=UTC),
+                    active=True,
                 ),
             ],
         ),

@@ -20,7 +20,6 @@ class Connector(Protocol):
 
     code: str
     products: tuple[str, ...]
-    active_statuses: frozenset[str]
 
     def checksum(self, client: httpx.Client, resource: Resource) -> str:
         """Return the current SHA-256 digest for one source archive.
