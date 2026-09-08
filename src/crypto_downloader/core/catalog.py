@@ -135,6 +135,8 @@ def _validate_discovery(
         raise ValueError("discovery resource falls outside the searched range")
     if any(resource.last_day < resource.day for resource in resources):
         raise ValueError("resource range ends before it starts")
+    for resource in resources:
+        resource.coverage
 
 
 def _database_timestamp(value: datetime) -> datetime:
@@ -248,6 +250,8 @@ class Catalog:
                 cadence VARCHAR NOT NULL DEFAULT 'daily',
                 day DATE NOT NULL,
                 end_day DATE,
+                coverage_start TIMESTAMP,
+                coverage_end TIMESTAMP,
                 archive_symbol VARCHAR,
                 url VARCHAR NOT NULL,
                 checksum_url VARCHAR NOT NULL,
@@ -308,6 +312,9 @@ class Catalog:
             "ALTER TABLE markets ADD COLUMN IF NOT EXISTS quote_volume_24h DOUBLE",
             "ALTER TABLE markets ADD COLUMN IF NOT EXISTS volume_refreshed_at TIMESTAMP",
             "ALTER TABLE resources ADD COLUMN IF NOT EXISTS archive_symbol VARCHAR",
+            "ALTER TABLE resources ADD COLUMN IF NOT EXISTS end_day DATE",
+            "ALTER TABLE resources ADD COLUMN IF NOT EXISTS coverage_start TIMESTAMP",
+            "ALTER TABLE resources ADD COLUMN IF NOT EXISTS coverage_end TIMESTAMP",
             "ALTER TABLE resources ADD COLUMN IF NOT EXISTS timestamp_column VARCHAR",
             "ALTER TABLE resources ADD COLUMN IF NOT EXISTS schema_version INTEGER",
         ):
@@ -325,6 +332,15 @@ class Catalog:
         self.connection.execute("ALTER TABLE markets ALTER COLUMN active SET NOT NULL")
         self.connection.execute(
             "UPDATE resources SET schema_version = 1 WHERE schema_version IS NULL"
+        )
+        self.connection.execute(
+            "UPDATE resources SET coverage_start = CAST(day AS TIMESTAMP) "
+            "WHERE coverage_start IS NULL"
+        )
+        self.connection.execute(
+            "UPDATE resources SET coverage_end = "
+            "CAST(COALESCE(end_day, day) AS TIMESTAMP) + INTERVAL 1 DAY "
+            "WHERE coverage_end IS NULL"
         )
         self.connection.execute(
             "ALTER TABLE resources DROP COLUMN IF EXISTS parquet_sha256"
@@ -719,6 +735,33 @@ class Catalog:
             return None
         return row[0], row[1]
 
+    def resource_coverage_bounds(
+        self, key: ResourceKey
+    ) -> tuple[datetime, datetime] | None:
+        """Return the exact UTC bounds of all discovered physical archives.
+
+        Args:
+            key: The dataset identity whose timestamp coverage is needed.
+
+        Returns:
+            The earliest inclusive start and latest exclusive end, or ``None``.
+        """
+        row = self.connection.execute(
+            """
+            SELECT min(coverage_start), max(coverage_end)
+            FROM resources
+            WHERE source = ? AND product = ? AND dataset = ?
+              AND symbol = ? AND interval = ? AND cadence = ?
+            """,
+            _key_values(key),
+        ).fetchone()
+        if row is None or row[0] is None or row[1] is None:
+            return None
+        start = _utc_timestamp(row[0])
+        end = _utc_timestamp(row[1])
+        assert start is not None and end is not None
+        return start, end
+
     def source_bounds(self, key: ResourceKey) -> tuple[date, date | None] | None:
         """Return separately verified source archive boundaries.
 
@@ -803,6 +846,8 @@ class Catalog:
                 *key_values,
                 resource.day,
                 resource.end_day,
+                _database_timestamp(resource.coverage[0]),
+                _database_timestamp(resource.coverage[1]),
                 resource.archive_symbol,
                 resource.url,
                 resource.checksum_url,
@@ -822,6 +867,8 @@ class Catalog:
                 "cadence",
                 "day",
                 "end_day",
+                "coverage_start",
+                "coverage_end",
                 "archive_symbol",
                 "url",
                 "checksum_url",
@@ -864,17 +911,19 @@ class Catalog:
                     self.connection.execute("""
                     INSERT INTO resources (
                         source, product, dataset, symbol, interval, cadence, day, end_day,
-                        archive_symbol, url, checksum_url, timestamp_column,
+                        coverage_start, coverage_end, archive_symbol, url, checksum_url, timestamp_column,
                         schema_version
                     )
                     SELECT source, product, dataset, symbol, interval, cadence, day, end_day,
-                           archive_symbol, url, checksum_url, timestamp_column,
+                           coverage_start, coverage_end, archive_symbol, url, checksum_url, timestamp_column,
                            schema_version
                     FROM incoming_resources
                     ON CONFLICT (
                         source, product, dataset, symbol, interval, cadence, day
                     ) DO UPDATE SET
                         end_day = excluded.end_day,
+                        coverage_start = excluded.coverage_start,
+                        coverage_end = excluded.coverage_end,
                         url = excluded.url,
                         checksum_url = excluded.checksum_url,
                         archive_symbol = excluded.archive_symbol,
@@ -924,7 +973,8 @@ class Catalog:
             SELECT day, url, checksum_url, status, archive_sha256,
                    parquet_path, parquet_size, parquet_mtime_ns, row_count,
                    first_timestamp, last_timestamp, archive_symbol, timestamp_column,
-                   schema_version, error, last_attempt_at, end_day, cadence
+                   schema_version, error, last_attempt_at, end_day, cadence,
+                   coverage_start, coverage_end
             FROM resources
             WHERE source = ? AND product = ? AND dataset = ?
               AND symbol = ? AND interval = ? AND cadence = ?
@@ -933,29 +983,90 @@ class Catalog:
             """,
             [*_key_values(key), start_day, end_day],
         ).fetchall()
-        return [
-            Resource(
-                day=row[0],
-                url=row[1],
-                checksum_url=row[2],
-                status=row[3],
-                archive_sha256=row[4],
-                parquet_path=Path(row[5]) if row[5] is not None else None,
-                parquet_size=row[6],
-                parquet_mtime_ns=row[7],
-                row_count=row[8],
-                first_timestamp=_utc_timestamp(row[9]),
-                last_timestamp=_utc_timestamp(row[10]),
-                archive_symbol=row[11],
-                timestamp_column=row[12],
-                schema_version=row[13],
-                error=row[14],
-                last_attempt_at=_utc_timestamp(row[15]),
-                end_day=row[16],
-                cadence=row[17],
-            )
-            for row in rows
-        ]
+        return [self._resource(row) for row in rows]
+
+    def resources_between(
+        self, key: ResourceKey, start: datetime, end: datetime
+    ) -> list[Resource]:
+        """Return physical archives overlapping an exact UTC range.
+
+        Args:
+            key: The dataset identity to query.
+            start: The inclusive UTC timestamp.
+            end: The exclusive UTC timestamp.
+
+        Returns:
+            Matching resources ordered by exact coverage and source day.
+        """
+        if start.tzinfo is None or end.tzinfo is None:
+            raise ValueError("resource query timestamps must include a timezone")
+        if start >= end:
+            raise ValueError("resource range must end after it starts")
+        rows = self.connection.execute(
+            """
+            SELECT day, url, checksum_url, status, archive_sha256,
+                   parquet_path, parquet_size, parquet_mtime_ns, row_count,
+                   first_timestamp, last_timestamp, archive_symbol, timestamp_column,
+                   schema_version, error, last_attempt_at, end_day, cadence,
+                   coverage_start, coverage_end
+            FROM resources
+            WHERE source = ? AND product = ? AND dataset = ?
+              AND symbol = ? AND interval = ? AND cadence = ?
+              AND coverage_start < ? AND coverage_end > ?
+            ORDER BY coverage_start, day
+            """,
+            [
+                *_key_values(key),
+                _database_timestamp(end),
+                _database_timestamp(start),
+            ],
+        ).fetchall()
+        return [self._resource(row) for row in rows]
+
+    @staticmethod
+    def _resource(row: Sequence[Any]) -> Resource:
+        """Build one resource from a catalog result row.
+
+        Args:
+            row: Values selected in the catalog's resource column order.
+
+        Returns:
+            The reconstructed physical archive metadata.
+        """
+        day = row[0]
+        end_day = row[16]
+        coverage_start = _utc_timestamp(row[18])
+        coverage_end = _utc_timestamp(row[19])
+        default_start = datetime.combine(day, datetime.min.time(), UTC)
+        default_end = datetime.combine(
+            (end_day or day) + date.resolution,
+            datetime.min.time(),
+            UTC,
+        )
+        return Resource(
+            day=row[0],
+            url=row[1],
+            checksum_url=row[2],
+            status=row[3],
+            archive_sha256=row[4],
+            parquet_path=Path(row[5]) if row[5] is not None else None,
+            parquet_size=row[6],
+            parquet_mtime_ns=row[7],
+            row_count=row[8],
+            first_timestamp=_utc_timestamp(row[9]),
+            last_timestamp=_utc_timestamp(row[10]),
+            archive_symbol=row[11],
+            timestamp_column=row[12],
+            schema_version=row[13],
+            error=row[14],
+            last_attempt_at=_utc_timestamp(row[15]),
+            end_day=end_day,
+            cadence=row[17],
+            coverage_start=(
+                None if coverage_start == default_start else coverage_start
+            ),
+            coverage_end=None if coverage_end == default_end else coverage_end,
+        )
 
     def mark_ready(
         self,

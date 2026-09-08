@@ -2,7 +2,7 @@
 
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import UTC, date, datetime, time, timedelta
 import logging
 from pathlib import Path
 
@@ -99,11 +99,32 @@ class Resource:
     last_attempt_at: datetime | None = None
     end_day: date | None = None
     cadence: str = "daily"
+    coverage_start: datetime | None = None
+    coverage_end: datetime | None = None
 
     @property
     def last_day(self) -> date:
         """Return the inclusive last day covered by this physical archive."""
         return self.end_day or self.day
+
+    @property
+    def coverage(self) -> TimeRange:
+        """Return the archive's exact inclusive-start, exclusive-end UTC coverage.
+
+        Returns:
+            Explicit source coverage or UTC calendar coverage for legacy rows.
+        """
+        start = self.coverage_start or datetime.combine(self.day, time.min, UTC)
+        end = self.coverage_end or datetime.combine(
+            self.last_day + timedelta(days=1), time.min, UTC
+        )
+        if start.tzinfo is None or end.tzinfo is None:
+            raise ValueError("resource coverage timestamps must include a timezone")
+        start = start.astimezone(UTC)
+        end = end.astimezone(UTC)
+        if start >= end:
+            raise ValueError("resource coverage must end after it starts")
+        return start, end
 
 
 @dataclass(frozen=True)

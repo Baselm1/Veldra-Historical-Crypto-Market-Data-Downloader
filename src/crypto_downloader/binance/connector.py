@@ -1,7 +1,7 @@
 """Discover Binance market metadata and daily archives."""
 
 from collections.abc import Iterator, Mapping
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from dataclasses import replace
 from calendar import monthrange
 import logging
@@ -71,6 +71,7 @@ class BinanceConnector:
 
     code: str = "binance"
     products: tuple[str, ...] = ("spot", "um", "cm")
+    archive_day_offset = timedelta(0)
     max_concurrency: int = 64
     monthly_datasets = frozenset(
         {

@@ -14,19 +14,22 @@ LOGGER = logging.getLogger(__name__)
 DISCOVERY_TTL = timedelta(hours=24)
 
 
-def requested_days(start: datetime, end: datetime) -> tuple[date, date]:
+def requested_days(
+    start: datetime, end: datetime, offset: timedelta = timedelta(0)
+) -> tuple[date, date]:
     """Return the inclusive source days touched by an exclusive range.
 
     Args:
         start: The inclusive first requested timestamp.
         end: The exclusive final requested timestamp.
+        offset: The source-local offset used to label archive days.
 
     Returns:
         The first and last daily archive dates.
     """
     if start >= end:
         raise ValueError("resource range must end after it starts")
-    return start.date(), (end - timedelta(microseconds=1)).date()
+    return (start + offset).date(), (end - timedelta(microseconds=1) + offset).date()
 
 
 def _validate_resources(
@@ -78,7 +81,8 @@ def discover_resources(
     Returns:
         All cataloged resources in the requested daily range.
     """
-    start_day, end_day = requested_days(start, end)
+    offset = getattr(source, "archive_day_offset", timedelta(0))
+    start_day, end_day = requested_days(start, end, offset)
     if tail_days < 1:
         raise ValueError("tail_days must be positive")
     checkpoints = catalog.discovery_checkpoints(key)
@@ -120,7 +124,7 @@ def discover_resources(
                 )
     elif not offline:
         display.info(f"{key.symbol}: reused cached {key.cadence}-file discovery")
-    resources = catalog.resources(key, start_day, end_day)
+    resources = catalog.resources_between(key, start, end)
     LOGGER.info(
         "Resource discovery complete: key=%s resources=%d scans=%d",
         key,

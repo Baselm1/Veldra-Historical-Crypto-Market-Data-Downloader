@@ -1,6 +1,6 @@
 """Define the small contract implemented by historical data sources."""
 
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Protocol
 
@@ -20,6 +20,7 @@ class Connector(Protocol):
 
     code: str
     products: tuple[str, ...]
+    archive_day_offset: timedelta
 
     def checksum(self, client: httpx.Client, resource: Resource) -> str:
         """Return the current SHA-256 digest for one source archive.

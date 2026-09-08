@@ -41,6 +41,25 @@ def catalog_archives(
     )
 
 
+def catalog_archives_between(
+    catalog: Catalog, key: ResourceKey, start: datetime, end: datetime
+) -> list[Resource]:
+    """Return daily and monthly archives overlapping an exact UTC range.
+
+    Args:
+        catalog: The metadata catalog containing physical archives.
+        key: The daily resource identity.
+        start: The inclusive UTC request timestamp.
+        end: The exclusive UTC request timestamp.
+
+    Returns:
+        Every overlapping daily and monthly archive.
+    """
+    return catalog.resources_between(key, start, end) + catalog.resources_between(
+        replace(key, cadence="monthly"), start, end
+    )
+
+
 def select_archives(resources: list[Resource], dataset: DatasetSpec) -> list[Resource]:
     """Select whole archives without overlaps, preferring ready files then months.
 
@@ -60,12 +79,15 @@ def select_archives(resources: list[Resource], dataset: DatasetSpec) -> list[Res
         ),
     )
     selected: list[Resource] = []
-    occupied: set[date] = set()
+    occupied: list[tuple[datetime, datetime]] = []
     for resource in ordered:
-        days = covered_days([resource])
-        if occupied.isdisjoint(days):
+        start, end = resource.coverage
+        if all(
+            end <= other_start or start >= other_end
+            for other_start, other_end in occupied
+        ):
             selected.append(resource)
-            occupied.update(days)
+            occupied.append((start, end))
     return sorted(selected, key=lambda r: r.day)
 
 
@@ -149,7 +171,8 @@ def plan_archives(
     Returns:
         A non-overlapping set of physical archives for the request.
     """
-    first, last = requested_days(start, end)
+    offset = getattr(source, "archive_day_offset", timedelta(0))
+    first, last = requested_days(start, end, offset)
 
     def scan(
         scan_key: ResourceKey,
@@ -175,7 +198,7 @@ def plan_archives(
 
     if key.dataset not in getattr(source, "monthly_datasets", ()):
         return scan(key, first, last)
-    existing = catalog_archives(catalog, key, first, last)
+    existing = catalog_archives_between(catalog, key, start, end)
     cached = [r for r in existing if valid_cached_path(r, dataset) is not None]
     month_key = replace(key, cadence="monthly")
     months = [
@@ -194,7 +217,7 @@ def plan_archives(
                 month_key,
                 error,
             )
-    candidates = catalog_archives(catalog, key, first, last)
+    candidates = catalog_archives_between(catalog, key, start, end)
     selected = _monthly_candidates(
         candidates,
         dataset,

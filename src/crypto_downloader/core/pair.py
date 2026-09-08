@@ -35,7 +35,12 @@ from crypto_downloader.core.query import (
 from crypto_downloader.core.request import Request, normalize_pair
 from crypto_downloader.core.connector import Connector
 
-from .planner import plan_archives, covered_days, catalog_archives
+from .planner import (
+    plan_archives,
+    covered_days,
+    catalog_archives,
+    catalog_archives_between,
+)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -211,14 +216,14 @@ def _missing_resources(
 
 
 def _availability(
-    bounds: tuple[date, date] | None,
+    bounds: TimeRange | None,
     active: bool,
     today: date,
 ) -> TimeRange | None:
     """Return timestamp bounds around known daily resource days.
 
     Args:
-        bounds: The inclusive first and last known resource days.
+        bounds: The exact first and exclusive last known resource timestamps.
         active: Whether today's date is the dynamic exclusive end.
         today: The current UTC date used as the active exclusive end.
 
@@ -228,8 +233,8 @@ def _availability(
     if bounds is None:
         return None
     first, last_resource = bounds
-    last = today if active else last_resource + timedelta(days=1)
-    return datetime.combine(first, time.min, UTC), datetime.combine(last, time.min, UTC)
+    last = datetime.combine(today, time.min, UTC) if active else last_resource
+    return first, last
 
 
 def _first_resource(
@@ -361,7 +366,7 @@ def _availability_range(
         bounds = catalog.resource_bounds(key)
         if bounds is not None:
             catalog.save_source_bounds(key, first.day, bounds[1])
-    source_range = _availability(catalog.resource_bounds(key), active, today)
+    source_range = _availability(catalog.resource_coverage_bounds(key), active, today)
     if source_range is None:
         return None
     configured_start = (
@@ -485,11 +490,10 @@ def _resources_in_range(
     Returns:
         Resources whose days overlap the cleaned request.
     """
-    first, last = requested_days(start, end)
     return [
         resource
         for resource in resources
-        if resource.day <= last and resource.last_day >= first
+        if resource.coverage[0] < end and resource.coverage[1] > start
     ]
 
 
@@ -890,7 +894,7 @@ def _populate_cached_query(
         ``None`` after a successful query, otherwise the isolated exception.
     """
     first_day, last_day = requested_days(*used_range)
-    current_resources = catalog_archives(catalog, key, first_day, last_day)
+    current_resources = catalog_archives_between(catalog, key, *used_range)
     gap_paths = suspect_gap_paths(current_resources, paths, dataset)
     LOGGER.debug(
         "Gap scan planned: key=%s paths=%d suspect=%d",
@@ -1005,7 +1009,7 @@ def _query_with_recovery(
     # Rebuild the resources that were actually queried, not the original plan.
     queried = [
         resource
-        for resource in catalog_archives(catalog, key, *requested_days(*used_range))
+        for resource in catalog_archives_between(catalog, key, *used_range)
         if resource.parquet_path in paths
     ]
     if queried:
