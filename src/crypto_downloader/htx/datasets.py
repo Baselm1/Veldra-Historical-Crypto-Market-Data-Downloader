@@ -89,6 +89,8 @@ NEW_KLINE_COLUMNS = (
 )
 OLD_TRADE_COLUMNS = ("id", "ts", "price", "amount", "direction")
 NEW_TRADE_COLUMNS = ("instId", "tradeId", "px", "side", "size", "ts")
+NEW_REFERENCE_KLINE_COLUMNS = ("instId", "open", "high", "low", "close", "ts")
+NEW_FUNDING_COLUMNS = ("instId", "fundingRate", "fundingTime")
 OLD_LINEAR_TRADE_COLUMNS = (
     "id",
     "ts",
@@ -256,10 +258,80 @@ def _perpetual_trades(product: str) -> DatasetSpec:
     )
 
 
+def _reference_klines(product: str, name: str) -> DatasetSpec:
+    """Build one perpetual reference-price Kline declaration.
+
+    Args:
+        product: The linear- or coin-margined product.
+        name: The index- or mark-price dataset name.
+
+    Returns:
+        A resampleable OHLC schema for HTX's new archive tree.
+    """
+    return DatasetSpec(
+        product=product,
+        name=name,
+        remote_name=name,
+        source_columns=NEW_REFERENCE_KLINE_COLUMNS,
+        stored_columns=(
+            "open_time",
+            "open",
+            "high",
+            "low",
+            "close",
+            "sample_count",
+        ),
+        time_column="open_time",
+        base_interval="1m",
+        output_intervals=KLINE_OUTPUT_INTERVALS,
+        aliases=MappingProxyType({"count": "sample_count"}),
+        max_concurrency=32,
+        csv_header="present",
+        supports_resampling=True,
+        supports_gap_policy=True,
+        resample_sum_columns=("sample_count",),
+        ordering_columns=("open_time",),
+        timestamp_columns=("open_time",),
+        integer_columns=("sample_count",),
+        archive_symbol_attribute="pair",
+        sort_source_rows=True,
+    )
+
+
+def _funding_rates() -> DatasetSpec:
+    """Build the linear-swap funding-rate declaration.
+
+    Returns:
+        The signed point-in-time funding-rate schema.
+    """
+    return DatasetSpec(
+        product="linear_swap",
+        name="funding_rates",
+        remote_name="funding_rates",
+        source_columns=NEW_FUNDING_COLUMNS,
+        stored_columns=("funding_time", "funding_rate"),
+        time_column="funding_time",
+        base_interval=None,
+        output_intervals=(),
+        aliases=MappingProxyType({}),
+        max_concurrency=16,
+        csv_header="present",
+        ordering_columns=("funding_time",),
+        timestamp_columns=("funding_time",),
+        archive_symbol_attribute="pair",
+        sort_source_rows=True,
+    )
+
+
 LINEAR_KLINES = _perpetual_klines("linear_swap")
 COIN_KLINES = _perpetual_klines("coin_swap")
 LINEAR_TRADES = _perpetual_trades("linear_swap")
 COIN_TRADES = _perpetual_trades("coin_swap")
+LINEAR_INDEX_PRICE_KLINES = _reference_klines("linear_swap", "index_price_klines")
+COIN_INDEX_PRICE_KLINES = _reference_klines("coin_swap", "index_price_klines")
+LINEAR_MARK_PRICE_KLINES = _reference_klines("linear_swap", "mark_price_klines")
+COIN_MARK_PRICE_KLINES = _reference_klines("coin_swap", "mark_price_klines")
+LINEAR_FUNDING_RATES = _funding_rates()
 
 DATASETS: Mapping[tuple[str, str], DatasetSpec] = MappingProxyType(
     {
@@ -269,6 +341,11 @@ DATASETS: Mapping[tuple[str, str], DatasetSpec] = MappingProxyType(
         ("linear_swap", "trades"): LINEAR_TRADES,
         ("coin_swap", "klines"): COIN_KLINES,
         ("coin_swap", "trades"): COIN_TRADES,
+        ("linear_swap", "index_price_klines"): LINEAR_INDEX_PRICE_KLINES,
+        ("coin_swap", "index_price_klines"): COIN_INDEX_PRICE_KLINES,
+        ("linear_swap", "mark_price_klines"): LINEAR_MARK_PRICE_KLINES,
+        ("coin_swap", "mark_price_klines"): COIN_MARK_PRICE_KLINES,
+        ("linear_swap", "funding_rates"): LINEAR_FUNDING_RATES,
     }
 )
 

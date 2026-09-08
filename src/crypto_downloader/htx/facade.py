@@ -14,6 +14,7 @@ from crypto_downloader.htx.datasets import get_dataset
 type DateInput = str | date | datetime
 type ColumnSelection = list[str] | dict[str, str] | None
 type Product = Literal["spot", "linear_swap", "coin_swap"]
+type FuturesProduct = Literal["linear_swap", "coin_swap"]
 type GapPolicy = Literal["forward", "backward", "nan", "keep", "raise"]
 
 
@@ -237,6 +238,266 @@ class HTX:
             end,
             product=product,
             dataset="trades",
+            desired_columns=columns,
+            refresh=refresh,
+            offline=offline,
+            progress=self._progress,
+        )
+
+    def _get_reference_klines(
+        self,
+        dataset: Literal["index_price_klines", "mark_price_klines"],
+        pairs: str | list[str],
+        start: DateInput,
+        end: DateInput,
+        *,
+        product: FuturesProduct,
+        interval: str | None,
+        columns: ColumnSelection,
+        gap_policy: GapPolicy,
+        refresh: bool,
+        offline: bool,
+    ) -> pd.DataFrame | list[pd.DataFrame]:
+        """Return one kind of HTX perpetual reference-price candle.
+
+        Args:
+            dataset: The index- or mark-price Kline dataset.
+            pairs: One native/normalized pair or an ordered pair list.
+            start: The inclusive request start.
+            end: The inclusive date or exclusive timestamp request end.
+            product: The linear- or coin-margined perpetual product.
+            interval: The optional Kline output interval.
+            columns: Optional selected or renamed canonical columns.
+            gap_policy: The behavior for internal missing candles.
+            refresh: Whether to repeat complete discovery for the range.
+            offline: Whether to forbid all source requests.
+
+        Returns:
+            One reference-price DataFrame or an ordered DataFrame list.
+        """
+        return self._downloader.get_data(
+            pairs,
+            start,
+            end,
+            product=product,
+            dataset=dataset,
+            interval=interval,
+            desired_columns=columns,
+            refresh=refresh,
+            offline=offline,
+            gap_policy=gap_policy,
+            progress=self._progress,
+        )
+
+    @overload
+    def get_index_price_klines(
+        self,
+        pairs: str,
+        start: DateInput,
+        end: DateInput,
+        *,
+        product: FuturesProduct,
+        interval: str | None = None,
+        columns: ColumnSelection = None,
+        gap_policy: GapPolicy = "forward",
+        refresh: bool = False,
+        offline: bool = False,
+    ) -> pd.DataFrame:
+        """Describe the return type for one index-price Kline pair."""
+        ...
+
+    @overload
+    def get_index_price_klines(
+        self,
+        pairs: list[str],
+        start: DateInput,
+        end: DateInput,
+        *,
+        product: FuturesProduct,
+        interval: str | None = None,
+        columns: ColumnSelection = None,
+        gap_policy: GapPolicy = "forward",
+        refresh: bool = False,
+        offline: bool = False,
+    ) -> list[pd.DataFrame]:
+        """Describe the return type for several index-price Kline pairs."""
+        ...
+
+    def get_index_price_klines(
+        self,
+        pairs: str | list[str],
+        start: DateInput,
+        end: DateInput,
+        *,
+        product: FuturesProduct,
+        interval: str | None = None,
+        columns: ColumnSelection = None,
+        gap_policy: GapPolicy = "forward",
+        refresh: bool = False,
+        offline: bool = False,
+    ) -> pd.DataFrame | list[pd.DataFrame]:
+        """Return HTX perpetual index-price candles.
+
+        Args:
+            pairs: One native/normalized pair or an ordered pair list.
+            start: The inclusive request start.
+            end: The inclusive date or exclusive timestamp request end.
+            product: The linear- or coin-margined perpetual product.
+            interval: The optional Kline output interval.
+            columns: Optional selected or renamed canonical columns.
+            gap_policy: The behavior for internal missing candles.
+            refresh: Whether to repeat complete discovery for the range.
+            offline: Whether to forbid all source requests.
+
+        Returns:
+            One index-price DataFrame or an ordered DataFrame list.
+        """
+        return self._get_reference_klines(
+            "index_price_klines",
+            pairs,
+            start,
+            end,
+            product=product,
+            interval=interval,
+            columns=columns,
+            gap_policy=gap_policy,
+            refresh=refresh,
+            offline=offline,
+        )
+
+    @overload
+    def get_mark_price_klines(
+        self,
+        pairs: str,
+        start: DateInput,
+        end: DateInput,
+        *,
+        product: FuturesProduct,
+        interval: str | None = None,
+        columns: ColumnSelection = None,
+        gap_policy: GapPolicy = "forward",
+        refresh: bool = False,
+        offline: bool = False,
+    ) -> pd.DataFrame:
+        """Describe the return type for one mark-price Kline pair."""
+        ...
+
+    @overload
+    def get_mark_price_klines(
+        self,
+        pairs: list[str],
+        start: DateInput,
+        end: DateInput,
+        *,
+        product: FuturesProduct,
+        interval: str | None = None,
+        columns: ColumnSelection = None,
+        gap_policy: GapPolicy = "forward",
+        refresh: bool = False,
+        offline: bool = False,
+    ) -> list[pd.DataFrame]:
+        """Describe the return type for several mark-price Kline pairs."""
+        ...
+
+    def get_mark_price_klines(
+        self,
+        pairs: str | list[str],
+        start: DateInput,
+        end: DateInput,
+        *,
+        product: FuturesProduct,
+        interval: str | None = None,
+        columns: ColumnSelection = None,
+        gap_policy: GapPolicy = "forward",
+        refresh: bool = False,
+        offline: bool = False,
+    ) -> pd.DataFrame | list[pd.DataFrame]:
+        """Return HTX perpetual mark-price candles.
+
+        Args:
+            pairs: One native/normalized pair or an ordered pair list.
+            start: The inclusive request start.
+            end: The inclusive date or exclusive timestamp request end.
+            product: The linear- or coin-margined perpetual product.
+            interval: The optional Kline output interval.
+            columns: Optional selected or renamed canonical columns.
+            gap_policy: The behavior for internal missing candles.
+            refresh: Whether to repeat complete discovery for the range.
+            offline: Whether to forbid all source requests.
+
+        Returns:
+            One mark-price DataFrame or an ordered DataFrame list.
+        """
+        return self._get_reference_klines(
+            "mark_price_klines",
+            pairs,
+            start,
+            end,
+            product=product,
+            interval=interval,
+            columns=columns,
+            gap_policy=gap_policy,
+            refresh=refresh,
+            offline=offline,
+        )
+
+    @overload
+    def get_funding_rates(
+        self,
+        pairs: str,
+        start: DateInput,
+        end: DateInput,
+        *,
+        columns: ColumnSelection = None,
+        refresh: bool = False,
+        offline: bool = False,
+    ) -> pd.DataFrame:
+        """Describe the return type for one funding-rate pair."""
+        ...
+
+    @overload
+    def get_funding_rates(
+        self,
+        pairs: list[str],
+        start: DateInput,
+        end: DateInput,
+        *,
+        columns: ColumnSelection = None,
+        refresh: bool = False,
+        offline: bool = False,
+    ) -> list[pd.DataFrame]:
+        """Describe the return type for several funding-rate pairs."""
+        ...
+
+    def get_funding_rates(
+        self,
+        pairs: str | list[str],
+        start: DateInput,
+        end: DateInput,
+        *,
+        columns: ColumnSelection = None,
+        refresh: bool = False,
+        offline: bool = False,
+    ) -> pd.DataFrame | list[pd.DataFrame]:
+        """Return HTX linear-swap funding-rate observations.
+
+        Args:
+            pairs: One native/normalized pair or an ordered pair list.
+            start: The inclusive request start.
+            end: The inclusive date or exclusive timestamp request end.
+            columns: Optional selected or renamed canonical columns.
+            refresh: Whether to repeat complete discovery for the range.
+            offline: Whether to forbid all source requests.
+
+        Returns:
+            One funding-rate DataFrame or an ordered DataFrame list.
+        """
+        return self._downloader.get_data(
+            pairs,
+            start,
+            end,
+            product="linear_swap",
+            dataset="funding_rates",
             desired_columns=columns,
             refresh=refresh,
             offline=offline,

@@ -128,6 +128,14 @@ def _kline_mapping(table: Any, dataset: DatasetSpec) -> dict[str, str]:
         Canonical column names mapped to source fields.
     """
     names = set(table.column_names)
+    if dataset.name != "klines" and "instId" in names:
+        return {
+            "open_time": "ts",
+            "open": "open",
+            "high": "high",
+            "low": "low",
+            "close": "close",
+        }
     volumes = (
         {"base_volume": "amount", "quote_volume": "vol"}
         if dataset.product == "spot"
@@ -177,6 +185,8 @@ def _normalize_klines(table: Any, dataset: DatasetSpec) -> Any:
         )
         for target, source in _kline_mapping(table, dataset).items()
     }
+    if "sample_count" in dataset.stored_columns:
+        result["sample_count"] = pa.array([1] * len(table), type=pa.int64())
     return pa.table({column: result[column] for column in dataset.stored_columns})
 
 
@@ -290,6 +300,27 @@ def _normalize_trades(
     return pa.table({column: result[column] for column in dataset.stored_columns})
 
 
+def _normalize_funding_rates(table: Any, dataset: DatasetSpec) -> Any:
+    """Normalize one new-generation HTX funding-rate table.
+
+    Args:
+        table: The raw Arrow source table.
+        dataset: The canonical funding-rate declaration.
+
+    Returns:
+        Signed rates paired with UTC observation timestamps.
+    """
+    names = set(table.column_names)
+    if not {"fundingRate", "fundingTime"}.issubset(names):
+        raise DataValidationError("CSV does not match the HTX funding-rate schema")
+    return pa.table(
+        {
+            "funding_time": _epoch_milliseconds(table["fundingTime"], "funding_time"),
+            "funding_rate": _number(table["fundingRate"], "funding_rate"),
+        }
+    )
+
+
 def normalize_chunk(
     table: Any, dataset: DatasetSpec, contract_size: float | None = None
 ) -> Any:
@@ -303,16 +334,19 @@ def normalize_chunk(
     Returns:
         A canonical Arrow table ready for validation.
     """
-    if (
-        dataset.product in {"spot", "linear_swap", "coin_swap"}
-        and dataset.name == "klines"
-    ):
+    if dataset.product in {
+        "spot",
+        "linear_swap",
+        "coin_swap",
+    } and dataset.name.endswith("klines"):
         return _normalize_klines(table, dataset)
     if (
         dataset.product in {"spot", "linear_swap", "coin_swap"}
         and dataset.name == "trades"
     ):
         return _normalize_trades(table, dataset, contract_size)
+    if dataset.product == "linear_swap" and dataset.name == "funding_rates":
+        return _normalize_funding_rates(table, dataset)
     raise ValueError(f"unsupported normalizer: {dataset.product}/{dataset.name}")
 
 
@@ -493,13 +527,19 @@ def validate_chunk(
         "spot",
         "linear_swap",
         "coin_swap",
-    } or dataset.name not in {"klines", "trades"}:
+    } or dataset.name not in {
+        "klines",
+        "trades",
+        "index_price_klines",
+        "mark_price_klines",
+        "funding_rates",
+    }:
         raise ValueError(f"unsupported validator: {dataset.product}/{dataset.name}")
     _validate_schema(table, dataset)
     _validate_values(table, dataset)
     last = _validate_times(table, dataset, day, previous_timestamp, end_day)
-    if dataset.name == "klines":
+    if dataset.name.endswith("klines"):
         _validate_ohlc(table, dataset)
-    else:
+    elif dataset.name == "trades":
         _validate_trades(table)
     return last
