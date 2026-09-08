@@ -525,6 +525,33 @@ class Catalog:
             with self._transaction():
                 if rows:
                     self.connection.execute("""
+                    UPDATE resources AS stored SET
+                        status = 'discovered',
+                        archive_sha256 = NULL,
+                        parquet_path = NULL,
+                        parquet_sha256 = NULL,
+                        parquet_size = NULL,
+                        parquet_mtime_ns = NULL,
+                        row_count = NULL,
+                        first_timestamp = NULL,
+                        last_timestamp = NULL,
+                        error = NULL,
+                        last_attempt_at = NULL
+                    FROM incoming_resources AS incoming
+                    WHERE stored.source = incoming.source
+                      AND stored.product = incoming.product
+                      AND stored.dataset = incoming.dataset
+                      AND stored.symbol = incoming.symbol
+                      AND stored.interval = incoming.interval
+                      AND stored.day = incoming.day
+                      AND (
+                          stored.schema_version IS DISTINCT FROM
+                              incoming.schema_version
+                          OR stored.timestamp_column IS DISTINCT FROM
+                              incoming.timestamp_column
+                      )
+                    """)
+                    self.connection.execute("""
                     INSERT INTO resources (
                         source, product, dataset, symbol, interval, day,
                         archive_symbol, url, checksum_url, timestamp_column,

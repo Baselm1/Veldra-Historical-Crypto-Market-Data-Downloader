@@ -1,5 +1,6 @@
 """Test the first imported Binance Spot kline workflow."""
 
+from dataclasses import replace
 from datetime import UTC, date, datetime
 import hashlib
 from io import BytesIO
@@ -15,6 +16,7 @@ import pytest
 import crypto_downloader.pair as pair_module
 from crypto_downloader.cache import parquet_path, valid_cached_path
 from crypto_downloader.catalog import open_catalog
+from crypto_downloader.datasets import SPOT_KLINES
 from crypto_downloader.discovery import _validate_resources, requested_days
 from crypto_downloader.downloader import Downloader, get_data, get_results
 from crypto_downloader.models import Resource, ResourceKey, Result
@@ -219,10 +221,12 @@ def test_valid_cached_path_checks_ready_size_and_modification_time(
         parquet_path=path,
         parquet_size=stat.st_size,
         parquet_mtime_ns=stat.st_mtime_ns,
+        timestamp_column=SPOT_KLINES.time_column,
+        schema_version=SPOT_KLINES.schema_version,
     )
 
-    assert valid_cached_path(ready) == path
-    assert valid_cached_path(Resource(DAY, "archive", "checksum")) is None
+    assert valid_cached_path(ready, SPOT_KLINES) == path
+    assert valid_cached_path(Resource(DAY, "archive", "checksum"), SPOT_KLINES) is None
     assert (
         valid_cached_path(
             Resource(
@@ -233,12 +237,45 @@ def test_valid_cached_path_checks_ready_size_and_modification_time(
                 parquet_path=path,
                 parquet_size=stat.st_size + 1,
                 parquet_mtime_ns=stat.st_mtime_ns,
-            )
+                timestamp_column=SPOT_KLINES.time_column,
+                schema_version=SPOT_KLINES.schema_version,
+            ),
+            SPOT_KLINES,
         )
         is None
     )
     path.unlink()
-    assert valid_cached_path(ready) is None
+    assert valid_cached_path(ready, SPOT_KLINES) is None
+
+
+def test_valid_cached_path_rejects_incompatible_dataset_metadata(
+    tmp_path: Path,
+) -> None:
+    """Confirm cache validity includes timestamp and schema declarations.
+
+    Args:
+        tmp_path: The isolated cache directory.
+    """
+    path = tmp_path / "one.parquet"
+    path.write_bytes(b"cached")
+    stat = path.stat()
+    ready = Resource(
+        DAY,
+        "archive",
+        "checksum",
+        status="ready",
+        parquet_path=path,
+        parquet_size=stat.st_size,
+        parquet_mtime_ns=stat.st_mtime_ns,
+        timestamp_column=SPOT_KLINES.time_column,
+        schema_version=SPOT_KLINES.schema_version,
+    )
+
+    assert valid_cached_path(ready, replace(SPOT_KLINES, schema_version=2)) is None
+    assert (
+        valid_cached_path(replace(ready, timestamp_column="event_time"), SPOT_KLINES)
+        is None
+    )
 
 
 def test_downloader_completes_and_reuses_one_spot_kline_day(

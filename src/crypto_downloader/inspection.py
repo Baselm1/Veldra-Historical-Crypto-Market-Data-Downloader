@@ -503,11 +503,12 @@ def _key(
     )
 
 
-def _local_size(resource: Resource) -> int | None:
-    """Return a locally valid ready file size without hashing its contents.
+def _local_size(resource: Resource, dataset: DatasetSpec) -> int | None:
+    """Return a compatible ready file size without hashing its contents.
 
     Args:
         resource: The cataloged daily resource.
+        dataset: The current schema expected by the caller.
 
     Returns:
         The current byte size, or ``None`` when local metadata is stale.
@@ -517,6 +518,8 @@ def _local_size(resource: Resource) -> int | None:
         or resource.parquet_path is None
         or resource.parquet_size is None
         or resource.parquet_mtime_ns is None
+        or resource.schema_version != dataset.schema_version
+        or resource.timestamp_column != dataset.time_column
     ):
         return None
     try:
@@ -573,11 +576,12 @@ class _LocalCoverage:
     local_bytes: int
 
 
-def _local_coverage(resources: list[Resource]) -> _LocalCoverage:
+def _local_coverage(resources: list[Resource], dataset: DatasetSpec) -> _LocalCoverage:
     """Classify local resource metadata without hashing cached files.
 
     Args:
         resources: The cataloged source resources.
+        dataset: The current schema expected by the caller.
 
     Returns:
         Ready and failed days plus ready row and byte totals.
@@ -587,7 +591,7 @@ def _local_coverage(resources: list[Resource]) -> _LocalCoverage:
     row_count = 0
     local_bytes = 0
     for resource in resources:
-        size = _local_size(resource)
+        size = _local_size(resource, dataset)
         if size is not None:
             ready_days.add(resource.day)
             row_count += resource.row_count or 0
@@ -606,6 +610,7 @@ def _availability(
     downloader: Downloader,
     catalog: Catalog,
     key: ResourceKey,
+    dataset: DatasetSpec,
     output_interval: str | None,
 ) -> Availability:
     """Summarize remote discovery and local cache metadata.
@@ -614,6 +619,7 @@ def _availability(
         downloader: The configured internal downloader.
         catalog: The open metadata catalog.
         key: The exact stored dataset identity.
+        dataset: The current schema expected by the caller.
         output_interval: The effective caller-facing output interval.
 
     Returns:
@@ -624,7 +630,7 @@ def _availability(
         catalog.resources(key, *remote_range) if remote_range is not None else []
     )
     scanned = _merge_ranges(catalog.discovery_ranges(key))
-    local = _local_coverage(resources)
+    local = _local_coverage(resources, dataset)
     available_days = {resource.day for resource in resources}
     cached_range = (
         (min(local.ready_days), max(local.ready_days)) if local.ready_days else None
@@ -691,7 +697,13 @@ def get_availability(
                 specification,
                 market,
             )
-            return _availability(downloader, catalog, key, output_interval)
+            return _availability(
+                downloader,
+                catalog,
+                key,
+                specification,
+                output_interval,
+            )
 
 
 def discover_availability(
@@ -784,6 +796,7 @@ def discover_availability(
                     downloader,
                     catalog,
                     key,
+                    specification,
                     output_interval,
                 )
     LOGGER.info(

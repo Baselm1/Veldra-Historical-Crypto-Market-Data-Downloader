@@ -50,11 +50,31 @@ def parquet_path(data_dir: Path, key: ResourceKey, day: date) -> Path:
     )
 
 
-def valid_cached_path(resource: Resource) -> Path | None:
-    """Return a cache path when its inexpensive metadata checks succeed.
+def _cached_hash_matches(resource: Resource, path: Path) -> bool:
+    """Return whether a cached file matches its recorded content hash.
+
+    Args:
+        resource: The cataloged cache metadata.
+        path: The local Parquet file to hash.
+
+    Returns:
+        Whether the file content is unchanged.
+    """
+    if resource.parquet_sha256 is None:
+        return True
+    try:
+        return file_sha256(path) == resource.parquet_sha256
+    except OSError as error:
+        LOGGER.debug("Cached resource hashing failed: path=%s error=%s", path, error)
+        return False
+
+
+def valid_cached_path(resource: Resource, dataset: DatasetSpec) -> Path | None:
+    """Return a cache path when its file and schema metadata are valid.
 
     Args:
         resource: The cataloged resource and cache metadata.
+        dataset: The current schema expected by the caller.
 
     Returns:
         The valid local path, or ``None`` when recaching is required.
@@ -75,6 +95,21 @@ def valid_cached_path(resource: Resource) -> Path | None:
             resource.parquet_mtime_ns,
         )
         return None
+    if (
+        resource.schema_version != dataset.schema_version
+        or resource.timestamp_column != dataset.time_column
+    ):
+        LOGGER.info(
+            "Cached resource schema changed: day=%s "
+            "stored_version=%s expected_version=%s "
+            "stored_timestamp=%s expected_timestamp=%s",
+            resource.day,
+            resource.schema_version,
+            dataset.schema_version,
+            resource.timestamp_column,
+            dataset.time_column,
+        )
+        return None
     try:
         stat = path.stat()
     except OSError as error:
@@ -89,14 +124,7 @@ def valid_cached_path(resource: Resource) -> Path | None:
             (stat.st_size, stat.st_mtime_ns),
         )
         return None
-    try:
-        valid_hash = (
-            resource.parquet_sha256 is None
-            or file_sha256(path) == resource.parquet_sha256
-        )
-    except OSError as error:
-        LOGGER.debug("Cached resource hashing failed: path=%s error=%s", path, error)
-        return None
+    valid_hash = _cached_hash_matches(resource, path)
     LOGGER.debug("Cached resource hash checked: path=%s valid=%s", path, valid_hash)
     return path if valid_hash else None
 
@@ -169,6 +197,7 @@ def _cache_plan(
     resources: list[Resource],
     data_dir: Path,
     key: ResourceKey,
+    dataset: DatasetSpec,
     offline: bool,
 ) -> tuple[CacheCoverage, list[tuple[Resource, Path]], list[tuple[Resource, Path]]]:
     """Separate valid cache entries from resources requiring ingestion.
@@ -177,6 +206,7 @@ def _cache_plan(
         resources: The cataloged resources requested by the caller.
         data_dir: The root downloader data directory.
         key: The requested source dataset identity.
+        dataset: The current schema expected by the caller.
         offline: Whether missing cache entries can be downloaded.
 
     Returns:
@@ -187,7 +217,7 @@ def _cache_plan(
     pending: list[tuple[Resource, Path]] = []
     cached: list[tuple[Resource, Path]] = []
     for resource in resources:
-        path = valid_cached_path(resource)
+        path = valid_cached_path(resource, dataset)
         if path is not None:
             cached.append((resource, path))
         elif offline:
@@ -291,6 +321,7 @@ def _revalidate_cached_resources(
 def _cached_coverage(
     source: Source,
     client: httpx.Client,
+    dataset: DatasetSpec,
     resources: list[Resource],
     data_dir: Path,
     key: ResourceKey,
@@ -304,6 +335,7 @@ def _cached_coverage(
     Args:
         source: The source strategy that owns the archives.
         client: The HTTPX client used for checksum sidecars.
+        dataset: The schema expected in every cached partition.
         resources: The cataloged daily resources requested by the caller.
         data_dir: The root downloader data directory.
         key: The requested source dataset identity.
@@ -314,7 +346,13 @@ def _cached_coverage(
     Returns:
         Cache coverage and resources still requiring ingestion.
     """
-    coverage, pending, cached = _cache_plan(resources, data_dir, key, offline)
+    coverage, pending, cached = _cache_plan(
+        resources,
+        data_dir,
+        key,
+        dataset,
+        offline,
+    )
     if not refresh or offline:
         coverage.paths.extend(path for _resource, path in cached)
         return coverage, pending
@@ -416,6 +454,7 @@ def cache_resources(
     coverage, pending = _cached_coverage(
         source,
         client,
+        dataset,
         resources,
         data_dir,
         key,

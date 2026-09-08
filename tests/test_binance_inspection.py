@@ -129,6 +129,8 @@ def seed_availability(
                 row_count=2,
                 first_timestamp=datetime(2024, 1, 1, tzinfo=UTC),
                 last_timestamp=datetime(2024, 1, 1, 0, 1, tzinfo=UTC),
+                timestamp_column="open_time" if interval != "raw" else "event_time",
+                schema_version=1,
             ),
         )
         catalog.mark_failed(key, DAY_3, "broken archive")
@@ -426,6 +428,42 @@ def test_get_availability_detects_a_missing_or_changed_ready_file(
     service = Binance(tmp_path, progress=False)
     _, parquet = seed_availability(service)
     parquet.write_bytes(b"changed")
+
+    value = service.get_availability("BTCUSDT", product="spot", dataset="klines")
+
+    assert value.cached_days == 0
+    assert value.missing_days == 2
+    assert value.cached_range is None
+    assert value.row_count == 0
+    assert value.local_bytes == 0
+
+
+def test_get_availability_rejects_incompatible_ready_schema(tmp_path: Path) -> None:
+    """Confirm availability does not count an obsolete Parquet schema as cached.
+
+    Args:
+        tmp_path: The isolated facade data directory.
+    """
+    service = Binance(tmp_path, progress=False)
+    key, parquet = seed_availability(service)
+    stat = parquet.stat()
+    with open_catalog(service.data_dir / "catalog.duckdb") as catalog:
+        catalog.mark_ready(
+            key,
+            DAY_1,
+            parquet,
+            IngestedResource(
+                archive_sha256="a" * 64,
+                parquet_sha256="b" * 64,
+                parquet_size=stat.st_size,
+                parquet_mtime_ns=stat.st_mtime_ns,
+                row_count=2,
+                first_timestamp=datetime(2024, 1, 1, tzinfo=UTC),
+                last_timestamp=datetime(2024, 1, 1, 0, 1, tzinfo=UTC),
+                timestamp_column="event_time",
+                schema_version=2,
+            ),
+        )
 
     value = service.get_availability("BTCUSDT", product="spot", dataset="klines")
 

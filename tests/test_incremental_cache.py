@@ -153,6 +153,8 @@ class DurableSource:
             1,
             timestamp,
             timestamp,
+            timestamp_column=dataset.time_column,
+            schema_version=dataset.schema_version,
         )
 
 
@@ -362,7 +364,116 @@ def test_cache_rejects_content_corruption_even_when_stat_is_preserved(
     path_stat = path.stat()
     item = replace(item, parquet_mtime_ns=path_stat.st_mtime_ns)
 
-    assert valid_cached_path(item) is None
+    assert valid_cached_path(item, SPOT_KLINES) is None
+
+
+def test_cache_rebuilds_a_partition_with_an_incompatible_schema(
+    tmp_path: Path,
+) -> None:
+    """Confirm a changed dataset schema rebuilds an otherwise valid file.
+
+    Args:
+        tmp_path: The isolated cache directory.
+    """
+    source = DurableSource()
+    store = catalog()
+    item = replace(
+        resource(date(2025, 1, 1)),
+        timestamp_column=SPOT_KLINES.time_column,
+        schema_version=SPOT_KLINES.schema_version,
+    )
+    store.save_discovery(KEY, item.day, item.day, [item])
+    cache_resources(source, store, httpx.Client(), KEY, SPOT_KLINES, [item], tmp_path)
+    ready = store.resources(KEY, item.day, item.day)
+    changed = replace(SPOT_KLINES, schema_version=SPOT_KLINES.schema_version + 1)
+
+    coverage = cache_resources(
+        source,
+        store,
+        httpx.Client(),
+        KEY,
+        changed,
+        ready,
+        tmp_path,
+    )
+
+    current = store.resources(KEY, item.day, item.day)[0]
+    assert source.ingest_calls == [item.day, item.day]
+    assert len(coverage.paths) == 1
+    assert current.status == "ready"
+    assert current.timestamp_column == changed.time_column
+    assert current.schema_version == changed.schema_version
+
+
+def test_offline_cache_rejects_an_incompatible_schema(tmp_path: Path) -> None:
+    """Confirm offline mode reports rather than using an old Parquet schema.
+
+    Args:
+        tmp_path: The isolated cache directory.
+    """
+    source = DurableSource()
+    store = catalog()
+    item = replace(
+        resource(date(2025, 1, 1)),
+        timestamp_column=SPOT_KLINES.time_column,
+        schema_version=SPOT_KLINES.schema_version,
+    )
+    store.save_discovery(KEY, item.day, item.day, [item])
+    cache_resources(source, store, httpx.Client(), KEY, SPOT_KLINES, [item], tmp_path)
+    ready = store.resources(KEY, item.day, item.day)
+    changed = replace(SPOT_KLINES, schema_version=SPOT_KLINES.schema_version + 1)
+
+    coverage = cache_resources(
+        source,
+        store,
+        httpx.Client(),
+        KEY,
+        changed,
+        ready,
+        tmp_path,
+        offline=True,
+    )
+
+    assert source.ingest_calls == [item.day]
+    assert coverage.paths == []
+    assert [problem.code for problem in coverage.problems] == ["offline_missing"]
+
+
+def test_rediscovery_invalidates_ready_metadata_after_a_schema_change(
+    tmp_path: Path,
+) -> None:
+    """Confirm new discovery metadata cannot bless an old Parquet schema.
+
+    Args:
+        tmp_path: The isolated cache directory.
+    """
+    source = DurableSource()
+    store = catalog()
+    item = replace(
+        resource(date(2025, 1, 1)),
+        timestamp_column=SPOT_KLINES.time_column,
+        schema_version=SPOT_KLINES.schema_version,
+    )
+    store.save_discovery(KEY, item.day, item.day, [item])
+    cache_resources(source, store, httpx.Client(), KEY, SPOT_KLINES, [item], tmp_path)
+    changed = replace(item, schema_version=item.schema_version + 1)
+
+    store.save_discovery(KEY, item.day, item.day, [changed])
+
+    current = store.resources(KEY, item.day, item.day)[0]
+    assert current.status == "discovered"
+    assert current.archive_sha256 is None
+    assert current.parquet_path is None
+    assert current.parquet_sha256 is None
+    assert current.parquet_size is None
+    assert current.parquet_mtime_ns is None
+    assert current.row_count is None
+    assert current.first_timestamp is None
+    assert current.last_timestamp is None
+    assert current.timestamp_column == changed.timestamp_column
+    assert current.schema_version == changed.schema_version
+    assert current.error is None
+    assert current.last_attempt_at is None
 
 
 def test_offline_cache_reports_missing_files_without_ingestion(tmp_path: Path) -> None:
