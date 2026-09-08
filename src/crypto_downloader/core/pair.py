@@ -438,7 +438,7 @@ def _clean_range(
             message = Message(
                 "configured_start",
                 f"Configured history for {result.pair} begins on "
-                f"{configured_start.date()}; Binance archive data begins "
+                f"{configured_start.date()}; {result.source.title()} archive data begins "
                 f"on {source_start.date()}, so earlier files were not used.",
             )
             reporter.warning(
