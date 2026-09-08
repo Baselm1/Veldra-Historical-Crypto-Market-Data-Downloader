@@ -190,7 +190,10 @@ def _resolve_market(
 
 
 def _missing_resources(
-    resources: list[Resource], start: datetime, end: datetime
+    resources: list[Resource],
+    start: datetime,
+    end: datetime,
+    offset: timedelta = timedelta(0),
 ) -> list[Message]:
     """Describe requested days absent from a valid source listing.
 
@@ -198,11 +201,12 @@ def _missing_resources(
         resources: The resources found for the request.
         start: The inclusive first requested timestamp.
         end: The exclusive final requested timestamp.
+        offset: The source-local offset used for archive date labels.
 
     Returns:
         One problem for each unavailable daily archive.
     """
-    first, last = requested_days(start, end)
+    first, last = requested_days(start, end, offset)
     available = covered_days(resources)
     return [
         Message(
@@ -1162,7 +1166,13 @@ def process_pair(
     if contextual_resources is None:
         return _finish(result, display, started)
     requested_resources = contextual_resources
-    result.problems.extend(_missing_resources(requested_resources, *used_range))
+    result.problems.extend(
+        _missing_resources(
+            requested_resources,
+            *used_range,
+            getattr(source, "archive_day_offset", timedelta(0)),
+        )
+    )
     coverage = cache_resources(
         source,
         catalog,

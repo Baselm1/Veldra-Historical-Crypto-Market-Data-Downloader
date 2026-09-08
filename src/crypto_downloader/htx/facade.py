@@ -8,8 +8,15 @@ import pandas as pd
 
 from crypto_downloader.core.download import _validate_settings
 from crypto_downloader.core.engine import RetrievalEngine
+from crypto_downloader.core.inspection import (
+    discover_availability as _discover_availability,
+    find_markets as _find_markets,
+    get_availability as _get_availability,
+    get_markets as _get_markets,
+)
+from crypto_downloader.core.models import Availability, Market
 from crypto_downloader.htx.connector import HTXConnector
-from crypto_downloader.htx.datasets import get_dataset
+from crypto_downloader.htx.datasets import HTXDataset, get_dataset
 
 type DateInput = str | date | datetime
 type ColumnSelection = list[str] | dict[str, str] | None
@@ -501,5 +508,210 @@ class HTX:
             desired_columns=columns,
             refresh=refresh,
             offline=offline,
+            progress=self._progress,
+        )
+
+    @overload
+    def get_order_book_updates(
+        self,
+        pairs: str,
+        start: DateInput,
+        end: DateInput,
+        *,
+        product: Product = "spot",
+        columns: ColumnSelection = None,
+        refresh: bool = False,
+        offline: bool = False,
+    ) -> pd.DataFrame:
+        """Describe the return type for one order-book pair."""
+        ...
+
+    @overload
+    def get_order_book_updates(
+        self,
+        pairs: list[str],
+        start: DateInput,
+        end: DateInput,
+        *,
+        product: Product = "spot",
+        columns: ColumnSelection = None,
+        refresh: bool = False,
+        offline: bool = False,
+    ) -> list[pd.DataFrame]:
+        """Describe the return type for several order-book pairs."""
+        ...
+
+    def get_order_book_updates(
+        self,
+        pairs: str | list[str],
+        start: DateInput,
+        end: DateInput,
+        *,
+        product: Product = "spot",
+        columns: ColumnSelection = None,
+        refresh: bool = False,
+        offline: bool = False,
+    ) -> pd.DataFrame | list[pd.DataFrame]:
+        """Return HTX order-book snapshots and incremental level updates.
+
+        Args:
+            pairs: One native/normalized pair or an ordered pair list.
+            start: The inclusive request start.
+            end: The inclusive date or exclusive timestamp request end.
+            product: Spot or one of the two perpetual products.
+            columns: Optional selected or renamed canonical columns.
+            refresh: Whether to repeat complete discovery for the range.
+            offline: Whether to forbid all source requests.
+
+        Returns:
+            One order-book update DataFrame or an ordered DataFrame list.
+        """
+        return self._downloader.get_data(
+            pairs,
+            start,
+            end,
+            product=product,
+            dataset="order_book_updates",
+            desired_columns=columns,
+            refresh=refresh,
+            offline=offline,
+            progress=self._progress,
+        )
+
+    def get_markets(
+        self,
+        *,
+        product: Product = "spot",
+        status: str | None = None,
+        quote_asset: str | None = None,
+        sort_by: Literal["symbol", "quote_volume"] = "symbol",
+        limit: int | None = None,
+        refresh: bool = False,
+        offline: bool = False,
+    ) -> list[Market]:
+        """Return HTX markets matching optional exact filters.
+
+        Args:
+            product: Spot or one of the two perpetual products.
+            status: An optional native HTX status.
+            quote_asset: An optional exact quote asset.
+            sort_by: Native symbol or rolling Spot quote-volume ordering.
+            limit: An optional positive maximum result count.
+            refresh: Whether to replace cached market metadata now.
+            offline: Whether to require cached market metadata.
+
+        Returns:
+            Matching immutable markets in the requested order.
+        """
+        return _get_markets(
+            self._downloader,
+            product=product,
+            status=status,
+            quote_asset=quote_asset,
+            sort_by=sort_by,
+            limit=limit,
+            refresh=refresh,
+            offline=offline,
+            progress=self._progress,
+        )
+
+    def find_markets(
+        self,
+        query: str,
+        *,
+        product: Product | None = None,
+        status: str | None = None,
+        quote_asset: str | None = None,
+        limit: int = 10,
+        refresh: bool = False,
+        offline: bool = False,
+    ) -> list[Market]:
+        """Return exact, prefix, and fuzzy HTX market matches.
+
+        Args:
+            query: The native or normalized market text to find.
+            product: An optional product restriction.
+            status: An optional native HTX status.
+            quote_asset: An optional exact quote asset.
+            limit: The maximum number of matches to return.
+            refresh: Whether to replace cached market metadata now.
+            offline: Whether to require cached market metadata.
+
+        Returns:
+            Ranked immutable matches without automatic substitution.
+        """
+        return _find_markets(
+            self._downloader,
+            query,
+            product=product,
+            status=status,
+            quote_asset=quote_asset,
+            limit=limit,
+            refresh=refresh,
+            offline=offline,
+            progress=self._progress,
+        )
+
+    def get_availability(
+        self,
+        pair: str,
+        *,
+        product: Product,
+        dataset: HTXDataset,
+        interval: str | None = None,
+    ) -> Availability:
+        """Return already-cataloged remote and local dataset coverage.
+
+        Args:
+            pair: The native or normalized HTX market.
+            product: Spot or one of the two perpetual products.
+            dataset: The HTX dataset to inspect.
+            interval: An optional Kline output interval.
+
+        Returns:
+            Known coverage without making a network request.
+        """
+        return _get_availability(
+            self._downloader,
+            pair,
+            product=product,
+            dataset=dataset,
+            interval=interval,
+        )
+
+    def discover_availability(
+        self,
+        pair: str,
+        start: DateInput,
+        end: DateInput,
+        *,
+        product: Product,
+        dataset: HTXDataset,
+        interval: str | None = None,
+        refresh: bool = False,
+    ) -> Availability:
+        """Discover bounded HTX coverage without downloading archives.
+
+        Args:
+            pair: The native or normalized HTX market.
+            start: The inclusive discovery start.
+            end: The inclusive date or exclusive timestamp discovery end.
+            product: Spot or one of the two perpetual products.
+            dataset: The HTX dataset to inspect.
+            interval: An optional Kline output interval.
+            refresh: Whether to rescan the complete bounded range.
+
+        Returns:
+            Updated remote and local coverage for the dataset.
+        """
+        return _discover_availability(
+            self._downloader,
+            pair,
+            start,
+            end,
+            product=product,
+            dataset=dataset,
+            interval=interval,
+            refresh=refresh,
             progress=self._progress,
         )

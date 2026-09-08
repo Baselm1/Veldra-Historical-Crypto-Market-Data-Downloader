@@ -8,7 +8,8 @@ import httpx
 from crypto_downloader.core.catalog import Catalog
 from crypto_downloader.core.discovery import discover_resources, requested_days
 from crypto_downloader.core.models import Resource, ResourceKey
-from crypto_downloader.core.planner import select_archives
+from crypto_downloader.core.planner import plan_archives, select_archives
+from crypto_downloader.core.pair import _missing_resources
 from crypto_downloader.binance.datasets import SPOT_KLINES
 
 KEY = ResourceKey("shifted", "spot", "klines", "BTCUSDT", "1m")
@@ -40,6 +41,10 @@ class ShiftedSource:
     products = ("spot",)
     archive_day_offset = timedelta(hours=8)
 
+    def __init__(self) -> None:
+        """Create an empty source-call record."""
+        self.calls: list[tuple[date, date]] = []
+
     def resources(
         self,
         client: httpx.Client,
@@ -58,6 +63,7 @@ class ShiftedSource:
         Returns:
             Consecutive shifted resources.
         """
+        self.calls.append((start_day, end_day))
         return [
             shifted_resource(date.fromordinal(ordinal))
             for ordinal in range(start_day.toordinal(), end_day.toordinal() + 1)
@@ -136,3 +142,32 @@ def test_archive_selection_uses_timestamps_instead_of_source_labels() -> None:
     selected = select_archives([first, duplicate], SPOT_KLINES)
 
     assert len(selected) == 1
+
+
+def test_missing_resource_reports_use_source_day_labels() -> None:
+    """Confirm a shifted resource does not report the preceding UTC date missing."""
+    resource = shifted_resource(date(2025, 1, 2))
+    start = datetime(2025, 1, 1, 16, 0, 1, tzinfo=UTC)
+    end = datetime(2025, 1, 1, 16, 0, 2, tzinfo=UTC)
+
+    problems = _missing_resources([resource], start, end, timedelta(hours=8))
+
+    assert problems == []
+
+
+def test_archive_planner_does_not_apply_source_offset_twice() -> None:
+    """Confirm a short shifted request lists exactly one source day."""
+    connection = duckdb.connect()
+    catalog = Catalog(connection)
+    source = ShiftedSource()
+    start = datetime(2025, 1, 1, 0, 0, tzinfo=UTC)
+    end = datetime(2025, 1, 1, 0, 5, tzinfo=UTC)
+
+    with httpx.Client() as client:
+        found = plan_archives(
+            source, catalog, client, KEY, start, end, dataset=SPOT_KLINES
+        )
+
+    assert source.calls == [(date(2025, 1, 1), date(2025, 1, 1))]
+    assert [item.day for item in found] == [date(2025, 1, 1)]
+    connection.close()

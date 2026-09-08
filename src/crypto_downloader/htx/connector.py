@@ -31,6 +31,7 @@ from crypto_downloader.htx.datasets import (
     supports,
 )
 from crypto_downloader.htx.processing import normalize_chunk, validate_chunk
+from crypto_downloader.htx.orderbook import ingest_order_book
 
 LISTING_URL = "https://www.htx.com/data/"
 ARCHIVE_URL = "https://www.htx.com/data"
@@ -286,6 +287,16 @@ class HTXConnector:
         Returns:
             Integrity and range metadata for the cached Parquet file.
         """
+        if dataset.name == "order_book_updates":
+            return ingest_order_book(
+                client,
+                resource,
+                dataset,
+                destination,
+                timeout=self.timeout,
+                retries=self.retries,
+                backoff=self.backoff,
+            )
         return ingest_archive(
             client,
             resource,

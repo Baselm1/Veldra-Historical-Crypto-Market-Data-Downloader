@@ -1,4 +1,4 @@
-"""Inspect Binance markets and dataset coverage without exposing the catalog."""
+"""Inspect source markets and dataset coverage without exposing the catalog."""
 
 from dataclasses import dataclass, replace
 from datetime import date, timedelta
@@ -158,8 +158,8 @@ def _load_quote_volumes(
     Args:
         downloader: The configured internal downloader.
         catalog: The metadata catalog receiving fresh volume values.
-        client: The HTTPX client used for Binance requests.
-        product: The Binance product to inspect.
+        client: The HTTPX client used for source requests.
+        product: The source product to inspect.
         reporter: The optional activity reporter.
         refresh: Whether to replace cached activity now.
         offline: Whether source access is forbidden.
@@ -212,7 +212,7 @@ def _snapshot(
 
     Args:
         downloader: The configured internal downloader.
-        product: The validated Binance product.
+        product: The validated source product.
         refresh: Whether to replace cached metadata now.
         offline: Whether source access is forbidden.
         progress: Whether to show Rich activity.
@@ -286,10 +286,7 @@ def _filtered_markets(
         Markets satisfying every requested filter.
     """
     return [
-        market
-        for market in markets
-        if (status is None or market.status == status)
-        and (quote_asset is None or market.quote_asset == quote_asset)
+        market for market in markets if _matches_filters(market, status, quote_asset)
     ]
 
 
@@ -335,7 +332,7 @@ def get_markets(
 
     Args:
         downloader: The configured internal downloader.
-        product: The Binance product to inspect.
+        product: The source product to inspect.
         status: An optional native status filter.
         quote_asset: An optional quote asset filter.
         sort_by: Native symbol or rolling quote-volume ordering.
@@ -398,7 +395,9 @@ def _matches_filters(
     Returns:
         True when every supplied filter matches.
     """
-    status_matches = status is None or market.status == status
+    status_matches = status is None or (
+        market.status is not None and market.status.upper() == status
+    )
     quote_matches = quote_asset is None or market.quote_asset == quote_asset
     return status_matches and quote_matches
 
@@ -467,12 +466,12 @@ def find_markets(
     offline: object = False,
     progress: bool = True,
 ) -> list[Market]:
-    """Search one or every Binance product for likely markets.
+    """Search one or every source product for likely markets.
 
     Args:
         downloader: The configured internal downloader.
         query: The native or normalized text to search for.
-        product: An optional Binance product restriction.
+        product: An optional source product restriction.
         status: An optional native status filter.
         quote_asset: An optional quote asset filter.
         limit: The maximum number of matches.
@@ -561,7 +560,7 @@ def _dataset(
 
     Args:
         downloader: The configured internal downloader.
-        product: The proposed Binance product.
+        product: The proposed source product.
         dataset: The proposed dataset name.
         interval: The optional output interval.
 
@@ -588,9 +587,9 @@ def _key(
 
     Args:
         source: The source identifier.
-        product: The Binance product.
+        product: The source product.
         specification: The dataset capability declaration.
-        market: The resolved Binance market.
+        market: The resolved source market.
 
     Returns:
         The exact catalog resource key.
@@ -904,8 +903,8 @@ def get_availability(
 
     Args:
         downloader: The configured internal downloader.
-        pair: The native or normalized Binance market.
-        product: The Binance product.
+        pair: The native or normalized source market.
+        product: The source product.
         dataset: The dataset to inspect.
         interval: The optional Kline output interval.
 
@@ -955,7 +954,7 @@ def _source_boundary(
     Args:
         downloader: The configured internal downloader.
         catalog: The catalog receiving source boundary metadata.
-        client: The HTTPX client used for Binance requests.
+        client: The HTTPX client used for source requests.
         key: The exact stored dataset identity.
         refresh: Whether to repeat source-boundary discovery.
         progress: Whether to show Rich activity.
@@ -991,10 +990,10 @@ def discover_availability(
 
     Args:
         downloader: The configured internal downloader.
-        pair: The native or normalized Binance market.
+        pair: The native or normalized source market.
         start: The inclusive discovery start.
         end: The inclusive date or exclusive timestamp discovery end.
-        product: The Binance product.
+        product: The source product.
         dataset: The dataset to inspect.
         interval: The optional Kline output interval.
         refresh: Whether to repeat the complete bounded scan.

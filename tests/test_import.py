@@ -4,6 +4,7 @@ from importlib import import_module
 import logging
 
 from crypto_downloader.binance.facade import Binance
+from crypto_downloader.htx.facade import HTX
 from crypto_downloader.core.models import (
     Availability,
     Gap,
@@ -20,6 +21,7 @@ def test_package_can_be_imported() -> None:
 
     assert package.__all__ == (
         "Binance",
+        "HTX",
         "Availability",
         "Gap",
         "Market",
@@ -28,6 +30,7 @@ def test_package_can_be_imported() -> None:
         "Result",
     )
     assert package.Binance is Binance
+    assert package.HTX is HTX
     assert package.Availability is Availability
     assert package.Gap is Gap
     assert package.Market is Market

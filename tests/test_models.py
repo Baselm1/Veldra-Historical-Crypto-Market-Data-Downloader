@@ -82,7 +82,7 @@ def test_frame_attaches_a_complete_json_serializable_report() -> None:
     assert report == result_report(result)
     assert report == {
         "pair": "BTCUSDT",
-        "source": "binance",
+        "source": "",
         "product": "spot",
         "dataset": "klines",
         "requested_range": [START.isoformat(), END.isoformat()],

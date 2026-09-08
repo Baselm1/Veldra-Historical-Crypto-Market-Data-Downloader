@@ -201,7 +201,7 @@ class Result:
     errors: list[Message] = field(default_factory=list)
     gaps: list[Gap] = field(default_factory=list)
     gap_policy: str | None = "forward"
-    source: str = "binance"
+    source: str = ""
     product: str = "spot"
     dataset: str = "klines"
 

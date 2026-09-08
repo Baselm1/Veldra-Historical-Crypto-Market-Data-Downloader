@@ -3,6 +3,7 @@
 import logging
 
 from .binance import Binance
+from .htx import HTX
 from .core.models import (
     Availability,
     Gap,
@@ -16,6 +17,7 @@ logging.getLogger(__name__).addHandler(logging.NullHandler())
 
 __all__: tuple[str, ...] = (
     "Binance",
+    "HTX",
     "Availability",
     "Gap",
     "Market",

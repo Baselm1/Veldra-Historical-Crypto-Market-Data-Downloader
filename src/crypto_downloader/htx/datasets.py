@@ -323,6 +323,43 @@ def _funding_rates() -> DatasetSpec:
     )
 
 
+def _order_book_updates(product: str) -> DatasetSpec:
+    """Build one flattened snapshot-and-update declaration.
+
+    Args:
+        product: The Spot or perpetual product.
+
+    Returns:
+        A point-in-time order-book event schema.
+    """
+    columns = (
+        "event_time",
+        "event_number",
+        "action",
+        "side",
+        "level_number",
+        "price",
+        "quantity",
+    )
+    return DatasetSpec(
+        product=product,
+        name="order_book_updates",
+        remote_name="order_book_updates",
+        source_columns=columns,
+        stored_columns=columns,
+        time_column="event_time",
+        base_interval=None,
+        output_intervals=(),
+        aliases=MappingProxyType({}),
+        max_concurrency=8,
+        ordering_columns=("event_time", "event_number", "side", "level_number"),
+        timestamp_columns=("event_time",),
+        integer_columns=("event_number", "level_number"),
+        string_columns=("action", "side"),
+        archive_symbol_attribute="pair",
+    )
+
+
 LINEAR_KLINES = _perpetual_klines("linear_swap")
 COIN_KLINES = _perpetual_klines("coin_swap")
 LINEAR_TRADES = _perpetual_trades("linear_swap")
@@ -332,6 +369,9 @@ COIN_INDEX_PRICE_KLINES = _reference_klines("coin_swap", "index_price_klines")
 LINEAR_MARK_PRICE_KLINES = _reference_klines("linear_swap", "mark_price_klines")
 COIN_MARK_PRICE_KLINES = _reference_klines("coin_swap", "mark_price_klines")
 LINEAR_FUNDING_RATES = _funding_rates()
+SPOT_ORDER_BOOK_UPDATES = _order_book_updates("spot")
+LINEAR_ORDER_BOOK_UPDATES = _order_book_updates("linear_swap")
+COIN_ORDER_BOOK_UPDATES = _order_book_updates("coin_swap")
 
 DATASETS: Mapping[tuple[str, str], DatasetSpec] = MappingProxyType(
     {
@@ -346,6 +386,9 @@ DATASETS: Mapping[tuple[str, str], DatasetSpec] = MappingProxyType(
         ("linear_swap", "mark_price_klines"): LINEAR_MARK_PRICE_KLINES,
         ("coin_swap", "mark_price_klines"): COIN_MARK_PRICE_KLINES,
         ("linear_swap", "funding_rates"): LINEAR_FUNDING_RATES,
+        ("spot", "order_book_updates"): SPOT_ORDER_BOOK_UPDATES,
+        ("linear_swap", "order_book_updates"): LINEAR_ORDER_BOOK_UPDATES,
+        ("coin_swap", "order_book_updates"): COIN_ORDER_BOOK_UPDATES,
     }
 )
 
