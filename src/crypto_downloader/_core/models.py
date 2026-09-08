@@ -81,6 +81,7 @@ class ResourceKey:
     symbol: str
     interval: str | None
     archive_symbol: str | None = None
+    cadence: str = "daily"
 
 
 @dataclass(frozen=True)
@@ -104,6 +105,13 @@ class Resource:
     schema_version: int = 1
     error: str | None = None
     last_attempt_at: datetime | None = None
+    end_day: date | None = None
+    cadence: str = "daily"
+
+    @property
+    def last_day(self) -> date:
+        """Return the inclusive last day covered by this physical archive."""
+        return self.end_day or self.day
 
 
 @dataclass(frozen=True)

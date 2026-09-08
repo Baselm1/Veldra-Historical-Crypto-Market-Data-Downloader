@@ -40,7 +40,7 @@ type ResourceOutcomeRow = tuple[
 ]
 
 
-def _key_values(key: ResourceKey) -> tuple[str, str, str, str, str]:
+def _key_values(key: ResourceKey) -> tuple[str, str, str, str, str, str]:
     """Return a resource key as database parameter values.
 
     Args:
@@ -49,7 +49,14 @@ def _key_values(key: ResourceKey) -> tuple[str, str, str, str, str]:
     Returns:
         The five values forming the resource key.
     """
-    return key.source, key.product, key.dataset, key.symbol, key.interval or ""
+    return (
+        key.source,
+        key.product,
+        key.dataset,
+        key.symbol,
+        key.interval or "",
+        key.cadence,
+    )
 
 
 def _validate_market_snapshot(markets: Sequence[Market]) -> None:
@@ -221,7 +228,9 @@ class Catalog:
                 dataset VARCHAR NOT NULL,
                 symbol VARCHAR NOT NULL,
                 interval VARCHAR NOT NULL,
+                cadence VARCHAR NOT NULL DEFAULT 'daily',
                 day DATE NOT NULL,
+                end_day DATE,
                 archive_symbol VARCHAR,
                 url VARCHAR NOT NULL,
                 checksum_url VARCHAR NOT NULL,
@@ -237,7 +246,7 @@ class Catalog:
                 schema_version INTEGER NOT NULL DEFAULT 1,
                 error VARCHAR,
                 last_attempt_at TIMESTAMP,
-                PRIMARY KEY (source, product, dataset, symbol, interval, day)
+                PRIMARY KEY (source, product, dataset, symbol, interval, cadence, day)
             );
 
             CREATE TABLE IF NOT EXISTS discoveries (
@@ -246,10 +255,11 @@ class Catalog:
                 dataset VARCHAR NOT NULL,
                 symbol VARCHAR NOT NULL,
                 interval VARCHAR NOT NULL,
+                cadence VARCHAR NOT NULL DEFAULT 'daily',
                 start_day DATE NOT NULL,
                 end_day DATE NOT NULL,
                 scanned_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
-                PRIMARY KEY (source, product, dataset, symbol, interval)
+                PRIMARY KEY (source, product, dataset, symbol, interval, cadence)
             );
 
             CREATE TABLE IF NOT EXISTS discovery_segments (
@@ -258,11 +268,12 @@ class Catalog:
                 dataset VARCHAR NOT NULL,
                 symbol VARCHAR NOT NULL,
                 interval VARCHAR NOT NULL,
+                cadence VARCHAR NOT NULL DEFAULT 'daily',
                 start_day DATE NOT NULL,
                 end_day DATE NOT NULL,
                 scanned_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
                 PRIMARY KEY (
-                    source, product, dataset, symbol, interval,
+                    source, product, dataset, symbol, interval, cadence,
                     start_day, end_day
                 )
             );
@@ -273,10 +284,11 @@ class Catalog:
                 dataset VARCHAR NOT NULL,
                 symbol VARCHAR NOT NULL,
                 interval VARCHAR NOT NULL,
+                cadence VARCHAR NOT NULL DEFAULT 'daily',
                 first_day DATE NOT NULL,
                 last_day DATE,
                 checked_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
-                PRIMARY KEY (source, product, dataset, symbol, interval)
+                PRIMARY KEY (source, product, dataset, symbol, interval, cadence)
             );
             """)
         self.connection.execute(
@@ -301,9 +313,12 @@ class Catalog:
         self.connection.execute(
             "ALTER TABLE resources DROP COLUMN IF EXISTS parquet_sha256"
         )
+        self._migrate_archive_keys()
         self.connection.execute("""
             INSERT INTO discovery_segments
-            SELECT d.source, d.product, d.dataset, d.symbol, d.interval,
+                (source, product, dataset, symbol, interval, cadence,
+                 start_day, end_day, scanned_at)
+            SELECT d.source, d.product, d.dataset, d.symbol, d.interval, d.cadence,
                    d.start_day, d.end_day, d.scanned_at
             FROM discoveries AS d
             WHERE NOT EXISTS (
@@ -314,9 +329,47 @@ class Catalog:
                   AND s.dataset = d.dataset
                   AND s.symbol = d.symbol
                   AND s.interval = d.interval
+                  AND s.cadence = d.cadence
             )
             ON CONFLICT DO NOTHING
             """)
+        self.connection.execute("DROP TABLE discoveries")
+
+    def _migrate_archive_keys(self) -> None:
+        """Retain legacy daily cache rows while adding cadence to archive identities."""
+        keys = {
+            "resources": "source, product, dataset, symbol, interval, cadence, day",
+            "discoveries": "source, product, dataset, symbol, interval, cadence",
+            "discovery_segments": "source, product, dataset, symbol, interval, cadence, start_day, end_day",
+            "source_bounds": "source, product, dataset, symbol, interval, cadence",
+        }
+        with self._transaction():
+            for table, key_columns in keys.items():
+                columns = {
+                    row[1]
+                    for row in self.connection.execute(
+                        f"PRAGMA table_info('{table}')"
+                    ).fetchall()
+                }
+                if table == "resources" and "end_day" not in columns:
+                    self.connection.execute(
+                        "ALTER TABLE resources ADD COLUMN end_day DATE"
+                    )
+                if "cadence" in columns:
+                    continue
+                self.connection.execute(
+                    f"ALTER TABLE {table} ADD COLUMN cadence VARCHAR DEFAULT 'daily'"
+                )
+                self.connection.execute(
+                    f"CREATE TABLE {table}_migrated AS SELECT * FROM {table}"
+                )
+                self.connection.execute(
+                    f"ALTER TABLE {table}_migrated ADD PRIMARY KEY ({key_columns})"
+                )
+                self.connection.execute(f"DROP TABLE {table}")
+                self.connection.execute(
+                    f"ALTER TABLE {table}_migrated RENAME TO {table}"
+                )
 
     @contextmanager
     def _transaction(self) -> Iterator[None]:
@@ -561,14 +614,14 @@ class Catalog:
         """
         row = self.connection.execute(
             """
-            SELECT start_day, end_day
-            FROM discoveries
+            SELECT min(start_day), max(end_day)
+            FROM discovery_segments
             WHERE source = ? AND product = ? AND dataset = ?
-              AND symbol = ? AND interval = ?
+              AND symbol = ? AND interval = ? AND cadence = ?
             """,
             _key_values(key),
         ).fetchone()
-        return (row[0], row[1]) if row is not None else None
+        return (row[0], row[1]) if row is not None and row[0] is not None else None
 
     def discovery_ranges(self, key: ResourceKey) -> list[tuple[date, date]]:
         """Return every distinct day range already searched for a resource key.
@@ -584,7 +637,7 @@ class Catalog:
             SELECT start_day, end_day
             FROM discovery_segments
             WHERE source = ? AND product = ? AND dataset = ?
-              AND symbol = ? AND interval = ?
+              AND symbol = ? AND interval = ? AND cadence = ?
             ORDER BY start_day, end_day
             """,
             _key_values(key),
@@ -605,7 +658,7 @@ class Catalog:
             SELECT start_day, end_day, scanned_at
             FROM discovery_segments
             WHERE source = ? AND product = ? AND dataset = ?
-              AND symbol = ? AND interval = ?
+              AND symbol = ? AND interval = ? AND cadence = ?
             ORDER BY start_day, end_day
             """,
             _key_values(key),
@@ -627,10 +680,10 @@ class Catalog:
         """
         row = self.connection.execute(
             """
-            SELECT min(day), max(day)
+            SELECT min(day), max(COALESCE(end_day, day))
             FROM resources
             WHERE source = ? AND product = ? AND dataset = ?
-              AND symbol = ? AND interval = ?
+              AND symbol = ? AND interval = ? AND cadence = ?
             """,
             _key_values(key),
         ).fetchone()
@@ -652,7 +705,7 @@ class Catalog:
             SELECT first_day, last_day
             FROM source_bounds
             WHERE source = ? AND product = ? AND dataset = ?
-              AND symbol = ? AND interval = ?
+              AND symbol = ? AND interval = ? AND cadence = ?
             """,
             _key_values(key),
         ).fetchone()
@@ -676,9 +729,9 @@ class Catalog:
         self.connection.execute(
             """
             INSERT INTO source_bounds (
-                source, product, dataset, symbol, interval, first_day, last_day
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT (source, product, dataset, symbol, interval)
+                source, product, dataset, symbol, interval, cadence, first_day, last_day
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (source, product, dataset, symbol, interval, cadence)
             DO UPDATE SET
                 first_day = LEAST(source_bounds.first_day, excluded.first_day),
                 last_day = CASE
@@ -719,6 +772,7 @@ class Catalog:
             (
                 *key_values,
                 resource.day,
+                resource.end_day,
                 resource.archive_symbol,
                 resource.url,
                 resource.checksum_url,
@@ -735,7 +789,9 @@ class Catalog:
                 "dataset",
                 "symbol",
                 "interval",
+                "cadence",
                 "day",
+                "end_day",
                 "archive_symbol",
                 "url",
                 "checksum_url",
@@ -766,6 +822,7 @@ class Catalog:
                       AND stored.dataset = incoming.dataset
                       AND stored.symbol = incoming.symbol
                       AND stored.interval = incoming.interval
+                      AND stored.cadence = incoming.cadence
                       AND stored.day = incoming.day
                       AND (
                           stored.schema_version IS DISTINCT FROM
@@ -776,17 +833,18 @@ class Catalog:
                     """)
                     self.connection.execute("""
                     INSERT INTO resources (
-                        source, product, dataset, symbol, interval, day,
+                        source, product, dataset, symbol, interval, cadence, day, end_day,
                         archive_symbol, url, checksum_url, timestamp_column,
                         schema_version
                     )
-                    SELECT source, product, dataset, symbol, interval, day,
+                    SELECT source, product, dataset, symbol, interval, cadence, day, end_day,
                            archive_symbol, url, checksum_url, timestamp_column,
                            schema_version
                     FROM incoming_resources
                     ON CONFLICT (
-                        source, product, dataset, symbol, interval, day
+                        source, product, dataset, symbol, interval, cadence, day
                     ) DO UPDATE SET
+                        end_day = excluded.end_day,
                         url = excluded.url,
                         checksum_url = excluded.checksum_url,
                         archive_symbol = excluded.archive_symbol,
@@ -795,27 +853,12 @@ class Catalog:
                     """)
                 self.connection.execute(
                     """
-                INSERT INTO discoveries (
-                    source, product, dataset, symbol, interval,
-                    start_day, end_day, scanned_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT (
-                    source, product, dataset, symbol, interval
-                ) DO UPDATE SET
-                    start_day = LEAST(discoveries.start_day, excluded.start_day),
-                    end_day = GREATEST(discoveries.end_day, excluded.end_day),
-                    scanned_at = excluded.scanned_at
-                    """,
-                    [*key_values, start_day, end_day, scanned_at],
-                )
-                self.connection.execute(
-                    """
                     INSERT INTO discovery_segments (
-                        source, product, dataset, symbol, interval,
+                        source, product, dataset, symbol, interval, cadence,
                         start_day, end_day, scanned_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT (
-                        source, product, dataset, symbol, interval,
+                        source, product, dataset, symbol, interval, cadence,
                         start_day, end_day
                     ) DO UPDATE SET scanned_at = excluded.scanned_at
                     """,
@@ -851,11 +894,11 @@ class Catalog:
             SELECT day, url, checksum_url, status, archive_sha256,
                    parquet_path, parquet_size, parquet_mtime_ns, row_count,
                    first_timestamp, last_timestamp, archive_symbol, timestamp_column,
-                   schema_version, error, last_attempt_at
+                   schema_version, error, last_attempt_at, end_day, cadence
             FROM resources
             WHERE source = ? AND product = ? AND dataset = ?
-              AND symbol = ? AND interval = ?
-              AND day BETWEEN ? AND ?
+              AND symbol = ? AND interval = ? AND cadence = ?
+              AND COALESCE(end_day, day) >= ? AND day <= ?
             ORDER BY day
             """,
             [*_key_values(key), start_day, end_day],
@@ -878,6 +921,8 @@ class Catalog:
                 schema_version=row[13],
                 error=row[14],
                 last_attempt_at=_utc_timestamp(row[15]),
+                end_day=row[16],
+                cadence=row[17],
             )
             for row in rows
         ]
@@ -998,7 +1043,7 @@ class Catalog:
                     FROM incoming_resource_outcomes AS incoming
                     WHERE stored.source = ? AND stored.product = ?
                       AND stored.dataset = ? AND stored.symbol = ?
-                      AND stored.interval = ? AND stored.day = incoming.day
+                      AND stored.interval = ? AND cadence = ? AND stored.day = incoming.day
                     RETURNING stored.day
                     """,
                     _key_values(key),
