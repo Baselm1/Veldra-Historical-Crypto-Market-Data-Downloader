@@ -14,14 +14,14 @@ from time import perf_counter
 import httpx
 import pandas as pd
 
-from crypto_downloader._core.catalog import Catalog, catalog_lock, open_catalog
-from crypto_downloader._core.config import Settings, load_settings
-from crypto_downloader._core.datasets import DatasetSpec, DatasetResolver
-from crypto_downloader._core.reporting import Reporter
-from crypto_downloader._core.models import Market, Result
-from crypto_downloader._core.pair import process_pair
-from crypto_downloader._core.request import Request, normalize_pair, parse_timestamp
-from crypto_downloader._core.connector import Connector
+from crypto_downloader.core.catalog import Catalog, catalog_lock, open_catalog
+from crypto_downloader.core.config import Settings, load_settings
+from crypto_downloader.core.datasets import DatasetSpec, DatasetResolver
+from crypto_downloader.core.reporting import Reporter
+from crypto_downloader.core.models import Market, Result
+from crypto_downloader.core.pair import process_pair
+from crypto_downloader.core.request import Request, normalize_pair, parse_timestamp
+from crypto_downloader.core.connector import Connector
 
 LOGGER = logging.getLogger(__name__)
 

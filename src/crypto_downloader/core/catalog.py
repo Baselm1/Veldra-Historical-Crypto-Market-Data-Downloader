@@ -12,7 +12,7 @@ import duckdb
 import pyarrow as pa
 from typing import Any
 
-from crypto_downloader._core.models import (
+from crypto_downloader.core.models import (
     IngestedResource,
     Market,
     Resource,

@@ -3,7 +3,7 @@
 import logging
 
 from .binance import Binance
-from ._core.models import (
+from .core.models import (
     Availability,
     Gap,
     Market,

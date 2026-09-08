@@ -4,7 +4,7 @@ from importlib import import_module
 import logging
 
 from crypto_downloader.binance.facade import Binance
-from crypto_downloader._core.models import (
+from crypto_downloader.core.models import (
     Availability,
     Gap,
     Market,

@@ -9,7 +9,7 @@ import pandas as pd
 import pytest
 
 from crypto_downloader.binance.datasets import SPOT_KLINES
-from crypto_downloader._core.query import query_parquet
+from crypto_downloader.core.query import query_parquet
 
 
 @pytest.fixture

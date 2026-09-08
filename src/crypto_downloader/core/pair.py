@@ -11,12 +11,12 @@ from time import perf_counter
 import duckdb
 import httpx
 
-from crypto_downloader._core.catalog import Catalog
-from crypto_downloader._core.cache import cache_resources, invalid_parquet_paths
-from crypto_downloader._core.datasets import DatasetSpec
-from crypto_downloader._core.reporting import Reporter, format_range, format_time
-from crypto_downloader._core.discovery import discover_resources, requested_days
-from crypto_downloader._core.models import (
+from crypto_downloader.core.catalog import Catalog
+from crypto_downloader.core.cache import cache_resources, invalid_parquet_paths
+from crypto_downloader.core.datasets import DatasetSpec
+from crypto_downloader.core.reporting import Reporter, format_range, format_time
+from crypto_downloader.core.discovery import discover_resources, requested_days
+from crypto_downloader.core.models import (
     Market,
     Message,
     MissingCandlesError,
@@ -24,16 +24,16 @@ from crypto_downloader._core.models import (
     ResourceKey,
     Result,
 )
-from crypto_downloader._core.matching import suggest_symbols
-from crypto_downloader._core.query import (
+from crypto_downloader.core.matching import suggest_symbols
+from crypto_downloader.core.query import (
     empty_frame,
     missing_ranges,
     query_parquet,
     suspect_gap_paths,
     empty_archive_days,
 )
-from crypto_downloader._core.request import Request, normalize_pair
-from crypto_downloader._core.connector import Connector
+from crypto_downloader.core.request import Request, normalize_pair
+from crypto_downloader.core.connector import Connector
 
 from .planner import plan_archives, covered_days, catalog_archives
 

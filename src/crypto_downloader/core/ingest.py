@@ -14,9 +14,9 @@ import pyarrow.csv as csv
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from crypto_downloader._core.datasets import DatasetSpec
-from crypto_downloader._core.download import download
-from crypto_downloader._core.models import (
+from crypto_downloader.core.datasets import DatasetSpec
+from crypto_downloader.core.download import download
+from crypto_downloader.core.models import (
     DataValidationError,
     IngestedResource,
     Resource,

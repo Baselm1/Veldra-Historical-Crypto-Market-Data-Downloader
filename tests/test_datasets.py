@@ -2,7 +2,7 @@
 
 import pytest
 
-from crypto_downloader._core.datasets import DatasetSpec
+from crypto_downloader.core.datasets import DatasetSpec
 from crypto_downloader.binance.datasets import (
     CM_BOOK_DEPTH,
     CM_INDEX_PRICE_KLINES,
@@ -22,7 +22,7 @@ from crypto_downloader.binance.datasets import (
     UM_TRADES,
     get_dataset,
 )
-from crypto_downloader._core.request import Request
+from crypto_downloader.core.request import Request
 
 SOURCE_COLUMNS = (
     "open_time",

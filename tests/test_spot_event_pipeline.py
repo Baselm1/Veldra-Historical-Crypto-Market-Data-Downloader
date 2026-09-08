@@ -13,9 +13,9 @@ import httpx
 import pandas as pd
 import pytest
 
-from crypto_downloader._core.datasets import DatasetSpec
+from crypto_downloader.core.datasets import DatasetSpec
 from crypto_downloader.binance.datasets import SPOT_AGG_TRADES, SPOT_TRADES
-from crypto_downloader._core.engine import RetrievalEngine
+from crypto_downloader.core.engine import RetrievalEngine
 from crypto_downloader.binance.connector import BinanceConnector
 
 FIXTURES = Path(__file__).parent / "fixtures"

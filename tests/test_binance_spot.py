@@ -9,10 +9,10 @@ from typing import cast
 import httpx
 import pytest
 
-from crypto_downloader._core.datasets import DatasetSpec
+from crypto_downloader.core.datasets import DatasetSpec
 from crypto_downloader.binance.datasets import SPOT_KLINES, get_dataset
-from crypto_downloader._core.models import Market, Resource, ResourceKey
-from crypto_downloader._core.connector import Connector
+from crypto_downloader.core.models import Market, Resource, ResourceKey
+from crypto_downloader.core.connector import Connector
 from crypto_downloader.binance.connector import (
     ARCHIVE_URL,
     BUCKET_URL,

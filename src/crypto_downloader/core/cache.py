@@ -10,16 +10,16 @@ from pathlib import Path
 import httpx
 import pyarrow.parquet as parquet
 
-from crypto_downloader._core.catalog import Catalog
-from crypto_downloader._core.datasets import DatasetSpec
-from crypto_downloader._core.reporting import Reporter
-from crypto_downloader._core.models import (
+from crypto_downloader.core.catalog import Catalog
+from crypto_downloader.core.datasets import DatasetSpec
+from crypto_downloader.core.reporting import Reporter
+from crypto_downloader.core.models import (
     IngestedResource,
     Message,
     Resource,
     ResourceKey,
 )
-from crypto_downloader._core.connector import Connector
+from crypto_downloader.core.connector import Connector
 
 LOGGER = logging.getLogger(__name__)
 

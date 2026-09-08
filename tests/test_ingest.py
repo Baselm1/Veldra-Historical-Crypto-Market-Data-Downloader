@@ -12,7 +12,7 @@ import httpx
 import pandas as pd
 import pytest
 
-from crypto_downloader._core.datasets import DatasetSpec
+from crypto_downloader.core.datasets import DatasetSpec
 from crypto_downloader.binance.datasets import (
     CM_BOOK_DEPTH,
     CM_INDEX_PRICE_KLINES,
@@ -30,9 +30,9 @@ from crypto_downloader.binance.datasets import (
     SPOT_TRADES,
     UM_TRADES,
 )
-from crypto_downloader._core.download import ChecksumError
-from crypto_downloader._core.ingest import ArchiveError, _member, ingest_archive
-from crypto_downloader._core.models import Resource
+from crypto_downloader.core.download import ChecksumError
+from crypto_downloader.core.ingest import ArchiveError, _member, ingest_archive
+from crypto_downloader.core.models import Resource
 from crypto_downloader.binance.processing import DataValidationError
 from crypto_downloader.binance.connector import BinanceConnector
 

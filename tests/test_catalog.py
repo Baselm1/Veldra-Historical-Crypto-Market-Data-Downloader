@@ -8,8 +8,8 @@ from pathlib import Path
 import duckdb
 import pytest
 
-from crypto_downloader._core.catalog import Catalog, open_catalog
-from crypto_downloader._core.models import (
+from crypto_downloader.core.catalog import Catalog, open_catalog
+from crypto_downloader.core.models import (
     IngestedResource,
     Market,
     Resource,

@@ -6,7 +6,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from crypto_downloader._core.datasets import DatasetSpec
+from crypto_downloader.core.datasets import DatasetSpec
 from crypto_downloader.binance.datasets import (
     CM_INDEX_PRICE_KLINES,
     UM_INDEX_PRICE_KLINES,

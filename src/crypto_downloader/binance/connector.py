@@ -9,22 +9,22 @@ import math
 from pathlib import Path
 import re
 from urllib.parse import quote
-from crypto_downloader._core.portal import pages
+from crypto_downloader.core.portal import pages
 
 from crypto_downloader.binance.processing import normalize_chunk, validate_chunk
 import httpx
 
-from crypto_downloader._core.download import archive_checksum, get
-from crypto_downloader._core.datasets import DatasetSpec
+from crypto_downloader.core.download import archive_checksum, get
+from crypto_downloader.core.datasets import DatasetSpec
 from crypto_downloader.binance.datasets import get_dataset
-from crypto_downloader._core.ingest import ingest_archive
-from crypto_downloader._core.models import (
+from crypto_downloader.core.ingest import ingest_archive
+from crypto_downloader.core.models import (
     IngestedResource,
     Market,
     Resource,
     ResourceKey,
 )
-from crypto_downloader._core.request import normalize_pair
+from crypto_downloader.core.request import normalize_pair
 
 EXCHANGE_INFO_URLS: Mapping[str, str] = {
     "spot": "https://api.binance.com/api/v3/exchangeInfo",

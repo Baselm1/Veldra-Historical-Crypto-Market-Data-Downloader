@@ -9,8 +9,8 @@ import httpx
 import pytest
 
 from crypto_downloader import Availability, Binance, Market
-from crypto_downloader._core.catalog import open_catalog
-from crypto_downloader._core.models import IngestedResource, Resource, ResourceKey
+from crypto_downloader.core.catalog import open_catalog
+from crypto_downloader.core.models import IngestedResource, Resource, ResourceKey
 from crypto_downloader.binance.connector import BinanceConnector
 
 DAY_1 = date(2024, 1, 1)
@@ -27,7 +27,7 @@ def fixed_inspection_day(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch: The pytest helper used to replace the UTC clock.
     """
     monkeypatch.setattr(
-        "crypto_downloader._core.inspection.utc_today", lambda: DAY_5 + date.resolution
+        "crypto_downloader.core.inspection.utc_today", lambda: DAY_5 + date.resolution
     )
 
 

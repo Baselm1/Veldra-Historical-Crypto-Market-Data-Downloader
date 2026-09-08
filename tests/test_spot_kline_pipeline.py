@@ -18,14 +18,14 @@ import httpx
 import pandas as pd
 import pytest
 
-import crypto_downloader._core.engine as downloader_module
-import crypto_downloader._core.pair as pair_module
-from crypto_downloader._core.cache import parquet_path, valid_cached_path
-from crypto_downloader._core.catalog import open_catalog
+import crypto_downloader.core.engine as downloader_module
+import crypto_downloader.core.pair as pair_module
+from crypto_downloader.core.cache import parquet_path, valid_cached_path
+from crypto_downloader.core.catalog import open_catalog
 from crypto_downloader.binance.datasets import SPOT_KLINES
-from crypto_downloader._core.discovery import _validate_resources, requested_days
-from crypto_downloader._core.engine import RetrievalEngine
-from crypto_downloader._core.models import Resource, ResourceKey, Result
+from crypto_downloader.core.discovery import _validate_resources, requested_days
+from crypto_downloader.core.engine import RetrievalEngine
+from crypto_downloader.core.models import Resource, ResourceKey, Result
 from crypto_downloader.binance.connector import BinanceConnector
 
 FIXTURES = Path(__file__).parent / "fixtures"

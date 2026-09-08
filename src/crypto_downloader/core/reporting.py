@@ -19,7 +19,7 @@ from rich.progress import (
 from rich.progress import TaskID
 from rich.text import Text
 
-from crypto_downloader._core.models import Market, TimeRange
+from crypto_downloader.core.models import Market, TimeRange
 
 ProgressCallback = Callable[[date, bool], None]
 LOGGER = logging.getLogger(__name__)

@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from crypto_downloader._core.datasets import DatasetSpec
+from crypto_downloader.core.datasets import DatasetSpec
 from crypto_downloader.binance.datasets import SPOT_AGG_TRADES, SPOT_TRADES
 from arrow_helpers import (
     DataValidationError,

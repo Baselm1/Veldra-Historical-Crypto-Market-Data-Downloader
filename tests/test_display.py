@@ -10,12 +10,12 @@ import pandas as pd
 import pytest
 from rich.console import Console
 
-from crypto_downloader._core.reporting import (
+from crypto_downloader.core.reporting import (
     Reporter,
     format_range,
     format_time,
 )
-from crypto_downloader._core.models import Market, Message, Result
+from crypto_downloader.core.models import Market, Message, Result
 
 
 def output_console(*, color: bool = False) -> tuple[Console, StringIO]:
@@ -192,7 +192,7 @@ def test_status_and_download_progress_are_visible(
     console, stream = output_console(color=True)
     reporter = Reporter(console=console)
 
-    with caplog.at_level(logging.DEBUG, logger="crypto_downloader._core.reporting"):
+    with caplog.at_level(logging.DEBUG, logger="crypto_downloader.core.reporting"):
         with reporter.status("Refreshing markets"):
             pass
     with reporter.downloads("BTCUSDT", 2) as advance:

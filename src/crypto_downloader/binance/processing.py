@@ -8,10 +8,10 @@ from typing import Any, cast
 import pyarrow as pa
 import pyarrow.compute as pc
 
-from crypto_downloader._core.datasets import DatasetSpec
+from crypto_downloader.core.datasets import DatasetSpec
 
 
-from crypto_downloader._core.models import DataValidationError
+from crypto_downloader.core.models import DataValidationError
 
 LOGGER = logging.getLogger(__name__)
 

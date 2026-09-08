@@ -11,12 +11,12 @@ import httpx
 import pandas as pd
 import pytest
 
-from crypto_downloader._core.cache import cache_resources
-from crypto_downloader._core.catalog import Catalog
-from crypto_downloader._core.models import Resource, ResourceKey
-from crypto_downloader._core.planner import plan_archives, select_archives
-from crypto_downloader._core.query import query_parquet
-from crypto_downloader._core.ingest import ingest_archive
+from crypto_downloader.core.cache import cache_resources
+from crypto_downloader.core.catalog import Catalog
+from crypto_downloader.core.models import Resource, ResourceKey
+from crypto_downloader.core.planner import plan_archives, select_archives
+from crypto_downloader.core.query import query_parquet
+from crypto_downloader.core.ingest import ingest_archive
 from crypto_downloader.binance.connector import BinanceConnector
 from crypto_downloader.binance.datasets import DATASETS, SPOT_KLINES
 from crypto_downloader.binance.processing import normalize_chunk, validate_chunk
@@ -243,9 +243,9 @@ def test_each_monthly_dataset_uses_one_streamed_parquet(
 
 def test_monthly_missing_day_is_reported_and_never_filled(tmp_path: Path) -> None:
     """An archive's calendar span must not hide a completely absent source day."""
-    from crypto_downloader._core.pair import _populate_cached_query, _result
-    from crypto_downloader._core.reporting import Reporter
-    from crypto_downloader._core.request import Request
+    from crypto_downloader.core.pair import _populate_cached_query, _result
+    from crypto_downloader.core.reporting import Reporter
+    from crypto_downloader.core.request import Request
 
     portal = Portal(missing_day=date(2024, 1, 5))
     request = Request.parse("BTCUSDT", START, END).resolve_dataset(SPOT_KLINES)

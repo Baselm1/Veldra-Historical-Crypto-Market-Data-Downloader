@@ -9,7 +9,7 @@ import pandas as pd
 import pytest
 
 from crypto_downloader.binance.facade import Binance
-from crypto_downloader._core.engine import RetrievalEngine
+from crypto_downloader.core.engine import RetrievalEngine
 from crypto_downloader.binance.connector import BinanceConnector
 
 

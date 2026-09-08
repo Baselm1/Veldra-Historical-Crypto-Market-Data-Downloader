@@ -13,10 +13,10 @@ import httpx
 import pandas as pd
 import pytest
 
-from crypto_downloader._core.datasets import DatasetSpec
+from crypto_downloader.core.datasets import DatasetSpec
 from crypto_downloader.binance.datasets import SPOT_KLINES
-from crypto_downloader._core.engine import RetrievalEngine
-from crypto_downloader._core.models import (
+from crypto_downloader.core.engine import RetrievalEngine
+from crypto_downloader.core.models import (
     IngestedResource,
     Market,
     MissingCandlesError,
@@ -24,12 +24,12 @@ from crypto_downloader._core.models import (
     ResourceKey,
     Result,
 )
-from crypto_downloader._core.query import (
+from crypto_downloader.core.query import (
     missing_ranges,
     query_parquet,
     suspect_gap_paths,
 )
-from crypto_downloader._core.request import Request, parse_gap_policy
+from crypto_downloader.core.request import Request, parse_gap_policy
 
 DAY = date(2024, 1, 1)
 START = datetime(2024, 1, 1, tzinfo=UTC)

@@ -6,7 +6,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from crypto_downloader._core.datasets import DatasetSpec
+from crypto_downloader.core.datasets import DatasetSpec
 from crypto_downloader.binance.datasets import CM_BOOK_DEPTH, UM_BOOK_DEPTH
 from arrow_helpers import (
     DataValidationError,

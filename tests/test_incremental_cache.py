@@ -11,17 +11,17 @@ import duckdb
 import httpx
 import pytest
 
-from crypto_downloader._core.cache import cache_resources, valid_cached_path
-from crypto_downloader._core.catalog import Catalog, catalog_lock
-from crypto_downloader._core.datasets import DatasetSpec
+from crypto_downloader.core.cache import cache_resources, valid_cached_path
+from crypto_downloader.core.catalog import Catalog, catalog_lock
+from crypto_downloader.core.datasets import DatasetSpec
 from crypto_downloader.binance.datasets import SPOT_KLINES
-from crypto_downloader._core.discovery import (
+from crypto_downloader.core.discovery import (
     DISCOVERY_TTL,
     _fresh_ranges,
     _scan_ranges,
     discover_resources,
 )
-from crypto_downloader._core.models import (
+from crypto_downloader.core.models import (
     IngestedResource,
     Market,
     Resource,
