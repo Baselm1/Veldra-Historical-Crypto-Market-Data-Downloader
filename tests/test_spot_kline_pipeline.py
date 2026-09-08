@@ -743,8 +743,8 @@ def test_enabled_progress_explains_the_complete_pipeline(
     assert "INFO Binance spot klines: 1 pair" in output
     assert "OK Markets refreshed: 1 pair (1 TRADING)" in output
     assert "INFO BTCUSDT: matched BTC/USDT; status TRADING" in output
-    assert "INFO BTCUSDT: found 1 daily file" in output
-    assert "INFO BTCUSDT: 1 daily file | 0 cached, 1 to download" in output
+    assert "INFO BTCUSDT: found 1 file" in output
+    assert "INFO BTCUSDT: 1 file | 0 cached, 1 to download" in output
     assert "BTCUSDT 2024-01-01 cached" in output
     assert "OK BTCUSDT: returned 2 rows" in output
 
@@ -766,7 +766,7 @@ def test_cached_pipeline_reports_that_no_download_is_needed(
     service.get_results("BTCUSDT", "2024-01-01", "2024-01-01")
 
     output = capsys.readouterr().err
-    assert "INFO BTCUSDT: 1 daily file | 1 cached, 0 to download" in output
+    assert "INFO BTCUSDT: 1 file | 1 cached, 0 to download" in output
     assert "OK BTCUSDT: returned 2 rows" in output
 
 

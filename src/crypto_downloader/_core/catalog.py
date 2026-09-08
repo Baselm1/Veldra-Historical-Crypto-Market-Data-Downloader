@@ -47,7 +47,7 @@ def _key_values(key: ResourceKey) -> tuple[str, str, str, str, str, str]:
         key: The resource identity to convert.
 
     Returns:
-        The five values forming the resource key.
+        The six values forming the physical archive identity.
     """
     return (
         key.source,
@@ -119,6 +119,8 @@ def _validate_discovery(
         raise ValueError("discovery contains a duplicate resource day")
     if any(day < start_day or day > end_day for day in days):
         raise ValueError("discovery resource falls outside the searched range")
+    if any(resource.last_day < resource.day for resource in resources):
+        raise ValueError("resource range ends before it starts")
 
 
 def _database_timestamp(value: datetime) -> datetime:
@@ -766,6 +768,8 @@ class Catalog:
             resources: The daily resources found during the search.
         """
         _validate_discovery(start_day, end_day, resources)
+        if any(resource.cadence != key.cadence for resource in resources):
+            raise ValueError("resource cadence does not match its catalog key")
         key_values = _key_values(key)
         scanned_at = _database_timestamp(datetime.now(UTC))
         rows = [

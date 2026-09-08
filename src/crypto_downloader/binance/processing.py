@@ -2,6 +2,7 @@
 
 from datetime import UTC, date, datetime, timedelta
 import math
+import logging
 from typing import Any, cast
 
 import pyarrow as pa
@@ -11,6 +12,8 @@ from crypto_downloader._core.datasets import DatasetSpec
 
 
 from crypto_downloader._core.models import DataValidationError
+
+LOGGER = logging.getLogger(__name__)
 
 
 def _reject(condition: Any, message: str) -> None:
@@ -161,7 +164,26 @@ def normalize_chunk(
                 f"mark-price structural field '{column}' is not zero",
             )
     _derive_quantities(result, dataset, contract_size)
+    if dataset.supports_resampling:
+        _repair_close_times(result)
     return pa.table({column: result[column] for column in dataset.stored_columns})
+
+
+def _repair_close_times(columns: dict[str, Any]) -> None:
+    """Repair out-of-candle source close times while retaining valid source precision."""
+    opens, closes = columns["open_time"], columns["close_time"]
+    stop = pc.add(opens, pa.scalar(timedelta(minutes=1), pa.duration("us")))
+    invalid = pc.or_(pc.less(closes, opens), pc.greater_equal(closes, stop))
+    count = pc.sum(pc.cast(invalid, pa.int64())).as_py()
+    if count:
+        canonical = pc.subtract(
+            stop, pa.scalar(timedelta(microseconds=1), pa.duration("us"))
+        )
+        columns["close_time"] = pc.if_else(invalid, canonical, closes)
+        LOGGER.warning(
+            "Repaired %d source close_time value(s) outside their one-minute candles",
+            count,
+        )
 
 
 def _derive_quantities(
@@ -237,10 +259,7 @@ def _times(
         raise DataValidationError("timestamps fall outside the resource day range")
     if dataset.supports_resampling:
         _reject(
-            pc.or_(
-                pc.not_equal(pc.second(values), 0),
-                pc.not_equal(pc.microsecond(values), 0),
-            ),
+            pc.not_equal(values, pc.floor_temporal(values, unit="minute")),
             "open_time is not aligned to one minute",
         )
         closes = table["close_time"]

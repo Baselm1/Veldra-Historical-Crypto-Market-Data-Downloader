@@ -2,6 +2,8 @@
 
 from collections.abc import Iterator, Mapping
 from datetime import UTC, date, datetime
+from dataclasses import replace
+from calendar import monthrange
 import logging
 import math
 from pathlib import Path
@@ -71,6 +73,16 @@ class BinanceConnector:
     products: tuple[str, ...] = ("spot", "um", "cm")
     active_statuses: frozenset[str] = frozenset({"TRADING"})
     max_concurrency: int = 64
+    monthly_datasets = frozenset(
+        {
+            "klines",
+            "mark_price_klines",
+            "index_price_klines",
+            "premium_index_klines",
+            "trades",
+            "agg_trades",
+        }
+    )
 
     def __init__(
         self,
@@ -244,8 +256,14 @@ class BinanceConnector:
         """
         dataset = self._validate_resource_request(key, start_day, end_day)
         prefix, stem, archive_symbol = self._archive_layout(key, dataset)
-        marker = f"{prefix}{stem}{start_day.isoformat()}"
-        pattern = re.compile(re.escape(prefix + stem) + r"(\d{4}-\d{2}-\d{2})\.zip")
+        monthly = key.cadence == "monthly"
+        marker = (
+            f"{prefix}{stem}{start_day:%Y-%m}"
+            if monthly
+            else f"{prefix}{stem}{start_day.isoformat()}"
+        )
+        suffix = r"(\d{4}-\d{2})\.zip" if monthly else r"(\d{4}-\d{2}-\d{2})\.zip"
+        pattern = re.compile(re.escape(prefix + stem) + suffix)
         found: dict[date, Resource] = {}
         max_keys = _resource_page_size(start_day, end_day)
 
@@ -264,7 +282,17 @@ class BinanceConnector:
                     past_end = True
                 elif day >= start_day:
                     url = f"{ARCHIVE_URL}/{quote(object_key, safe='/')}"
-                    found[day] = self._resource(day, url, archive_symbol, dataset)
+                    found[day] = replace(
+                        self._resource(day, url, archive_symbol, dataset),
+                        cadence=key.cadence,
+                        end_day=(
+                            date(
+                                day.year, day.month, monthrange(day.year, day.month)[1]
+                            )
+                            if monthly
+                            else None
+                        ),
+                    )
             if past_end:
                 break
         resources = [found[day] for day in sorted(found)]
@@ -723,6 +751,8 @@ class BinanceConnector:
         """
         archive_symbol = key.archive_symbol or key.symbol
         root = BinanceConnector._dataset_root(key.product, dataset)
+        if key.cadence == "monthly":
+            root = root.replace("/daily/", "/monthly/")
         if dataset.needs_interval:
             assert key.interval is not None
             prefix = f"{root}{archive_symbol}/{key.interval}/"
@@ -787,6 +817,10 @@ class BinanceConnector:
         """
         if key.source != self.code:
             raise ValueError(f"unsupported source: {key.source}")
+        if key.cadence not in {"daily", "monthly"}:
+            raise ValueError("unsupported archive cadence")
+        if key.cadence == "monthly" and key.dataset not in self.monthly_datasets:
+            raise ValueError("dataset has no monthly archives")
         self._check_product(key.product)
         try:
             dataset = get_dataset(key.product, key.dataset)
@@ -820,6 +854,7 @@ class BinanceConnector:
         if match is None:
             return None
         try:
-            return date.fromisoformat(match.group(1))
+            value = match.group(1)
+            return date.fromisoformat(value + "-01" if len(value) == 7 else value)
         except ValueError:
             return None

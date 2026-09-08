@@ -4,6 +4,7 @@ from datetime import date
 import pyarrow as pa
 import pytest
 from crypto_downloader.binance.datasets import SPOT_TRADES
+from crypto_downloader.binance.datasets import SPOT_KLINES
 from crypto_downloader.binance.processing import (
     normalize_chunk,
     validate_chunk,
@@ -35,3 +36,54 @@ def test_invalid_integer_does_not_round_or_overflow(identifier: str) -> None:
     )
     with pytest.raises(DataValidationError, match="integer"):
         normalize_chunk(source, SPOT_TRADES)
+
+
+def test_invalid_source_close_time_is_repaired_without_changing_valid_precision(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Keep valid millisecond close times and repair only the malformed source row."""
+    rows = [
+        [
+            "1704067200000",
+            "100",
+            "100",
+            "100",
+            "100",
+            "0",
+            "1704067259999",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+        ],
+        [
+            "1704067260000",
+            "100",
+            "100",
+            "100",
+            "100",
+            "0",
+            "1704067199999",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+        ],
+    ]
+    raw = pa.table(
+        {
+            name: [row[i] for row in rows]
+            for i, name in enumerate(SPOT_KLINES.source_columns)
+        }
+    )
+    result = normalize_chunk(raw, SPOT_KLINES)
+    assert result["close_time"][0].as_py().microsecond == 999000
+    assert result["close_time"][1].as_py().microsecond == 999999
+    assert result["close_time"][1].as_py().minute == 1
+    assert (
+        validate_chunk(result, SPOT_KLINES, date(2024, 1, 1))
+        == result["open_time"][1].as_py()
+    )
+    assert "Repaired 1" in caplog.text

@@ -32,6 +32,8 @@ from crypto_downloader._core.request import (
     parse_pairs,
 )
 
+from .planner import plan_archives, catalog_archives, select_archives, covered_days
+
 LOGGER = logging.getLogger(__name__)
 
 
@@ -798,11 +800,11 @@ def _local_coverage(resources: list[Resource], dataset: DatasetSpec) -> _LocalCo
     for resource in resources:
         size = _local_size(resource, dataset)
         if size is not None:
-            ready_days.add(resource.day)
+            ready_days.update(covered_days([resource]))
             row_count += resource.row_count or 0
             local_bytes += size
         elif resource.status == "failed":
-            failed_days.add(resource.day)
+            failed_days.update(covered_days([resource]))
     return _LocalCoverage(
         frozenset(ready_days),
         frozenset(failed_days),
@@ -847,14 +849,26 @@ def _availability(
         usable_range = (start, end) if start <= end else None
     coverage_range = usable_range or configured_range
     resources = (
-        catalog.resources(key, *coverage_range) if coverage_range is not None else []
+        select_archives(catalog_archives(catalog, key, *coverage_range), dataset)
+        if coverage_range is not None
+        else []
     )
-    scanned = _clip_ranges(catalog.discovery_ranges(key), coverage_range)
+    scanned = _clip_ranges(
+        _merge_ranges(
+            catalog.discovery_ranges(key)
+            + catalog.discovery_ranges(replace(key, cadence="monthly"))
+        ),
+        coverage_range,
+    )
     local = _local_coverage(resources, dataset)
-    available_days = {resource.day for resource in resources}
-    cached_range = (
-        (min(local.ready_days), max(local.ready_days)) if local.ready_days else None
-    )
+    available_days = covered_days(resources)
+    ready_days, failed_days = set(local.ready_days), set(local.failed_days)
+    if coverage_range is not None:
+        first, last = coverage_range
+        available_days = {day for day in available_days if first <= day <= last}
+        ready_days &= available_days
+        failed_days &= available_days
+    cached_range = (min(ready_days), max(ready_days)) if ready_days else None
     scanned_days = _day_count(scanned)
     return Availability(
         source=key.source,
@@ -869,10 +883,10 @@ def _availability(
         scanned_ranges=tuple(scanned),
         scanned_days=scanned_days,
         available_days=len(available_days),
-        cached_days=len(local.ready_days),
-        missing_days=len(available_days - local.ready_days - local.failed_days),
+        cached_days=len(ready_days),
+        missing_days=len(available_days - ready_days - failed_days),
         unavailable_days=max(0, scanned_days - len(available_days)),
-        failed_days=len(local.failed_days),
+        failed_days=len(failed_days),
         row_count=local.row_count,
         local_bytes=local.local_bytes,
     )
@@ -1044,13 +1058,14 @@ def discover_availability(
                 recent = last >= utc_today() - timedelta(
                     days=downloader.discovery_tail_days
                 )
-                discover_resources(
+                plan_archives(
                     downloader.source,
                     catalog,
                     client,
                     key,
                     request.start,
                     request.end,
+                    dataset=specification,
                     active=market.active and recent,
                     refresh=selected_refresh,
                     tail_days=downloader.discovery_tail_days,

@@ -2,7 +2,7 @@
 
 from concurrent.futures import Executor, ThreadPoolExecutor
 from contextlib import ExitStack
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date
 import logging
 from pathlib import Path
@@ -55,7 +55,9 @@ def invalid_parquet_paths(paths: list[Path]) -> list[Path]:
     return invalid
 
 
-def parquet_path(data_dir: Path, key: ResourceKey, day: date) -> Path:
+def parquet_path(
+    data_dir: Path, key: ResourceKey, day: date, cadence: str = "daily"
+) -> Path:
     """Return the deterministic Parquet path for one daily resource.
 
     Args:
@@ -74,7 +76,11 @@ def parquet_path(data_dir: Path, key: ResourceKey, day: date) -> Path:
         / key.dataset
         / key.symbol
         / (key.interval or "raw")
-        / f"{day.isoformat()}.parquet"
+        / (
+            f"{day:%Y-%m}.parquet"
+            if cadence == "monthly"
+            else f"{day.isoformat()}.parquet"
+        )
     )
 
 
@@ -236,7 +242,9 @@ def _cache_plan(
                 )
             )
         else:
-            pending.append((resource, parquet_path(data_dir, key, resource.day)))
+            pending.append(
+                (resource, parquet_path(data_dir, key, resource.day, resource.cadence))
+            )
     return coverage, pending, cached
 
 
@@ -410,11 +418,13 @@ def _record_outcomes(
         outcomes: The matching ingestion metadata or exceptions.
         coverage: The cache coverage to update in place.
     """
-    ready: list[tuple[date, Path, IngestedResource]] = []
-    failed: list[tuple[date, str]] = []
+    ready: dict[str, list[tuple[date, Path, IngestedResource]]] = {}
+    failed: dict[str, list[tuple[date, str]]] = {}
     for (resource, destination), (metadata, error) in zip(pending, outcomes):
         if metadata is not None:
-            ready.append((resource.day, destination, metadata))
+            ready.setdefault(resource.cadence, []).append(
+                (resource.day, destination, metadata)
+            )
             coverage.paths.append(destination)
             LOGGER.info(
                 "Daily resource cached: key=%s day=%s rows=%d path=%s",
@@ -425,7 +435,7 @@ def _record_outcomes(
             )
             continue
         message = str(error) if error is not None else "unknown ingestion failure"
-        failed.append((resource.day, message))
+        failed.setdefault(resource.cadence, []).append((resource.day, message))
         coverage.problems.append(Message("resource_failed", message, resource.day))
         LOGGER.warning(
             "Daily resource failed: key=%s day=%s error=%s",
@@ -433,7 +443,12 @@ def _record_outcomes(
             resource.day,
             message,
         )
-    catalog.mark_outcomes(key, ready, failed)
+    for cadence in ready.keys() | failed.keys():
+        catalog.mark_outcomes(
+            replace(key, cadence=cadence),
+            ready.get(cadence, []),
+            failed.get(cadence, []),
+        )
 
 
 def cache_resources(
@@ -450,6 +465,7 @@ def cache_resources(
     max_workers: int = 16,
     reporter: Reporter | None = None,
     executor: Executor | None = None,
+    requested_range: tuple[date, date] | None = None,
 ) -> CacheCoverage:
     """Reuse valid files and ingest every missing known resource.
 
@@ -466,6 +482,7 @@ def cache_resources(
         max_workers: The caller's maximum concurrent daily ingestions.
         reporter: The optional Rich activity reporter.
         executor: An optional request-wide executor shared by every pair.
+        requested_range: Optional inclusive days limiting monthly recovery downloads.
 
     Returns:
         Usable paths and isolated resource problems.
@@ -488,7 +505,7 @@ def cache_resources(
     missing_label = "not cached" if offline else "to download"
     missing_count = len(coverage.problems) if offline else len(pending)
     display.info(
-        f"{key.symbol}: {len(resources):,} daily {noun} | "
+        f"{key.symbol}: {len(resources):,} {noun} | "
         f"{len(coverage.paths):,} cached, {missing_count:,} {missing_label}"
     )
     LOGGER.debug(
@@ -521,11 +538,109 @@ def cache_resources(
                     outcomes.append(outcome)
                     advance(resource.day, outcome[0] is not None)
     _record_outcomes(catalog, key, pending, outcomes, coverage)
+    for (resource, _path), (metadata, _error) in zip(pending, outcomes):
+        if metadata is None and resource.cadence == "monthly":
+            _daily_fallback(
+                source,
+                catalog,
+                client,
+                key,
+                dataset,
+                resource,
+                data_dir,
+                coverage,
+                max_workers,
+                display,
+                executor,
+                requested_range,
+            )
     if pending:
         succeeded = sum(metadata is not None for metadata, _error in outcomes)
         display.info(
-            f"{key.symbol}: cached {succeeded:,} new daily file(s); "
+            f"{key.symbol}: cached {succeeded:,} new archive file(s); "
             f"{len(pending) - succeeded:,} failed"
         )
     coverage.paths.sort()
     return coverage
+
+
+def _daily_fallback(
+    source: Source,
+    catalog: Catalog,
+    client: httpx.Client,
+    key: ResourceKey,
+    dataset: DatasetSpec,
+    monthly: Resource,
+    data_dir: Path,
+    coverage: CacheCoverage,
+    max_workers: int,
+    reporter: Reporter,
+    executor: Executor | None,
+    requested_range: tuple[date, date] | None,
+) -> None:
+    """Try daily files after a monthly archive fails, preserving failure metadata.
+
+    Args:
+        source: Exchange connector for the fallback listing.
+        catalog: Catalog retaining the failed monthly archive.
+        client: Shared HTTP client.
+        key: Dataset identity.
+        dataset: Schema used for daily conversion.
+        monthly: Monthly archive that failed validation or download.
+        data_dir: Cache directory.
+        coverage: Result paths and messages to update.
+        max_workers: Maximum simultaneous downloads.
+        reporter: Request progress display.
+        executor: Optional shared download executor.
+        requested_range: Inclusive requested days, or the entire archive when absent.
+    """
+    from .planner import covered_days
+
+    daily_key = replace(key, cadence="daily")
+    first, last = monthly.day, monthly.last_day
+    if requested_range is not None:
+        first, last = max(first, requested_range[0]), min(last, requested_range[1])
+    try:
+        resources = source.resources(client, daily_key, first, last)
+        resources = [replace(r, contract_size=monthly.contract_size) for r in resources]
+        catalog.save_discovery(daily_key, first, last, resources)
+        fallback = cache_resources(
+            source,
+            catalog,
+            client,
+            daily_key,
+            dataset,
+            resources,
+            data_dir,
+            max_workers=max_workers,
+            reporter=reporter,
+            executor=executor,
+        )
+    except Exception as error:
+        LOGGER.warning("Daily fallback failed: key=%s error=%s", key, error)
+        return
+    coverage.problems[:] = [
+        p
+        for p in coverage.problems
+        if not (p.code == "resource_failed" and p.date == monthly.day)
+    ]
+    coverage.paths.extend(fallback.paths)
+    coverage.problems.extend(fallback.problems)
+    coverage.warnings.extend(fallback.warnings)
+    coverage.warnings.append(
+        Message(
+            "monthly_fallback",
+            "Monthly archive failed; used available daily archives.",
+            monthly.day,
+        )
+    )
+    for day in sorted(covered_days([monthly]) - covered_days(resources)):
+        if not first <= day <= last:
+            continue
+        coverage.problems.append(
+            Message(
+                "resource_unavailable",
+                "No daily fallback file is available for this date.",
+                day,
+            )
+        )

@@ -1,7 +1,7 @@
 """Query cached Parquet data through DuckDB."""
 
 from collections.abc import Mapping, Sequence
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 import logging
 from pathlib import Path
 from time import perf_counter
@@ -110,6 +110,39 @@ def missing_ranges(
         )
         for range_start, range_end, count in rows
     ]
+
+
+def empty_archive_days(
+    connection: duckdb.DuckDBPyConnection,
+    resources: Sequence[Resource],
+    dataset: DatasetSpec,
+    first: date,
+    last: date,
+) -> list[date]:
+    """Return requested calendar days absent from suspect monthly candle files.
+
+    Args:
+        connection: Open DuckDB connection.
+        resources: Selected monthly archives whose continuity is unproven.
+        dataset: Schema declaring the timestamp column.
+        first: First requested calendar day.
+        last: Last requested calendar day.
+
+    Returns:
+        Missing days in date order; no rows are generated for them.
+    """
+    expected = {
+        resource.day + timedelta(days=i)
+        for resource in resources
+        for i in range((resource.last_day - resource.day).days + 1)
+        if first <= resource.day + timedelta(days=i) <= last
+    }
+    present = connection.execute(
+        f"SELECT DISTINCT CAST({_identifier(dataset.time_column)} AS DATE) "
+        "FROM read_parquet(?)",
+        [[str(r.parquet_path) for r in resources]],
+    ).fetchall()
+    return sorted(expected - {row[0] for row in present})
 
 
 def suspect_gap_paths(

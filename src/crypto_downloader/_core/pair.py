@@ -30,9 +30,12 @@ from crypto_downloader._core.query import (
     missing_ranges,
     query_parquet,
     suspect_gap_paths,
+    empty_archive_days,
 )
 from crypto_downloader._core.request import Request, normalize_pair
 from crypto_downloader._core.source import Source
+
+from .planner import plan_archives, covered_days, catalog_archives
 
 LOGGER = logging.getLogger(__name__)
 
@@ -195,7 +198,7 @@ def _missing_resources(
         One problem for each unavailable daily archive.
     """
     first, last = requested_days(start, end)
-    available = {resource.day for resource in resources}
+    available = covered_days(resources)
     return [
         Message(
             "resource_unavailable",
@@ -483,7 +486,11 @@ def _resources_in_range(
         Resources whose days overlap the cleaned request.
     """
     first, last = requested_days(start, end)
-    return [resource for resource in resources if first <= resource.day <= last]
+    return [
+        resource
+        for resource in resources
+        if resource.day <= last and resource.last_day >= first
+    ]
 
 
 def _with_contract_size(
@@ -737,6 +744,7 @@ def _discover(
     refresh: bool,
     offline: bool,
     tail_days: int,
+    dataset: DatasetSpec | None = None,
 ) -> list[Resource] | None:
     """Discover one pair's resources while isolating source failures.
 
@@ -758,6 +766,21 @@ def _discover(
         The known resources, or ``None`` after an isolated failure.
     """
     try:
+        if dataset is not None:
+            return plan_archives(
+                source,
+                catalog,
+                client,
+                key,
+                start,
+                end,
+                dataset=dataset,
+                active=active,
+                refresh=refresh,
+                offline=offline,
+                tail_days=tail_days,
+                reporter=reporter,
+            )
         return discover_resources(
             source,
             catalog,
@@ -867,7 +890,7 @@ def _populate_cached_query(
         ``None`` after a successful query, otherwise the isolated exception.
     """
     first_day, last_day = requested_days(*used_range)
-    current_resources = catalog.resources(key, first_day, last_day)
+    current_resources = catalog_archives(catalog, key, first_day, last_day)
     gap_paths = suspect_gap_paths(current_resources, paths, dataset)
     LOGGER.debug(
         "Gap scan planned: key=%s paths=%d suspect=%d",
@@ -875,7 +898,7 @@ def _populate_cached_query(
         len(paths),
         len(gap_paths),
     )
-    return _populate_query(
+    error = _populate_query(
         result,
         catalog,
         paths,
@@ -886,6 +909,27 @@ def _populate_cached_query(
         source_code,
         reporter,
     )
+    monthly = [
+        resource
+        for resource in current_resources
+        if resource.cadence == "monthly" and resource.parquet_path in gap_paths
+    ]
+    if error is None and monthly:
+        try:
+            absent = empty_archive_days(
+                catalog.connection, monthly, dataset, first_day, last_day
+            )
+        except duckdb.Error as failure:
+            return failure
+        result.problems.extend(
+            Message(
+                "resource_unavailable",
+                "Source archive contains no candles for this date.",
+                day,
+            )
+            for day in absent
+        )
+    return error
 
 
 def _query_with_recovery(
@@ -957,6 +1001,18 @@ def _query_with_recovery(
     reporter.warning(
         f"{result.pair}: rebuilding {len(invalid):,} unreadable cached file(s)"
     )
+    # A failed monthly download may have been replaced by daily fallbacks.
+    # Rebuild the resources that were actually queried, not the original plan.
+    queried = [
+        resource
+        for resource in catalog_archives(catalog, key, *requested_days(*used_range))
+        if resource.parquet_path in paths
+    ]
+    if queried:
+        sizes = {r.archive_symbol: r.contract_size for r in resources}
+        resources = [
+            replace(r, contract_size=sizes.get(r.archive_symbol)) for r in queried
+        ]
     recovered = cache_resources(
         source,
         catalog,
@@ -968,6 +1024,7 @@ def _query_with_recovery(
         max_workers=max_workers,
         reporter=reporter,
         executor=ingestion_executor,
+        requested_range=requested_days(*used_range),
     )
     result.warnings.extend(recovered.warnings)
     result.problems.extend(recovered.problems)
@@ -1085,11 +1142,12 @@ def process_pair(
         refresh=refresh,
         offline=offline,
         tail_days=discovery_tail_days,
+        dataset=dataset,
     )
     if resources is None:
         return _finish(result, display, started)
     noun = "file" if len(resources) == 1 else "files"
-    display.info(f"{market.symbol}: found {len(resources):,} daily {noun}")
+    display.info(f"{market.symbol}: found {len(resources):,} {noun}")
     requested_resources = _resources_in_range(resources, *used_range)
     contextual_resources = _with_contract_size(
         requested_resources,
@@ -1114,6 +1172,7 @@ def process_pair(
         max_workers=max_workers,
         reporter=display,
         executor=ingestion_executor,
+        requested_range=requested_days(*used_range),
     )
     result.warnings.extend(coverage.warnings)
     result.problems.extend(coverage.problems)

@@ -245,7 +245,7 @@ class Reporter:
         LOGGER.debug(
             "Rich download progress started: symbol=%s total=%d", symbol, total
         )
-        progress, task = self._start_task(f"{symbol}: downloading daily files", total)
+        progress, task = self._start_task(f"{symbol}: downloading archives", total)
 
         def advance(day: date, succeeded: bool) -> None:
             """Advance the display after one daily-file attempt.
