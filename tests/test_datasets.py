@@ -2,7 +2,8 @@
 
 import pytest
 
-from crypto_downloader._core.datasets import (
+from crypto_downloader._core.datasets import DatasetSpec
+from crypto_downloader.binance.datasets import (
     CM_BOOK_DEPTH,
     CM_INDEX_PRICE_KLINES,
     CM_METRICS,
@@ -19,7 +20,6 @@ from crypto_downloader._core.datasets import (
     UM_KLINES,
     UM_AGG_TRADES,
     UM_TRADES,
-    DatasetSpec,
     get_dataset,
 )
 from crypto_downloader._core.request import Request

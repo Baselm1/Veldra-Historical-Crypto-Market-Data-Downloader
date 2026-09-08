@@ -9,7 +9,8 @@ from typing import cast
 import httpx
 import pytest
 
-from crypto_downloader._core.datasets import DatasetSpec, SPOT_KLINES, get_dataset
+from crypto_downloader._core.datasets import DatasetSpec
+from crypto_downloader.binance.datasets import SPOT_KLINES, get_dataset
 from crypto_downloader._core.models import Market, Resource, ResourceKey
 from crypto_downloader._core.source import Source
 from crypto_downloader.binance.connector import (
@@ -17,7 +18,7 @@ from crypto_downloader.binance.connector import (
     BUCKET_URL,
     EXCHANGE_INFO_URLS,
     TICKER_URLS,
-    BinanceSource,
+    BinanceConnector,
 )
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -101,7 +102,7 @@ def listing(
 
 def test_binance_declares_supported_market_products() -> None:
     """Confirm Binance advertises Spot and perpetual Futures products."""
-    source = BinanceSource(timeout=12.0, retries=2, backoff=0.25)
+    source = BinanceConnector(timeout=12.0, retries=2, backoff=0.25)
 
     assert source.code == "binance"
     assert source.products == ("spot", "um", "cm")
@@ -178,7 +179,7 @@ def test_quote_volumes_normalize_product_specific_tickers(
         return httpx.Response(200, json=payload)
 
     with httpx.Client(transport=httpx.MockTransport(handler)) as client:
-        result = BinanceSource().quote_volumes(client, product)
+        result = BinanceConnector().quote_volumes(client, product)
 
     assert result == expected
 
@@ -209,7 +210,7 @@ def test_quote_volumes_reject_malformed_ticker_snapshots(payload: object) -> Non
 
     with httpx.Client(transport=httpx.MockTransport(handler)) as client:
         with pytest.raises(ValueError, match="ticker"):
-            BinanceSource().quote_volumes(client, "spot")
+            BinanceConnector().quote_volumes(client, "spot")
 
 
 def test_market_discovery_preserves_native_metadata_and_merges_archive_only() -> None:
@@ -230,7 +231,7 @@ def test_market_discovery_preserves_native_metadata_and_merges_archive_only() ->
         return httpx.Response(200, text=fixture_text(filename))
 
     with httpx.Client(transport=httpx.MockTransport(handler)) as client:
-        markets = BinanceSource(timeout=9.0).markets(client, "spot")
+        markets = BinanceConnector(timeout=9.0).markets(client, "spot")
 
     assert markets == [
         Market("BTCUSDT", "BTCUSDT", "BTC", "USDT", "TRADING"),
@@ -348,7 +349,7 @@ def test_perpetual_market_discovery_reads_product_endpoints_and_filters_contract
         )
 
     with httpx.Client(transport=httpx.MockTransport(handler)) as client:
-        markets = BinanceSource().markets(client, product)
+        markets = BinanceConnector().markets(client, product)
 
     assert markets == expected
     assert str(requests[0].url) == EXCHANGE_INFO_URLS[product]
@@ -395,7 +396,7 @@ def test_invalid_perpetual_market_metadata_is_rejected(
         row: The incomplete or invalid exchange-info market object.
     """
     with pytest.raises(ValueError, match="exchangeInfo"):
-        BinanceSource._exchange_markets({"symbols": [row]}, product)
+        BinanceConnector._exchange_markets({"symbols": [row]}, product)
 
 
 @pytest.mark.parametrize(
@@ -434,7 +435,7 @@ def test_invalid_exchange_info_fails_before_archive_listing(payload: object) -> 
 
     with httpx.Client(transport=httpx.MockTransport(handler)) as client:
         with pytest.raises(ValueError, match="exchangeInfo"):
-            BinanceSource().markets(client, "spot")
+            BinanceConnector().markets(client, "spot")
 
     assert calls == 1
 
@@ -448,7 +449,7 @@ def test_invalid_json_exchange_info_fails_before_archive_listing() -> None:
 
     with httpx.Client(transport=httpx.MockTransport(handler)) as client:
         with pytest.raises(ValueError):
-            BinanceSource().markets(client, "spot")
+            BinanceConnector().markets(client, "spot")
 
 
 def test_duplicate_exchange_symbol_is_rejected() -> None:
@@ -463,7 +464,7 @@ def test_duplicate_exchange_symbol_is_rejected() -> None:
 
     with httpx.Client(transport=httpx.MockTransport(handler)) as client:
         with pytest.raises(ValueError, match="duplicate"):
-            BinanceSource().markets(client, "spot")
+            BinanceConnector().markets(client, "spot")
 
 
 def test_non_ascii_exchange_symbols_are_ignored_without_rejecting_snapshot() -> None:
@@ -479,7 +480,7 @@ def test_non_ascii_exchange_symbols_are_ignored_without_rejecting_snapshot() -> 
         }
     )
 
-    markets, _ = BinanceSource._exchange_markets(payload, "spot")
+    markets, _ = BinanceConnector._exchange_markets(payload, "spot")
 
     assert [market.symbol for market in markets.values()] == ["BTCUSDT", "XRPTUSD"]
 
@@ -496,7 +497,7 @@ def test_unsupported_market_product_fails_without_http() -> None:
 
     with httpx.Client(transport=httpx.MockTransport(handler)) as client:
         with pytest.raises(ValueError, match="product"):
-            BinanceSource().markets(client, "options")
+            BinanceConnector().markets(client, "options")
 
     assert calls == 0
 
@@ -525,7 +526,7 @@ def test_malformed_symbol_listing_is_not_treated_as_empty(body: str) -> None:
 
     with httpx.Client(transport=httpx.MockTransport(handler)) as client:
         with pytest.raises(ValueError, match="listing"):
-            BinanceSource().markets(client, "spot")
+            BinanceConnector().markets(client, "spot")
 
 
 def test_truncated_listing_without_new_marker_is_rejected() -> None:
@@ -539,7 +540,7 @@ def test_truncated_listing_without_new_marker_is_rejected() -> None:
 
     with httpx.Client(transport=httpx.MockTransport(handler)) as client:
         with pytest.raises(ValueError, match="marker"):
-            BinanceSource().markets(client, "spot")
+            BinanceConnector().markets(client, "spot")
 
 
 def test_pagination_cycle_is_rejected() -> None:
@@ -563,7 +564,7 @@ def test_pagination_cycle_is_rejected() -> None:
 
     with httpx.Client(transport=httpx.MockTransport(handler)) as client:
         with pytest.raises(ValueError, match="marker"):
-            BinanceSource().markets(client, "spot")
+            BinanceConnector().markets(client, "spot")
 
     assert bucket_calls == 2
 
@@ -587,7 +588,7 @@ def test_first_resource_uses_a_small_forward_listing() -> None:
         )
 
     with httpx.Client(transport=httpx.MockTransport(handler)) as client:
-        resource = BinanceSource().first_resource(
+        resource = BinanceConnector().first_resource(
             client, KEY, date(2020, 1, 1), date(2025, 1, 1)
         )
 
@@ -617,7 +618,9 @@ def test_first_resource_can_start_at_the_beginning_of_a_source_folder() -> None:
         )
 
     with httpx.Client(transport=httpx.MockTransport(handler)) as client:
-        resource = BinanceSource().first_resource(client, KEY, None, date(2025, 1, 1))
+        resource = BinanceConnector().first_resource(
+            client, KEY, None, date(2025, 1, 1)
+        )
 
     assert resource is not None
     assert resource.day == date(2017, 8, 17)
@@ -648,10 +651,10 @@ def test_archive_layout_uses_dataset_rules_and_an_optional_archive_symbol() -> N
     )
     raw_key = ResourceKey("binance", "spot", "trades", "BTCUSDT", None)
 
-    interval_prefix, interval_stem, interval_symbol = BinanceSource._archive_layout(
+    interval_prefix, interval_stem, interval_symbol = BinanceConnector._archive_layout(
         alternate_key, SPOT_KLINES
     )
-    raw_prefix, raw_stem, raw_symbol = BinanceSource._archive_layout(
+    raw_prefix, raw_stem, raw_symbol = BinanceConnector._archive_layout(
         raw_key, raw_trades
     )
 
@@ -675,7 +678,7 @@ def test_resource_discovery_records_dataset_metadata_and_archive_symbol() -> Non
         )
 
     with httpx.Client(transport=httpx.MockTransport(handler)) as client:
-        resources = BinanceSource().resources(
+        resources = BinanceConnector().resources(
             client, KEY, date(2025, 1, 1), date(2025, 1, 1)
         )
 
@@ -718,7 +721,7 @@ def test_resource_listing_size_is_bounded_by_the_requested_range(
         return httpx.Response(200, text=listing())
 
     with httpx.Client(transport=httpx.MockTransport(handler)) as client:
-        BinanceSource().resources(client, KEY, date(2025, 1, 1), end_day)
+        BinanceConnector().resources(client, KEY, date(2025, 1, 1), end_day)
 
     assert len(requests) == 1
     assert requests[0].url.params["max-keys"] == expected_max_keys
@@ -757,7 +760,7 @@ def test_daily_event_resource_discovery_uses_raw_dataset_layout(
         return httpx.Response(200, text=listing(keys=(f"{prefix}{filename}",)))
 
     with httpx.Client(transport=httpx.MockTransport(handler)) as client:
-        resources = BinanceSource().resources(
+        resources = BinanceConnector().resources(
             client, key, date(2025, 1, 1), date(2025, 1, 1)
         )
 
@@ -794,7 +797,7 @@ def test_metrics_resource_discovery_uses_the_futures_raw_layout(
         return httpx.Response(200, text=listing(keys=(f"{prefix}{filename}",)))
 
     with httpx.Client(transport=httpx.MockTransport(handler)) as client:
-        resources = BinanceSource().resources(
+        resources = BinanceConnector().resources(
             client, key, date(2024, 1, 1), date(2024, 1, 1)
         )
 
@@ -830,7 +833,7 @@ def test_book_depth_resource_discovery_uses_the_futures_raw_layout(
         return httpx.Response(200, text=listing(keys=(f"{prefix}{filename}",)))
 
     with httpx.Client(transport=httpx.MockTransport(handler)) as client:
-        resources = BinanceSource().resources(
+        resources = BinanceConnector().resources(
             client, key, date(2024, 1, 1), date(2024, 1, 1)
         )
 
@@ -866,7 +869,7 @@ def test_mark_price_resource_discovery_uses_the_futures_interval_layout(
         return httpx.Response(200, text=listing(keys=(f"{prefix}{filename}",)))
 
     with httpx.Client(transport=httpx.MockTransport(handler)) as client:
-        resources = BinanceSource().resources(
+        resources = BinanceConnector().resources(
             client, key, date(2024, 1, 1), date(2024, 1, 1)
         )
 
@@ -909,7 +912,7 @@ def test_index_price_resource_discovery_uses_the_declared_archive_symbol(
         return httpx.Response(200, text=listing(keys=(f"{prefix}{filename}",)))
 
     with httpx.Client(transport=httpx.MockTransport(handler)) as client:
-        resources = BinanceSource().resources(
+        resources = BinanceConnector().resources(
             client, key, date(2024, 1, 1), date(2024, 1, 1)
         )
 
@@ -925,7 +928,7 @@ def test_first_resource_returns_none_when_no_archive_follows_boundary() -> None:
         return httpx.Response(200, text=listing())
 
     with httpx.Client(transport=httpx.MockTransport(handler)) as client:
-        resource = BinanceSource().first_resource(
+        resource = BinanceConnector().first_resource(
             client, KEY, date(2020, 1, 1), date(2025, 1, 1)
         )
 
@@ -947,7 +950,7 @@ def test_daily_resource_discovery_paginates_filters_and_stops_after_end() -> Non
         return httpx.Response(200, text=fixture_text(filename))
 
     with httpx.Client(transport=httpx.MockTransport(handler)) as client:
-        resources = BinanceSource().resources(
+        resources = BinanceConnector().resources(
             client, KEY, date(2025, 1, 1), date(2025, 1, 2)
         )
 
@@ -999,7 +1002,7 @@ def test_daily_resource_discovery_preserves_missing_days_across_pages() -> None:
         )
 
     with httpx.Client(transport=httpx.MockTransport(handler)) as client:
-        resources = BinanceSource().resources(
+        resources = BinanceConnector().resources(
             client, KEY, date(2025, 1, 1), date(2025, 1, 3)
         )
 
@@ -1020,7 +1023,9 @@ def test_daily_listing_without_files_returns_empty_result() -> None:
 
     with httpx.Client(transport=httpx.MockTransport(handler)) as client:
         assert (
-            BinanceSource().resources(client, KEY, date(2025, 1, 1), date(2025, 1, 2))
+            BinanceConnector().resources(
+                client, KEY, date(2025, 1, 1), date(2025, 1, 2)
+            )
             == []
         )
 
@@ -1039,7 +1044,7 @@ def test_daily_listing_ignores_prior_and_impossible_dates() -> None:
         return httpx.Response(200, text=listing(keys=keys))
 
     with httpx.Client(transport=httpx.MockTransport(handler)) as client:
-        resources = BinanceSource().resources(
+        resources = BinanceConnector().resources(
             client, KEY, date(2025, 1, 2), date(2025, 1, 2)
         )
 
@@ -1121,7 +1126,7 @@ def test_invalid_resource_request_fails_without_http(
 
     with httpx.Client(transport=httpx.MockTransport(handler)) as client:
         with pytest.raises(ValueError, match=message):
-            BinanceSource().resources(client, key, start_day, end_day)
+            BinanceConnector().resources(client, key, start_day, end_day)
 
     assert calls == 0
 
@@ -1140,7 +1145,9 @@ def test_malformed_daily_listing_is_not_treated_as_no_files(body: str) -> None:
 
     with httpx.Client(transport=httpx.MockTransport(handler)) as client:
         with pytest.raises(ValueError, match="listing"):
-            BinanceSource().resources(client, KEY, date(2025, 1, 1), date(2025, 1, 2))
+            BinanceConnector().resources(
+                client, KEY, date(2025, 1, 1), date(2025, 1, 2)
+            )
 
 
 def test_binance_metadata_uses_shared_http_retries() -> None:
@@ -1158,7 +1165,7 @@ def test_binance_metadata_uses_shared_http_retries() -> None:
         return httpx.Response(200, text=listing())
 
     with httpx.Client(transport=httpx.MockTransport(handler)) as client:
-        markets = BinanceSource(retries=1, backoff=0).markets(client, "spot")
+        markets = BinanceConnector(retries=1, backoff=0).markets(client, "spot")
 
     assert len(markets) == 2
     assert calls == 3

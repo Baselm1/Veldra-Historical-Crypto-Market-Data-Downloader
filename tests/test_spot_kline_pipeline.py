@@ -1,5 +1,8 @@
 """Test the first imported Binance Spot kline workflow."""
 
+from crypto_downloader.binance.datasets import get_dataset
+
+
 from dataclasses import replace
 from datetime import UTC, date, datetime
 import hashlib
@@ -19,11 +22,11 @@ import crypto_downloader._core.engine as downloader_module
 import crypto_downloader._core.pair as pair_module
 from crypto_downloader._core.cache import parquet_path, valid_cached_path
 from crypto_downloader._core.catalog import open_catalog
-from crypto_downloader._core.datasets import SPOT_KLINES
+from crypto_downloader.binance.datasets import SPOT_KLINES
 from crypto_downloader._core.discovery import _validate_resources, requested_days
 from crypto_downloader._core.engine import Downloader
 from crypto_downloader._core.models import Resource, ResourceKey, Result
-from crypto_downloader.binance.connector import BinanceSource
+from crypto_downloader.binance.connector import BinanceConnector
 
 FIXTURES = Path(__file__).parent / "fixtures"
 DAY = date(2024, 1, 1)
@@ -147,8 +150,9 @@ def downloader(tmp_path: Path, server: BinanceServer) -> Downloader:
     """
     return Downloader(
         tmp_path,
-        source=BinanceSource(retries=0),
+        source=BinanceConnector(retries=0),
         transport=httpx.MockTransport(server),
+        dataset_resolver=get_dataset,
     )
 
 
@@ -438,8 +442,9 @@ def test_malformed_discovery_returns_a_pair_error(tmp_path: Path) -> None:
 
     service = Downloader(
         tmp_path,
-        source=BinanceSource(retries=0),
+        source=BinanceConnector(retries=0),
         transport=httpx.MockTransport(malformed),
+        dataset_resolver=get_dataset,
     )
     result = service.get_results("BTCUSDT", "2024-01-01", "2024-01-01")
 
@@ -610,7 +615,7 @@ def test_source_product_mismatch_is_rejected_before_network_access(
 ) -> None:
     """Confirm dataset support and source support must agree."""
     server = BinanceServer()
-    source = BinanceSource(retries=0)
+    source = BinanceConnector(retries=0)
     monkeypatch.setattr(source, "products", ("um",))
 
     with pytest.raises(ValueError, match="unsupported product"):
@@ -618,6 +623,7 @@ def test_source_product_mismatch_is_rejected_before_network_access(
             tmp_path,
             source=source,
             transport=httpx.MockTransport(server),
+            dataset_resolver=get_dataset,
         ).get_results("BTCUSDT", "2024-01-01", "2024-01-01")
 
     assert server.resource_requests == 0
@@ -625,9 +631,11 @@ def test_source_product_mismatch_is_rejected_before_network_access(
 
 def test_downloader_defaults_to_the_binance_source(tmp_path: Path) -> None:
     """Confirm callers do not need to construct the default strategy."""
-    service = Downloader(tmp_path)
+    service = Downloader(
+        tmp_path, dataset_resolver=get_dataset, source=BinanceConnector()
+    )
 
-    assert isinstance(service.source, BinanceSource)
+    assert isinstance(service.source, BinanceConnector)
     assert service.earliest_date == date(2020, 1, 1)
     assert service.max_workers == 32
 
@@ -642,7 +650,9 @@ def test_downloader_construction_does_not_create_its_data_directory(
     """
     data_dir = tmp_path / "not-created"
 
-    service = Downloader(data_dir)
+    service = Downloader(
+        data_dir, dataset_resolver=get_dataset, source=BinanceConnector()
+    )
 
     assert service.data_dir == data_dir.resolve()
     assert not data_dir.exists()
@@ -670,7 +680,7 @@ def test_downloader_rejects_invalid_durability_settings(
         value: The proposed invalid value.
     """
     with pytest.raises((TypeError, ValueError), match=setting):
-        Downloader(tmp_path, **{setting: value})  # type: ignore[arg-type]
+        Downloader(tmp_path, **{setting: value}, dataset_resolver=get_dataset, source=BinanceConnector())  # type: ignore[arg-type]
 
 
 @pytest.mark.parametrize(("option", "value"), [("refresh", 1), ("offline", "yes")])
@@ -871,4 +881,4 @@ def test_downloader_rejects_invalid_data_directories(data_dir: object) -> None:
         data_dir: The invalid local storage value.
     """
     with pytest.raises((TypeError, ValueError), match="data_dir"):
-        Downloader(data_dir)  # type: ignore[arg-type]
+        Downloader(data_dir, dataset_resolver=get_dataset, source=BinanceConnector())  # type: ignore[arg-type]

@@ -1,5 +1,8 @@
 """Test pair resolution and independent availability cleanup."""
 
+from crypto_downloader.binance.datasets import get_dataset
+
+
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import replace
@@ -13,7 +16,8 @@ import pandas as pd
 import pytest
 
 import crypto_downloader._core.engine as downloader_module
-from crypto_downloader._core.datasets import DatasetSpec, SPOT_KLINES
+from crypto_downloader._core.datasets import DatasetSpec
+from crypto_downloader.binance.datasets import SPOT_KLINES
 from crypto_downloader._core.engine import Downloader
 from crypto_downloader._core.catalog import Catalog, open_catalog
 from crypto_downloader._core.models import (
@@ -273,7 +277,12 @@ def service(tmp_path: Path, source: RangeSource) -> Downloader:
     Returns:
         A downloader with the 2020 history boundary.
     """
-    return Downloader(tmp_path, source=source, earliest_date=date(2020, 1, 1))
+    return Downloader(
+        tmp_path,
+        source=source,
+        earliest_date=date(2020, 1, 1),
+        dataset_resolver=get_dataset,
+    )
 
 
 def one_result(value: Result | list[Result]) -> Result:
@@ -512,9 +521,12 @@ base_interval = "1m"
     source = RangeSource([market("BTCUSDT")], {"BTCUSDT": [date(2017, 8, 17)]})
 
     result = one_result(
-        Downloader(tmp_path / "data", source=source, config_path=config).get_results(
-            "BTCUSDT", "2017-08-17", "2017-08-17"
-        )
+        Downloader(
+            tmp_path / "data",
+            source=source,
+            config_path=config,
+            dataset_resolver=get_dataset,
+        ).get_results("BTCUSDT", "2017-08-17", "2017-08-17")
     )
 
     assert result.available_range == (
@@ -823,17 +835,13 @@ def test_dataset_ingestion_limit_is_shared_by_every_pair(
         {symbol: [date(2024, 1, 1)] for symbol in symbols},
     )
     specification = replace(SPOT_KLINES, max_concurrency=2)
-    monkeypatch.setattr(
-        downloader_module,
-        "get_dataset",
-        lambda *_args, **_kwargs: specification,
-    )
 
     results = Downloader(
         tmp_path,
         source=source,
         earliest_date=date(2020, 1, 1),
         max_workers=8,
+        dataset_resolver=lambda *_args, **_kwargs: specification,
     ).get_results(symbols, "2024-01-01", "2024-01-01", progress=False)
 
     assert isinstance(results, list)
@@ -862,6 +870,7 @@ def test_shared_ingestion_executor_isolates_failures_and_preserves_order(
         source=source,
         earliest_date=date(2020, 1, 1),
         max_workers=3,
+        dataset_resolver=get_dataset,
     ).get_results(symbols, "2024-01-01", "2024-01-01", progress=False)
 
     assert isinstance(results, list)
@@ -909,6 +918,7 @@ def test_pair_catalog_connections_are_bounded_by_active_workers(
         source=source,
         earliest_date=date(2020, 1, 1),
         max_workers=3,
+        dataset_resolver=get_dataset,
     ).get_results(symbols, "2024-01-01", "2024-01-01", progress=False)
 
     assert isinstance(results, list)
@@ -980,4 +990,12 @@ def test_invalid_earliest_history_boundary_is_rejected(
         earliest: The invalid proposed history boundary.
     """
     with pytest.raises((TypeError, ValueError), match="earliest_date"):
-        Downloader(tmp_path, earliest_date=earliest)
+        Downloader(
+            tmp_path,
+            earliest_date=earliest,
+            dataset_resolver=get_dataset,
+            source=BinanceConnector(),
+        )
+
+
+from crypto_downloader.binance.connector import BinanceConnector

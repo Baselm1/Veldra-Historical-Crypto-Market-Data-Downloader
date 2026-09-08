@@ -1,5 +1,8 @@
 """Test detection and handling of missing Spot kline candles."""
 
+from crypto_downloader.binance.datasets import get_dataset
+
+
 from collections.abc import Iterator
 from dataclasses import replace
 from datetime import UTC, date, datetime
@@ -10,7 +13,8 @@ import httpx
 import pandas as pd
 import pytest
 
-from crypto_downloader._core.datasets import DatasetSpec, SPOT_KLINES
+from crypto_downloader._core.datasets import DatasetSpec
+from crypto_downloader.binance.datasets import SPOT_KLINES
 from crypto_downloader._core.engine import Downloader
 from crypto_downloader._core.models import (
     IngestedResource,
@@ -493,7 +497,9 @@ def test_pipeline_reports_filled_gaps_and_remains_incomplete(tmp_path: Path) -> 
     Args:
         tmp_path: The isolated downloader directory.
     """
-    result = Downloader(tmp_path, source=GapSource()).get_results(
+    result = Downloader(
+        tmp_path, source=GapSource(), dataset_resolver=get_dataset
+    ).get_results(
         "BTCUSDT",
         START,
         END,
@@ -523,9 +529,9 @@ def test_raise_policy_raises_the_structured_missing_candles_error(
         tmp_path: The isolated downloader directory.
     """
     with pytest.raises(MissingCandlesError) as caught:
-        Downloader(tmp_path, source=GapSource()).get_results(
-            "BTCUSDT", START, END, gap_policy="raise"
-        )
+        Downloader(
+            tmp_path, source=GapSource(), dataset_resolver=get_dataset
+        ).get_results("BTCUSDT", START, END, gap_policy="raise")
 
     assert caught.value.pair == "BTCUSDT"
     assert caught.value.gaps[0].count == 2

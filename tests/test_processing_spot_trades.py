@@ -7,7 +7,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from crypto_downloader._core.datasets import SPOT_AGG_TRADES, SPOT_TRADES, DatasetSpec
+from crypto_downloader._core.datasets import DatasetSpec
+from crypto_downloader.binance.datasets import SPOT_AGG_TRADES, SPOT_TRADES
 from crypto_downloader._core.processing import (
     DataValidationError,
     normalize_chunk,

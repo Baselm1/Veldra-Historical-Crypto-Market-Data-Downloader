@@ -11,7 +11,7 @@ import pytest
 from crypto_downloader import Availability, Binance, Market
 from crypto_downloader._core.catalog import open_catalog
 from crypto_downloader._core.models import IngestedResource, Resource, ResourceKey
-from crypto_downloader.binance.connector import BinanceSource
+from crypto_downloader.binance.connector import BinanceConnector
 
 DAY_1 = date(2024, 1, 1)
 DAY_2 = date(2024, 1, 2)
@@ -62,7 +62,7 @@ def market(
     )
 
 
-def source_for(service: Binance) -> BinanceSource:
+def source_for(service: Binance) -> BinanceConnector:
     """Return the facade's concrete Binance source.
 
     Args:
@@ -71,7 +71,7 @@ def source_for(service: Binance) -> BinanceSource:
     Returns:
         The concrete Binance source strategy.
     """
-    return cast(BinanceSource, service._downloader.source)
+    return cast(BinanceConnector, service._downloader.source)
 
 
 def resource(day: date) -> Resource:

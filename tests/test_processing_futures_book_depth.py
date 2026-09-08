@@ -6,7 +6,8 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from crypto_downloader._core.datasets import CM_BOOK_DEPTH, UM_BOOK_DEPTH, DatasetSpec
+from crypto_downloader._core.datasets import DatasetSpec
+from crypto_downloader.binance.datasets import CM_BOOK_DEPTH, UM_BOOK_DEPTH
 from crypto_downloader._core.processing import (
     DataValidationError,
     normalize_chunk,

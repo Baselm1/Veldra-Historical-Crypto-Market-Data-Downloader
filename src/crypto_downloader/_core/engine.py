@@ -16,13 +16,12 @@ import pandas as pd
 
 from crypto_downloader._core.catalog import Catalog, catalog_lock, open_catalog
 from crypto_downloader._core.config import Settings, load_settings
-from crypto_downloader._core.datasets import DatasetSpec, get_dataset
+from crypto_downloader._core.datasets import DatasetSpec, DatasetResolver
 from crypto_downloader._core.reporting import Reporter
 from crypto_downloader._core.models import Market, Result
 from crypto_downloader._core.pair import process_pair
 from crypto_downloader._core.request import Request, normalize_pair, parse_timestamp
 from crypto_downloader._core.source import Source
-from crypto_downloader.binance.connector import BinanceSource
 
 LOGGER = logging.getLogger(__name__)
 
@@ -396,7 +395,8 @@ class Downloader:
         self,
         data_dir: str | Path = "data",
         *,
-        source: Source | None = None,
+        source: Source,
+        dataset_resolver: DatasetResolver,
         transport: httpx.BaseTransport | None = None,
         config_path: str | Path | None = None,
         earliest_date: object = None,
@@ -408,7 +408,8 @@ class Downloader:
 
         Args:
             data_dir: The directory containing the catalog and Parquet cache.
-            source: The optional source strategy, defaulting to Binance.
+            source: The exchange connector.
+            dataset_resolver: The exchange-owned dataset lookup.
             transport: An optional HTTPX transport used for requests.
             config_path: An optional TOML file overriding installed defaults.
             earliest_date: An optional override for the configured history boundary.
@@ -421,7 +422,8 @@ class Downloader:
         if not str(data_dir).strip():
             raise ValueError("data_dir must not be empty")
         self.data_dir = Path(data_dir).expanduser().resolve()
-        self.source: Source = source if source is not None else BinanceSource()
+        self.source = source
+        self.dataset_resolver = dataset_resolver
         self.transport = transport
         self.settings: Settings = load_settings(config_path)
         configured_date = self.settings.earliest_date
@@ -482,7 +484,7 @@ class Downloader:
             desired_columns=desired_columns,
             gap_policy=gap_policy,
         )
-        specification = get_dataset(
+        specification = self.dataset_resolver(
             request.product,
             request.dataset,
             kline_base_interval=self.kline_base_interval,

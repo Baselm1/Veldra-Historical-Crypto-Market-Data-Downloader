@@ -9,7 +9,7 @@ from typing import Protocol, cast
 import httpx
 
 from crypto_downloader._core.catalog import Catalog, catalog_lock, open_catalog
-from crypto_downloader._core.datasets import DatasetSpec, get_dataset
+from crypto_downloader._core.datasets import DatasetSpec
 from crypto_downloader._core.discovery import (
     _merge_ranges,
     discover_resources,
@@ -568,7 +568,7 @@ def _dataset(
     """
     selected_product = _product(downloader, product)
     selected_dataset = parse_identifier(dataset, name="dataset")
-    specification = get_dataset(
+    specification = downloader.dataset_resolver(
         selected_product,
         selected_dataset,
         kline_base_interval=downloader.kline_base_interval,

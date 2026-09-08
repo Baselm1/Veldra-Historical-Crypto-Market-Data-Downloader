@@ -6,7 +6,8 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from crypto_downloader._core.datasets import CM_METRICS, UM_METRICS, DatasetSpec
+from crypto_downloader._core.datasets import DatasetSpec
+from crypto_downloader.binance.datasets import CM_METRICS, UM_METRICS
 from crypto_downloader._core.processing import (
     DataValidationError,
     normalize_chunk,

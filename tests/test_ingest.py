@@ -11,7 +11,8 @@ import httpx
 import pandas as pd
 import pytest
 
-from crypto_downloader._core.datasets import (
+from crypto_downloader._core.datasets import DatasetSpec
+from crypto_downloader.binance.datasets import (
     CM_BOOK_DEPTH,
     CM_INDEX_PRICE_KLINES,
     CM_MARK_PRICE_KLINES,
@@ -27,13 +28,12 @@ from crypto_downloader._core.datasets import (
     SPOT_KLINES,
     SPOT_TRADES,
     UM_TRADES,
-    DatasetSpec,
 )
 from crypto_downloader._core.download import ChecksumError
 from crypto_downloader._core.ingest import ArchiveError, _member, ingest_archive
 from crypto_downloader._core.models import Resource
 from crypto_downloader._core.processing import DataValidationError
-from crypto_downloader.binance.connector import BinanceSource
+from crypto_downloader.binance.connector import BinanceConnector
 
 FIXTURES = Path(__file__).parent / "fixtures"
 DAY = date(2024, 1, 1)
@@ -671,7 +671,7 @@ def test_binance_ingest_uses_source_http_settings(tmp_path: Path) -> None:
         return httpx.Response(200, content=payload)
 
     with httpx.Client(transport=httpx.MockTransport(handler)) as client:
-        result = BinanceSource(timeout=7.0, retries=0).ingest(
+        result = BinanceConnector(timeout=7.0, retries=0).ingest(
             client, RESOURCE, SPOT_KLINES, tmp_path / "out.parquet"
         )
 

@@ -45,7 +45,7 @@ def test_package_root_hides_internal_services_and_helpers() -> None:
     package = import_module("crypto_downloader")
 
     assert not hasattr(package, "Downloader")
-    assert not hasattr(package, "BinanceSource")
+    assert not hasattr(package, "BinanceConnector")
     assert not hasattr(package, "get_data")
     assert not hasattr(package, "get_results")
     assert not hasattr(package, "aget_data")

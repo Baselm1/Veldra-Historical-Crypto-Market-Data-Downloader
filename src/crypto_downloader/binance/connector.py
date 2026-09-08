@@ -7,12 +7,13 @@ import math
 from pathlib import Path
 import re
 from urllib.parse import quote
-import xml.etree.ElementTree as ElementTree
+from crypto_downloader._core.portal import pages
 
 import httpx
 
 from crypto_downloader._core.download import archive_checksum, get
-from crypto_downloader._core.datasets import DatasetSpec, get_dataset
+from crypto_downloader._core.datasets import DatasetSpec
+from crypto_downloader.binance.datasets import get_dataset
 from crypto_downloader._core.ingest import ingest_archive
 from crypto_downloader._core.models import (
     IngestedResource,
@@ -62,7 +63,7 @@ def _resource_page_size(start_day: date, end_day: date) -> int:
     )
 
 
-class BinanceSource:
+class BinanceConnector:
     """Discover metadata from Binance and its public archive bucket."""
 
     code: str = "binance"
@@ -205,15 +206,17 @@ class BinanceSource:
         """
         if not isinstance(value, dict):
             raise ValueError("ticker contains an invalid market")
-        symbol = BinanceSource._exchange_symbol(value)
+        symbol = BinanceConnector._exchange_symbol(value)
         if symbol is None:
             return None
         try:
             if product == "cm":
-                volume = float(BinanceSource._required_text(value, "baseVolume"))
-                volume *= float(BinanceSource._required_text(value, "weightedAvgPrice"))
+                volume = float(BinanceConnector._required_text(value, "baseVolume"))
+                volume *= float(
+                    BinanceConnector._required_text(value, "weightedAvgPrice")
+                )
             else:
-                volume = float(BinanceSource._required_text(value, "quoteVolume"))
+                volume = float(BinanceConnector._required_text(value, "quoteVolume"))
         except ValueError as error:
             raise ValueError("ticker contains an invalid market") from error
         if not math.isfinite(volume) or volume < 0:
@@ -350,11 +353,11 @@ class BinanceSource:
         Returns:
             Included markets and deliberately excluded native symbols.
         """
-        BinanceSource._exchange_url(product)
+        BinanceConnector._exchange_url(product)
         markets: dict[str, Market] = {}
         excluded: set[str] = set()
-        for value in BinanceSource._exchange_rows(payload):
-            parsed = BinanceSource._parsed_exchange_market(value, product)
+        for value in BinanceConnector._exchange_rows(payload):
+            parsed = BinanceConnector._parsed_exchange_market(value, product)
             if parsed is None:
                 continue
             symbol, market = parsed
@@ -397,15 +400,15 @@ class BinanceSource:
         """
         if not isinstance(value, dict):
             raise ValueError("exchangeInfo contains an invalid market")
-        symbol = BinanceSource._exchange_symbol(value)
+        symbol = BinanceConnector._exchange_symbol(value)
         if symbol is None:
             return None
         if (
             product != "spot"
-            and BinanceSource._required_text(value, "contractType") != "PERPETUAL"
+            and BinanceConnector._required_text(value, "contractType") != "PERPETUAL"
         ):
             return symbol, None
-        return symbol, BinanceSource._exchange_market(value, product, symbol)
+        return symbol, BinanceConnector._exchange_market(value, product, symbol)
 
     @staticmethod
     def _exchange_url(product: str) -> str:
@@ -446,7 +449,7 @@ class BinanceSource:
         """
         if not isinstance(value, dict):
             raise ValueError("exchangeInfo contains an invalid market")
-        symbol = BinanceSource._required_text(value, "symbol")
+        symbol = BinanceConnector._required_text(value, "symbol")
         if re.fullmatch(r"[A-Za-z0-9_]+", symbol) is None:
             if not symbol.isascii():
                 LOGGER.debug(
@@ -474,23 +477,23 @@ class BinanceSource:
             return Market(
                 symbol=symbol,
                 normalized_symbol=normalize_pair(symbol),
-                base_asset=BinanceSource._required_text(value, "baseAsset"),
-                quote_asset=BinanceSource._required_text(value, "quoteAsset"),
-                status=BinanceSource._required_text(value, "status"),
+                base_asset=BinanceConnector._required_text(value, "baseAsset"),
+                quote_asset=BinanceConnector._required_text(value, "quoteAsset"),
+                status=BinanceConnector._required_text(value, "status"),
             )
 
         status_field = "contractStatus" if product == "cm" else "status"
         return Market(
             symbol=symbol,
             normalized_symbol=normalize_pair(symbol),
-            base_asset=BinanceSource._required_text(value, "baseAsset"),
-            quote_asset=BinanceSource._required_text(value, "quoteAsset"),
-            status=BinanceSource._required_text(value, status_field),
-            pair=BinanceSource._required_text(value, "pair"),
+            base_asset=BinanceConnector._required_text(value, "baseAsset"),
+            quote_asset=BinanceConnector._required_text(value, "quoteAsset"),
+            status=BinanceConnector._required_text(value, status_field),
+            pair=BinanceConnector._required_text(value, "pair"),
             contract_type="PERPETUAL",
-            contract_size=BinanceSource._contract_size(value, product),
-            onboard_time=BinanceSource._source_time(value.get("onboardDate")),
-            delivery_time=BinanceSource._delivery_time(value.get("deliveryDate")),
+            contract_size=BinanceConnector._contract_size(value, product),
+            onboard_time=BinanceConnector._source_time(value.get("onboardDate")),
+            delivery_time=BinanceConnector._delivery_time(value.get("deliveryDate")),
         )
 
     @staticmethod
@@ -541,7 +544,7 @@ class BinanceSource:
         Returns:
             A real delivery timestamp, or ``None`` for the perpetual placeholder.
         """
-        timestamp = BinanceSource._source_time(value)
+        timestamp = BinanceConnector._source_time(value)
         return None if timestamp.year >= 2100 else timestamp
 
     @staticmethod
@@ -613,7 +616,7 @@ class BinanceSource:
             if (
                 symbol in current
                 or symbol in excluded
-                or not BinanceSource._is_archive_perpetual(symbol, product)
+                or not BinanceConnector._is_archive_perpetual(symbol, product)
             ):
                 continue
             current[symbol] = Market(
@@ -716,7 +719,7 @@ class BinanceSource:
             The archive folder prefix, file stem, and effective archive symbol.
         """
         archive_symbol = key.archive_symbol or key.symbol
-        root = BinanceSource._dataset_root(key.product, dataset)
+        root = BinanceConnector._dataset_root(key.product, dataset)
         if dataset.needs_interval:
             assert key.interval is not None
             prefix = f"{root}{archive_symbol}/{key.interval}/"
@@ -735,91 +738,29 @@ class BinanceSource:
         marker: str | None = None,
         max_keys: int | None = None,
     ) -> Iterator[tuple[list[str], list[str]]]:
-        """Yield every valid page from one bucket listing.
+        """List object keys and folders for a Binance archive prefix.
 
         Args:
-            client: The HTTPX client used for bucket listings.
-            prefix: The object prefix to list.
-            delimiter: The optional folder delimiter.
-            marker: The optional key after which listing should begin.
-            max_keys: The optional maximum objects returned per page.
+            client: The shared HTTP client.
+            prefix: The requested object prefix.
+            delimiter: Optional folder separator.
+            marker: Exclusive object key after which to begin.
+            max_keys: Maximum entries per page.
 
         Yields:
-            Object keys and common folder prefixes from each page.
+            Keys and common prefixes from each page.
         """
-        seen = {marker} if marker is not None else set()
-        while True:
-            params = {"prefix": prefix}
-            if delimiter is not None:
-                params["delimiter"] = delimiter
-            if marker is not None:
-                params["marker"] = marker
-            if max_keys is not None:
-                params["max-keys"] = str(max_keys)
-            root = self._listing_root(self._get(client, BUCKET_URL, params).content)
-            keys, prefixes, truncated, next_marker = self._listing_values(root)
-            LOGGER.debug(
-                "Binance listing page: prefix=%s marker=%s keys=%d prefixes=%d "
-                "truncated=%s next_marker=%s",
-                prefix,
-                marker,
-                len(keys),
-                len(prefixes),
-                truncated,
-                next_marker,
-            )
-            yield keys, prefixes
-            if not truncated:
-                return
-            marker = next_marker or max([*keys, *prefixes], default=None)
-            if marker is None or marker in seen:
-                raise ValueError("archive listing is truncated without a new marker")
-            seen.add(marker)
-
-    @staticmethod
-    def _listing_root(content: bytes) -> ElementTree.Element:
-        """Parse and validate the root of one bucket response.
-
-        Args:
-            content: The raw XML response bytes.
-
-        Returns:
-            The validated XML root element.
-        """
-        try:
-            root = ElementTree.fromstring(content)
-        except ElementTree.ParseError as error:
-            raise ValueError("archive listing is not valid XML") from error
-        if root.tag.rsplit("}", 1)[-1] != "ListBucketResult":
-            raise ValueError("archive listing is not a bucket response")
-        return root
-
-    @staticmethod
-    def _listing_values(
-        root: ElementTree.Element,
-    ) -> tuple[list[str], list[str], bool, str | None]:
-        """Read keys, folders, and pagination state from a bucket page.
-
-        Args:
-            root: The validated bucket XML element.
-
-        Returns:
-            Keys, folder prefixes, truncation state, and optional next marker.
-        """
-        truncated = root.findtext("{*}IsTruncated")
-        if truncated not in {"true", "false"}:
-            raise ValueError("archive listing has no valid pagination status")
-        keys = [
-            element.text
-            for element in root.findall("{*}Contents/{*}Key")
-            if element.text is not None
-        ]
-        prefixes = [
-            element.text
-            for element in root.findall("{*}CommonPrefixes/{*}Prefix")
-            if element.text is not None
-        ]
-        return keys, prefixes, truncated == "true", root.findtext("{*}NextMarker")
+        yield from pages(
+            client,
+            prefix,
+            listing_url=BUCKET_URL,
+            delimiter=delimiter,
+            marker=marker,
+            max_keys=max_keys,
+            timeout=self.timeout,
+            retries=self.retries,
+            backoff=self.backoff,
+        )
 
     def _check_product(self, product: str) -> None:
         """Reject a product not implemented by this Binance source.

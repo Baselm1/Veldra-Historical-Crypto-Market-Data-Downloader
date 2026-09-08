@@ -10,7 +10,7 @@ import pytest
 
 from crypto_downloader.binance.facade import Binance
 from crypto_downloader._core.engine import Downloader
-from crypto_downloader.binance.connector import BinanceSource
+from crypto_downloader.binance.connector import BinanceConnector
 
 
 def facade(
@@ -71,7 +71,7 @@ def test_facade_construction_wires_validated_settings_without_io(
     assert service.kline_base_interval == "1m"
     assert service.max_workers == 12
     assert isinstance(service._downloader, Downloader)
-    assert isinstance(service._downloader.source, BinanceSource)
+    assert isinstance(service._downloader.source, BinanceConnector)
     assert service._downloader.source.timeout == 8
     assert service._downloader.source.retries == 1
     assert service._downloader.source.backoff == 0.25

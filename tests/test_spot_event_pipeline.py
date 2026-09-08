@@ -1,5 +1,8 @@
 """Test end-to-end Binance Spot trade-family downloads."""
 
+from crypto_downloader.binance.datasets import get_dataset
+
+
 from datetime import date
 import hashlib
 from io import BytesIO
@@ -10,9 +13,10 @@ import httpx
 import pandas as pd
 import pytest
 
-from crypto_downloader._core.datasets import SPOT_AGG_TRADES, SPOT_TRADES, DatasetSpec
+from crypto_downloader._core.datasets import DatasetSpec
+from crypto_downloader.binance.datasets import SPOT_AGG_TRADES, SPOT_TRADES
 from crypto_downloader._core.engine import Downloader
-from crypto_downloader.binance.connector import BinanceSource
+from crypto_downloader.binance.connector import BinanceConnector
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -142,8 +146,9 @@ def test_spot_event_pipeline_downloads_queries_and_reuses_cached_parquet(
     server = EventServer(dataset, fixture, day)
     downloader = Downloader(
         tmp_path,
-        source=BinanceSource(retries=0),
+        source=BinanceConnector(retries=0),
         transport=httpx.MockTransport(server),
+        dataset_resolver=get_dataset,
     )
 
     first = downloader.get_results(
