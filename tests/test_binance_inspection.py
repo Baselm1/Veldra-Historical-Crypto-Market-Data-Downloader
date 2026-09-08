@@ -240,6 +240,49 @@ def test_get_markets_applies_case_insensitive_exact_filters(
     assert [value.symbol for value in values] == ["BTCUSDT", "ETHUSDT"]
 
 
+def test_get_markets_ranks_cached_quote_volume_and_applies_a_limit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Confirm optional volume sorting is numeric, cached, and deterministic.
+
+    Args:
+        tmp_path: The isolated facade data directory.
+        monkeypatch: The pytest helper used to replace source requests.
+    """
+    service = Binance(tmp_path, progress=False)
+    source = source_for(service)
+    calls = 0
+
+    def markets(_client: httpx.Client, _product: str) -> list[Market]:
+        """Return three markets in symbol order."""
+        return [
+            market("ADAUSDT", base="ADA"),
+            market("BTCUSDT"),
+            market("ETHUSDT", base="ETH"),
+        ]
+
+    def quote_volumes(_client: httpx.Client, _product: str) -> dict[str, float]:
+        """Return deterministic quote activity for the markets."""
+        nonlocal calls
+        calls += 1
+        return {"ADAUSDT": 10.0, "BTCUSDT": 100.0, "ETHUSDT": 50.0}
+
+    monkeypatch.setattr(source, "markets", markets)
+    monkeypatch.setattr(source, "quote_volumes", quote_volumes)
+
+    first = service.get_markets(sort_by="quote_volume", limit=2)
+    second = service.get_markets(sort_by="quote_volume", limit=2)
+    offline = service.get_markets(sort_by="quote_volume", limit=2, offline=True)
+
+    assert calls == 1
+    assert first == second == offline
+    assert [(value.symbol, value.quote_volume_24h) for value in first] == [
+        ("BTCUSDT", 100.0),
+        ("ETHUSDT", 50.0),
+    ]
+
+
 @pytest.mark.parametrize(
     ("options", "error", "message"),
     [
@@ -249,6 +292,10 @@ def test_get_markets_applies_case_insensitive_exact_filters(
         ({"status": 1}, TypeError, "status"),
         ({"quote_asset": " "}, ValueError, "quote_asset"),
         ({"quote_asset": []}, TypeError, "quote_asset"),
+        ({"sort_by": "volume"}, ValueError, "sort_by"),
+        ({"sort_by": 1}, TypeError, "sort_by"),
+        ({"limit": 0}, ValueError, "limit"),
+        ({"limit": True}, TypeError, "limit"),
         ({"refresh": 1}, TypeError, "refresh"),
         ({"offline": None}, TypeError, "offline"),
         ({"refresh": True, "offline": True}, ValueError, "refresh.*offline"),

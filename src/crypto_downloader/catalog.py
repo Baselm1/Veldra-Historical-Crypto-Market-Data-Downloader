@@ -4,6 +4,7 @@ from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from datetime import UTC, date, datetime
 import logging
+import math
 from pathlib import Path
 from threading import RLock
 
@@ -39,6 +40,26 @@ def _validate_market_snapshot(markets: Sequence[Market]) -> None:
         raise ValueError("market snapshot cannot be empty")
     if len(symbols) != len(set(symbols)):
         raise ValueError("market snapshot contains duplicate symbols")
+
+
+def _quote_volume_row(symbol: object, volume: object) -> tuple[str, float]:
+    """Validate one cached market activity value.
+
+    Args:
+        symbol: The proposed native market symbol.
+        volume: The proposed rolling quote volume.
+
+    Returns:
+        The validated symbol and floating-point volume.
+    """
+    if not isinstance(symbol, str) or not symbol:
+        raise ValueError("quote volumes must contain valid symbols and values")
+    if isinstance(volume, bool) or not isinstance(volume, (int, float)):
+        raise ValueError("quote volumes must contain valid symbols and values")
+    parsed = float(volume)
+    if not math.isfinite(parsed) or parsed < 0:
+        raise ValueError("quote volumes must contain valid symbols and values")
+    return symbol, parsed
 
 
 def _validate_range(start_day: date, end_day: date) -> None:
@@ -161,6 +182,8 @@ class Catalog:
                 onboard_time TIMESTAMP,
                 delivery_time TIMESTAMP,
                 refreshed_at TIMESTAMP,
+                quote_volume_24h DOUBLE,
+                volume_refreshed_at TIMESTAMP,
                 PRIMARY KEY (source, product, symbol)
             );
 
@@ -238,6 +261,8 @@ class Catalog:
             "ALTER TABLE markets ADD COLUMN IF NOT EXISTS contract_size DOUBLE",
             "ALTER TABLE markets ADD COLUMN IF NOT EXISTS onboard_time TIMESTAMP",
             "ALTER TABLE markets ADD COLUMN IF NOT EXISTS delivery_time TIMESTAMP",
+            "ALTER TABLE markets ADD COLUMN IF NOT EXISTS quote_volume_24h DOUBLE",
+            "ALTER TABLE markets ADD COLUMN IF NOT EXISTS volume_refreshed_at TIMESTAMP",
             "ALTER TABLE resources ADD COLUMN IF NOT EXISTS archive_symbol VARCHAR",
             "ALTER TABLE resources ADD COLUMN IF NOT EXISTS timestamp_column VARCHAR",
             "ALTER TABLE resources ADD COLUMN IF NOT EXISTS schema_version INTEGER",
@@ -288,7 +313,8 @@ class Catalog:
         rows = self.connection.execute(
             """
             SELECT symbol, normalized_symbol, base_asset, quote_asset, status,
-                   pair, contract_type, contract_size, onboard_time, delivery_time
+                   pair, contract_type, contract_size, onboard_time, delivery_time,
+                   quote_volume_24h
             FROM markets
             WHERE source = ? AND product = ?
             ORDER BY symbol
@@ -307,6 +333,7 @@ class Catalog:
                 contract_size=row[7],
                 onboard_time=_utc_timestamp(row[8]),
                 delivery_time=_utc_timestamp(row[9]),
+                quote_volume_24h=row[10],
             )
             for row in rows
         ]
@@ -330,6 +357,76 @@ class Catalog:
             [source, product],
         ).fetchone()
         return _utc_timestamp(row[0]) if row is not None else None
+
+    def quote_volume_snapshot_at(
+        self,
+        source: str,
+        product: str,
+    ) -> datetime | None:
+        """Return when rolling market volumes were last stored.
+
+        Args:
+            source: The source identifier.
+            product: The product identifier.
+
+        Returns:
+            The UTC refresh timestamp, or ``None`` without cached volumes.
+        """
+        row = self.connection.execute(
+            """
+            SELECT max(volume_refreshed_at)
+            FROM markets
+            WHERE source = ? AND product = ?
+            """,
+            [source, product],
+        ).fetchone()
+        return _utc_timestamp(row[0]) if row is not None else None
+
+    def save_quote_volumes(
+        self,
+        source: str,
+        product: str,
+        volumes: dict[str, float],
+    ) -> None:
+        """Store one complete rolling quote-volume snapshot.
+
+        Args:
+            source: The source identifier.
+            product: The product identifier.
+            volumes: Nonnegative quote volumes indexed by native symbol.
+        """
+        rows = [_quote_volume_row(symbol, volume) for symbol, volume in volumes.items()]
+        frame = pd.DataFrame.from_records(
+            rows,
+            columns=("symbol", "quote_volume_24h"),
+        )
+        if volumes:
+            self.connection.register("incoming_quote_volumes", frame)
+        try:
+            with self._transaction():
+                self.connection.execute(
+                    """
+                    UPDATE markets SET
+                        quote_volume_24h = NULL,
+                        volume_refreshed_at = now()
+                    WHERE source = ? AND product = ?
+                    """,
+                    [source, product],
+                )
+                if volumes:
+                    self.connection.execute(
+                        """
+                        UPDATE markets AS stored SET
+                            quote_volume_24h = incoming.quote_volume_24h
+                        FROM incoming_quote_volumes AS incoming
+                        WHERE stored.source = ? AND stored.product = ?
+                          AND stored.symbol = incoming.symbol
+                        """,
+                        [source, product],
+                    )
+        finally:
+            if volumes:
+                self.connection.unregister("incoming_quote_volumes")
 
     def save_markets(
         self, source: str, product: str, markets: Sequence[Market]

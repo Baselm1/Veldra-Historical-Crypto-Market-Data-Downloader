@@ -557,3 +557,47 @@ def test_source_bounds_expand_without_losing_a_known_edge(catalog: Catalog) -> N
         date(2017, 8, 17),
         date(2024, 12, 31),
     )
+
+
+def test_market_quote_volumes_are_cached_with_their_snapshot(catalog: Catalog) -> None:
+    """Confirm volume enrichment survives later market metadata refreshes.
+
+    Args:
+        catalog: The isolated metadata catalog.
+    """
+    markets = [
+        Market("BTCUSDT", "BTCUSDT", "BTC", "USDT", "TRADING"),
+        Market("ETHUSDT", "ETHUSDT", "ETH", "USDT", "TRADING"),
+    ]
+    catalog.save_markets("binance", "spot", markets)
+    catalog.save_quote_volumes(
+        "binance",
+        "spot",
+        {"BTCUSDT": 100.0, "ETHUSDT": 50.0},
+    )
+    first_snapshot = catalog.quote_volume_snapshot_at("binance", "spot")
+    catalog.save_markets("binance", "spot", markets)
+
+    values = catalog.markets("binance", "spot")
+
+    assert first_snapshot is not None
+    assert [value.quote_volume_24h for value in values] == [100.0, 50.0]
+
+
+@pytest.mark.parametrize("volume", [-1.0, float("nan"), True])
+def test_market_quote_volume_cache_rejects_invalid_values(
+    catalog: Catalog,
+    volume: object,
+) -> None:
+    """Confirm malformed activity values fail before catalog mutation.
+
+    Args:
+        catalog: The isolated metadata catalog.
+        volume: The invalid quote volume.
+    """
+    with pytest.raises(ValueError, match="quote volumes"):
+        catalog.save_quote_volumes(
+            "binance",
+            "spot",
+            {"BTCUSDT": volume},  # type: ignore[dict-item]
+        )

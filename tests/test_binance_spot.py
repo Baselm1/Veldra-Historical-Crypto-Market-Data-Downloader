@@ -16,6 +16,7 @@ from crypto_downloader.sources.binance import (
     ARCHIVE_URL,
     BUCKET_URL,
     EXCHANGE_INFO_URLS,
+    TICKER_URLS,
     BinanceSource,
 )
 
@@ -126,6 +127,89 @@ def test_source_contract_remains_limited_to_five_operations() -> None:
         "resources",
         "ingest",
     }
+
+
+@pytest.mark.parametrize(
+    ("product", "payload", "expected"),
+    [
+        (
+            "spot",
+            [
+                {"symbol": "BTCUSDT", "quoteVolume": "123.5"},
+                {"symbol": "ETHUSDT", "quoteVolume": "45.25"},
+                {"symbol": "中文", "quoteVolume": "999"},
+            ],
+            {"BTCUSDT": 123.5, "ETHUSDT": 45.25},
+        ),
+        (
+            "um",
+            [{"symbol": "BTCUSDT", "quoteVolume": "200.0"}],
+            {"BTCUSDT": 200.0},
+        ),
+        (
+            "cm",
+            [
+                {
+                    "symbol": "BTCUSD_PERP",
+                    "baseVolume": "2.5",
+                    "weightedAvgPrice": "40000",
+                }
+            ],
+            {"BTCUSD_PERP": 100000.0},
+        ),
+    ],
+)
+def test_quote_volumes_normalize_product_specific_tickers(
+    product: str,
+    payload: list[dict[str, str]],
+    expected: dict[str, float],
+) -> None:
+    """Confirm every product produces quote-asset 24-hour notional.
+
+    Args:
+        product: The Binance product under test.
+        payload: The product-specific ticker response.
+        expected: Canonical quote volumes indexed by symbol.
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        """Return the deterministic ticker payload."""
+        assert str(request.url) == TICKER_URLS[product]
+        return httpx.Response(200, json=payload)
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        result = BinanceSource().quote_volumes(client, product)
+
+    assert result == expected
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {},
+        [None],
+        [{"symbol": "BTCUSDT", "quoteVolume": "bad"}],
+        [{"symbol": "BTCUSDT", "quoteVolume": "-1"}],
+        [
+            {"symbol": "BTCUSDT", "quoteVolume": "1"},
+            {"symbol": "BTCUSDT", "quoteVolume": "2"},
+        ],
+    ],
+)
+def test_quote_volumes_reject_malformed_ticker_snapshots(payload: object) -> None:
+    """Confirm unusable ticker metadata cannot produce misleading rankings.
+
+    Args:
+        payload: The malformed decoded ticker response.
+    """
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        """Return the malformed ticker payload."""
+        return httpx.Response(200, json=payload)
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(ValueError, match="ticker"):
+            BinanceSource().quote_volumes(client, "spot")
 
 
 def test_market_discovery_preserves_native_metadata_and_merges_archive_only() -> None:

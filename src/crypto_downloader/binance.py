@@ -725,6 +725,8 @@ class Binance:
         product: Product = "spot",
         status: str | None = None,
         quote_asset: str | None = None,
+        sort_by: Literal["symbol", "quote_volume"] = "symbol",
+        limit: int | None = None,
         refresh: bool = False,
         offline: bool = False,
     ) -> list[Market]:
@@ -734,6 +736,8 @@ class Binance:
             product: Spot, USD-M perpetual, or COIN-M perpetual.
             status: An optional native Binance status.
             quote_asset: An optional exact quote asset.
+            sort_by: Native symbol or rolling quote-volume ordering.
+            limit: An optional positive maximum result count.
             refresh: Whether to replace cached market metadata now.
             offline: Whether to require cached market metadata.
 
@@ -745,6 +749,8 @@ class Binance:
             product=product,
             status=status,
             quote_asset=quote_asset,
+            sort_by=sort_by,
+            limit=limit,
             refresh=refresh,
             offline=offline,
             progress=self._progress,

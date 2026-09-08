@@ -31,6 +31,7 @@ class Market:
     delivery_time: datetime | None = None
     source: str | None = None
     product: str | None = None
+    quote_volume_24h: float | None = None
 
     @property
     def active(self) -> bool:

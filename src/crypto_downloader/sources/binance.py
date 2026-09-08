@@ -22,6 +22,11 @@ EXCHANGE_INFO_URLS: Mapping[str, str] = {
     "um": "https://fapi.binance.com/fapi/v1/exchangeInfo",
     "cm": "https://dapi.binance.com/dapi/v1/exchangeInfo",
 }
+TICKER_URLS: Mapping[str, str] = {
+    "spot": "https://api.binance.com/api/v3/ticker/24hr",
+    "um": "https://fapi.binance.com/fapi/v1/ticker/24hr",
+    "cm": "https://dapi.binance.com/dapi/v1/ticker/24hr",
+}
 BUCKET_URL = "https://s3-ap-northeast-1.amazonaws.com/data.binance.vision"
 ARCHIVE_URL = "https://data.binance.vision"
 DAILY_ROOTS: Mapping[str, str] = {
@@ -130,6 +135,65 @@ class BinanceSource:
             retries=self.retries,
             backoff=self.backoff,
         )
+
+    def quote_volumes(
+        self,
+        client: httpx.Client,
+        product: str,
+    ) -> dict[str, float]:
+        """Return rolling 24-hour quote volume for one Binance product.
+
+        Args:
+            client: The HTTPX client used for Binance requests.
+            product: The Binance product to inspect.
+
+        Returns:
+            Quote-asset notional indexed by native market symbol.
+        """
+        self._check_product(product)
+        response = self._get(client, TICKER_URLS[product])
+        rows = response.json()
+        if not isinstance(rows, list):
+            raise ValueError("ticker contains no market snapshot")
+        volumes: dict[str, float] = {}
+        for row in rows:
+            parsed = self._quote_volume(row, product)
+            if parsed is None:
+                continue
+            symbol, volume = parsed
+            if symbol in volumes:
+                raise ValueError("ticker contains a duplicate symbol")
+            volumes[symbol] = volume
+        return volumes
+
+    @staticmethod
+    def _quote_volume(value: object, product: str) -> tuple[str, float] | None:
+        """Parse one product-specific ticker as quote-asset notional.
+
+        Args:
+            value: The decoded ticker object.
+            product: The Binance product represented by the ticker.
+
+        Returns:
+            The native symbol and nonnegative quote-asset volume, or ``None``
+            for an intentionally ignored non-ASCII symbol.
+        """
+        if not isinstance(value, dict):
+            raise ValueError("ticker contains an invalid market")
+        symbol = BinanceSource._exchange_symbol(value)
+        if symbol is None:
+            return None
+        try:
+            if product == "cm":
+                volume = float(BinanceSource._required_text(value, "baseVolume"))
+                volume *= float(BinanceSource._required_text(value, "weightedAvgPrice"))
+            else:
+                volume = float(BinanceSource._required_text(value, "quoteVolume"))
+        except ValueError as error:
+            raise ValueError("ticker contains an invalid market") from error
+        if not math.isfinite(volume) or volume < 0:
+            raise ValueError("ticker contains an invalid market")
+        return symbol, volume
 
     def resources(
         self,

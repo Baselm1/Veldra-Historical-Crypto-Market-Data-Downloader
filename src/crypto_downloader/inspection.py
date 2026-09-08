@@ -4,6 +4,7 @@ from dataclasses import dataclass, replace
 from datetime import date, timedelta
 import logging
 from pathlib import Path
+from typing import Protocol, cast
 
 import httpx
 
@@ -11,12 +12,24 @@ from .catalog import Catalog, catalog_lock, open_catalog
 from .datasets import DatasetSpec, get_dataset
 from .discovery import _merge_ranges, discover_resources, requested_days
 from .display import Reporter
-from .downloader import Downloader, _load_markets, _source_limit, utc_today
+from .downloader import Downloader, _load_markets, _source_limit, utc_now, utc_today
 from .models import Availability, Market, Resource, ResourceKey
 from .matching import rank_markets
 from .request import Request, normalize_pair, parse_identifier, parse_pairs
 
 LOGGER = logging.getLogger(__name__)
+
+
+class _QuoteVolumeSource(Protocol):
+    """Describe optional quote-volume access for market inspection."""
+
+    def quote_volumes(
+        self,
+        client: httpx.Client,
+        product: str,
+    ) -> dict[str, float]:
+        """Return quote-asset volume indexed by native symbol."""
+        pass
 
 
 def _boolean(value: object, name: str) -> bool:
@@ -86,6 +99,72 @@ def _limit(value: object) -> int:
     return value
 
 
+def _optional_limit(value: object) -> int | None:
+    """Validate an optional positive market result limit.
+
+    Args:
+        value: The proposed limit or ``None`` for every result.
+
+    Returns:
+        The validated positive limit or ``None``.
+    """
+    return None if value is None else _limit(value)
+
+
+def _sort_by(value: object) -> str:
+    """Validate a supported market ordering.
+
+    Args:
+        value: The proposed market sort name.
+
+    Returns:
+        ``symbol`` or ``quote_volume``.
+    """
+    selected = parse_identifier(value, name="sort_by")
+    if selected not in {"symbol", "quote_volume"}:
+        raise ValueError("sort_by must be 'symbol' or 'quote_volume'")
+    return selected
+
+
+def _load_quote_volumes(
+    downloader: Downloader,
+    catalog: Catalog,
+    client: httpx.Client,
+    product: str,
+    reporter: Reporter,
+    *,
+    refresh: bool,
+    offline: bool,
+) -> list[Market]:
+    """Load cached quote volumes or refresh their rolling snapshot.
+
+    Args:
+        downloader: The configured internal downloader.
+        catalog: The metadata catalog receiving fresh volume values.
+        client: The HTTPX client used for Binance requests.
+        product: The Binance product to inspect.
+        reporter: The optional activity reporter.
+        refresh: Whether to replace cached activity now.
+        offline: Whether source access is forbidden.
+
+    Returns:
+        Markets enriched with rolling 24-hour quote volume.
+    """
+    snapshot = catalog.quote_volume_snapshot_at(downloader.source.code, product)
+    cutoff = utc_now() - timedelta(hours=downloader.market_refresh_hours)
+    fresh = snapshot is not None and snapshot >= cutoff
+    if not offline and (refresh or not fresh):
+        source = cast(_QuoteVolumeSource, downloader.source)
+        with reporter.status(
+            f"Refreshing {downloader.source.code.title()} {product} 24-hour volume"
+        ):
+            volumes = source.quote_volumes(client, product)
+        catalog.save_quote_volumes(downloader.source.code, product, volumes)
+    elif not fresh:
+        raise RuntimeError("offline volume sorting requires cached market activity")
+    return catalog.markets(downloader.source.code, product)
+
+
 def _query(value: object) -> str:
     """Validate and normalize one market search query.
 
@@ -110,6 +189,7 @@ def _snapshot(
     refresh: bool,
     offline: bool,
     progress: bool,
+    with_volumes: bool = False,
 ) -> list[Market]:
     """Load one fresh or cached market snapshot with public context.
 
@@ -119,6 +199,7 @@ def _snapshot(
         refresh: Whether to replace cached metadata now.
         offline: Whether source access is forbidden.
         progress: Whether to show Rich activity.
+        with_volumes: Whether rolling quote volume is required.
 
     Returns:
         Markets ordered by native symbol with source and product identity.
@@ -138,16 +219,27 @@ def _snapshot(
             limits=limits,
         ) as client:
             with open_catalog(catalog_path) as catalog:
+                reporter = Reporter(progress)
                 markets = _load_markets(
                     downloader.source,
                     catalog,
                     client,
                     product,
-                    Reporter(progress),
+                    reporter,
                     refresh=refresh,
                     offline=offline,
                     refresh_hours=downloader.market_refresh_hours,
                 )
+                if with_volumes:
+                    markets = _load_quote_volumes(
+                        downloader,
+                        catalog,
+                        client,
+                        product,
+                        reporter,
+                        refresh=refresh,
+                        offline=offline,
+                    )
     return sorted(
         (
             replace(
@@ -161,12 +253,63 @@ def _snapshot(
     )
 
 
+def _filtered_markets(
+    markets: list[Market],
+    status: str | None,
+    quote_asset: str | None,
+) -> list[Market]:
+    """Apply optional exact market filters.
+
+    Args:
+        markets: The complete product market snapshot.
+        status: The optional native status.
+        quote_asset: The optional exact quote asset.
+
+    Returns:
+        Markets satisfying every requested filter.
+    """
+    return [
+        market
+        for market in markets
+        if (status is None or market.status == status)
+        and (quote_asset is None or market.quote_asset == quote_asset)
+    ]
+
+
+def _ordered_markets(
+    markets: list[Market],
+    sort_by: str,
+    limit: int | None,
+) -> list[Market]:
+    """Order filtered markets and apply an optional result limit.
+
+    Args:
+        markets: The filtered market rows.
+        sort_by: Native symbol or rolling quote-volume ordering.
+        limit: The optional maximum result count.
+
+    Returns:
+        The requested ordered market slice.
+    """
+    if sort_by == "quote_volume":
+        markets.sort(
+            key=lambda market: (
+                market.quote_volume_24h is None,
+                -(market.quote_volume_24h or 0.0),
+                market.symbol,
+            )
+        )
+    return markets if limit is None else markets[:limit]
+
+
 def get_markets(
     downloader: Downloader,
     *,
     product: object = "spot",
     status: object = None,
     quote_asset: object = None,
+    sort_by: object = "symbol",
+    limit: object = None,
     refresh: object = False,
     offline: object = False,
     progress: bool = True,
@@ -178,6 +321,8 @@ def get_markets(
         product: The Binance product to inspect.
         status: An optional native status filter.
         quote_asset: An optional quote asset filter.
+        sort_by: Native symbol or rolling quote-volume ordering.
+        limit: An optional positive maximum result count.
         refresh: Whether to replace cached metadata now.
         offline: Whether source access is forbidden.
         progress: Whether to show Rich activity.
@@ -188,6 +333,8 @@ def get_markets(
     selected_product = _product(downloader, product)
     selected_status = _filter(status, "status")
     selected_quote = _filter(quote_asset, "quote_asset")
+    selected_sort = _sort_by(sort_by)
+    selected_limit = _optional_limit(limit)
     selected_refresh = _boolean(refresh, "refresh")
     selected_offline = _boolean(offline, "offline")
     if selected_refresh and selected_offline:
@@ -198,13 +345,10 @@ def get_markets(
         refresh=selected_refresh,
         offline=selected_offline,
         progress=progress,
+        with_volumes=selected_sort == "quote_volume",
     )
-    return [
-        market
-        for market in markets
-        if (selected_status is None or market.status == selected_status)
-        and (selected_quote is None or market.quote_asset == selected_quote)
-    ]
+    filtered = _filtered_markets(markets, selected_status, selected_quote)
+    return _ordered_markets(filtered, selected_sort, selected_limit)
 
 
 def _search_products(downloader: Downloader, product: object) -> tuple[str, ...]:
