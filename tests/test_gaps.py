@@ -20,7 +20,7 @@ from crypto_downloader.models import (
     ResourceKey,
     Result,
 )
-from crypto_downloader.query import missing_ranges, query_parquet
+from crypto_downloader.query import missing_ranges, query_parquet, suspect_gap_paths
 from crypto_downloader.request import Request, parse_gap_policy
 
 DAY = date(2024, 1, 1)
@@ -335,6 +335,36 @@ def test_gap_helpers_handle_empty_paths_and_reject_other_base_intervals(
             START,
             END,
         )
+
+
+def test_catalog_metadata_selects_only_possible_gap_partitions(tmp_path: Path) -> None:
+    """Confirm continuous partitions avoid row-level gap inspection.
+
+    Args:
+        tmp_path: The isolated cache directory.
+    """
+    continuous_path = tmp_path / "continuous.parquet"
+    gapped_path = tmp_path / "gapped.parquet"
+    unknown_path = tmp_path / "unknown.parquet"
+    continuous = Resource(
+        DAY,
+        "archive",
+        "checksum",
+        status="ready",
+        parquet_path=continuous_path,
+        row_count=5,
+        first_timestamp=START,
+        last_timestamp=END - pd.Timedelta(minutes=1),
+        timestamp_column="open_time",
+        schema_version=SPOT_KLINES.schema_version,
+    )
+    gapped = replace(continuous, parquet_path=gapped_path, row_count=3)
+
+    assert suspect_gap_paths(
+        [continuous, gapped],
+        [continuous_path, gapped_path, unknown_path],
+        SPOT_KLINES,
+    ) == [gapped_path, unknown_path]
 
 
 def test_direct_query_rejects_an_unknown_gap_policy(

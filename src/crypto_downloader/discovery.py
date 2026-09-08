@@ -1,16 +1,17 @@
 """Discover requested daily resources and record them in the catalog."""
 
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 import logging
 
 import httpx
 
-from .catalog import Catalog
+from .catalog import Catalog, DiscoveryCheckpoint
 from .display import Reporter
 from .models import Resource, ResourceKey
 from .source import Source
 
 LOGGER = logging.getLogger(__name__)
+DISCOVERY_TTL = timedelta(hours=24)
 
 
 def requested_days(start: datetime, end: datetime) -> tuple[date, date]:
@@ -71,7 +72,7 @@ def discover_resources(
         active: Whether recent source listings may still change.
         refresh: Whether to rescan the complete range explicitly.
         offline: Whether all source access must be skipped.
-        tail_days: The number of recent active-market days to rescan.
+        tail_days: The recent active-market days eligible for periodic rescans.
         reporter: The optional activity reporter for actual source scans.
 
     Returns:
@@ -80,7 +81,7 @@ def discover_resources(
     start_day, end_day = requested_days(start, end)
     if tail_days < 1:
         raise ValueError("tail_days must be positive")
-    checkpoints = catalog.discovery_ranges(key)
+    checkpoints = catalog.discovery_checkpoints(key)
     scan_ranges = _scan_ranges(
         start_day,
         end_day,
@@ -89,6 +90,7 @@ def discover_resources(
         refresh=refresh,
         offline=offline,
         tail_days=tail_days,
+        now=datetime.now(UTC),
     )
     LOGGER.debug(
         "Resource discovery planned: key=%s requested=[%s, %s] checkpoints=%s "
@@ -131,23 +133,25 @@ def discover_resources(
 def _scan_ranges(
     start_day: date,
     end_day: date,
-    checkpoints: list[tuple[date, date]],
+    checkpoints: list[DiscoveryCheckpoint],
     *,
     active: bool,
     refresh: bool,
     offline: bool,
     tail_days: int,
+    now: datetime,
 ) -> list[tuple[date, date]]:
     """Return inclusive source ranges that still require discovery.
 
     Args:
         start_day: The first day whose availability is needed.
         end_day: The last day whose availability is needed.
-        checkpoints: The inclusive ranges already searched.
+        checkpoints: The inclusive ranges already searched and their scan times.
         active: Whether recent listings may still change.
         refresh: Whether the caller requested a complete rescan.
         offline: Whether source access is forbidden.
-        tail_days: The recent active-market window to revisit.
+        tail_days: The recent active-market window eligible for a stale rescan.
+        now: The current aware timestamp used to evaluate checkpoint freshness.
 
     Returns:
         Ordered, merged inclusive ranges requiring source access.
@@ -157,11 +161,37 @@ def _scan_ranges(
     if refresh or not checkpoints:
         return [(start_day, end_day)]
 
-    ranges = _uncovered_ranges(start_day, end_day, checkpoints)
+    covered_ranges = [(start, end) for start, end, _ in checkpoints]
+    ranges = _uncovered_ranges(start_day, end_day, covered_ranges)
     if active:
         tail_start = max(start_day, end_day - timedelta(days=tail_days - 1))
-        ranges.append((tail_start, end_day))
+        fresh_ranges = _fresh_ranges(checkpoints, now)
+        ranges.extend(_uncovered_ranges(tail_start, end_day, fresh_ranges))
     return _merge_ranges(ranges)
+
+
+def _fresh_ranges(
+    checkpoints: list[DiscoveryCheckpoint], now: datetime
+) -> list[tuple[date, date]]:
+    """Return ranges checked no more than one discovery TTL ago.
+
+    Args:
+        checkpoints: The searched ranges and their aware scan timestamps.
+        now: The current aware timestamp used to calculate age.
+
+    Returns:
+        Inclusive ranges whose latest scans are still fresh.
+    """
+    if now.tzinfo is None:
+        raise ValueError("discovery clock must include a timezone")
+    cutoff = now.astimezone(UTC) - DISCOVERY_TTL
+    fresh: list[tuple[date, date]] = []
+    for start_day, end_day, scanned_at in checkpoints:
+        if scanned_at.tzinfo is None:
+            raise ValueError("discovery checkpoint must include a timezone")
+        if scanned_at.astimezone(UTC) >= cutoff:
+            fresh.append((start_day, end_day))
+    return fresh
 
 
 def _uncovered_ranges(

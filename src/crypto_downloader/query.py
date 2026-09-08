@@ -10,7 +10,7 @@ import duckdb
 import pandas as pd
 
 from .datasets import DatasetSpec
-from .models import Gap
+from .models import Gap, Resource
 from .request import parse_gap_policy
 
 EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
@@ -110,6 +110,80 @@ def missing_ranges(
         )
         for range_start, range_end, count in rows
     ]
+
+
+def suspect_gap_paths(
+    resources: Sequence[Resource],
+    paths: Sequence[Path],
+    dataset: DatasetSpec,
+) -> list[Path]:
+    """Return cached partitions whose metadata cannot prove continuity.
+
+    Args:
+        resources: The current catalog rows for the requested partitions.
+        paths: The valid local Parquet paths about to be queried.
+        dataset: The schema defining candle gap behavior.
+
+    Returns:
+        Paths that still require row-level missing-candle inspection.
+    """
+    if not dataset.supports_gap_policy:
+        return []
+    by_path = {
+        resource.parquet_path: resource
+        for resource in resources
+        if resource.parquet_path is not None
+    }
+    return [
+        path
+        for path in paths
+        if not _metadata_proves_continuity(by_path.get(path), dataset)
+    ]
+
+
+def _metadata_proves_continuity(
+    resource: Resource | None, dataset: DatasetSpec
+) -> bool:
+    """Return whether validated catalog metadata rules out an internal gap.
+
+    Args:
+        resource: The catalog row matching one local partition, if found.
+        dataset: The expected stored candle schema.
+
+    Returns:
+        True only when the row count and timestamp span are exactly continuous.
+    """
+    if resource is None:
+        return False
+    row_count = resource.row_count
+    first_timestamp = resource.first_timestamp
+    last_timestamp = resource.last_timestamp
+    if row_count is None or first_timestamp is None or last_timestamp is None:
+        return False
+    valid = (
+        dataset.base_interval == "1m",
+        resource.status == "ready",
+        resource.timestamp_column == dataset.time_column,
+        resource.schema_version == dataset.schema_version,
+        row_count >= 1,
+        first_timestamp.tzinfo is not None,
+        last_timestamp.tzinfo is not None,
+        first_timestamp.utcoffset() == timedelta(0),
+        last_timestamp.utcoffset() == timedelta(0),
+    )
+    if not all(valid):
+        return False
+    step = 60_000_000
+    first = _microseconds(first_timestamp)
+    last = _microseconds(last_timestamp)
+    span = last - first
+    continuous = (
+        first % step == 0
+        and span >= 0
+        and span % step == 0
+        and row_count == span // step + 1
+    )
+    return continuous
 
 
 def empty_frame(dataset: DatasetSpec, columns: Mapping[str, str]) -> pd.DataFrame:

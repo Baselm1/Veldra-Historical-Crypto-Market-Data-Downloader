@@ -1,5 +1,8 @@
 """Test pair resolution and independent availability cleanup."""
 
+from collections.abc import Iterator
+from contextlib import contextmanager
+from dataclasses import replace
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 from threading import Lock
@@ -10,9 +13,9 @@ import pandas as pd
 import pytest
 
 import crypto_downloader.downloader as downloader_module
-from crypto_downloader.datasets import DatasetSpec
+from crypto_downloader.datasets import DatasetSpec, SPOT_KLINES
 from crypto_downloader.downloader import Downloader
-from crypto_downloader.catalog import open_catalog
+from crypto_downloader.catalog import Catalog, open_catalog
 from crypto_downloader.models import (
     IngestedResource,
     Market,
@@ -185,6 +188,60 @@ class RangeSource:
             first_timestamp=opened,
             last_timestamp=opened,
         )
+
+
+class ObservedIngestionSource(RangeSource):
+    """Record request-wide ingestion concurrency and configurable failures."""
+
+    def __init__(
+        self,
+        markets: list[Market],
+        days: dict[str, list[date]],
+        *,
+        failed_symbols: set[str] | None = None,
+    ) -> None:
+        """Create an observed source for request-wide scheduler tests.
+
+        Args:
+            markets: The complete market snapshot returned to the downloader.
+            days: Available daily resources indexed by native symbol.
+            failed_symbols: Symbols whose ingestion should fail.
+        """
+        super().__init__(markets, days)
+        self.failed_symbols = failed_symbols or set()
+        self.active_ingestions = 0
+        self.peak_ingestions = 0
+
+    def ingest(
+        self,
+        client: httpx.Client,
+        resource: Resource,
+        dataset: DatasetSpec,
+        destination: Path,
+    ) -> IngestedResource:
+        """Ingest one resource while recording shared scheduler activity.
+
+        Args:
+            client: The unused HTTPX client.
+            resource: The daily resource represented by the row.
+            dataset: The Spot kline schema used by the downloader.
+            destination: The final Parquet path.
+
+        Returns:
+            Integrity metadata for the generated test file.
+        """
+        symbol = resource.url.split("/")[2]
+        with self._call_lock:
+            self.active_ingestions += 1
+            self.peak_ingestions = max(self.peak_ingestions, self.active_ingestions)
+        try:
+            sleep(0.03)
+            if symbol in self.failed_symbols:
+                raise RuntimeError(f"cannot ingest {symbol}")
+            return super().ingest(client, resource, dataset, destination)
+        finally:
+            with self._call_lock:
+                self.active_ingestions -= 1
 
 
 @pytest.fixture(autouse=True)
@@ -632,8 +689,8 @@ def test_historical_requests_reuse_discovery_for_every_market_status(
     assert source.resource_calls == []
 
 
-def test_active_recent_request_rescans_only_its_mutable_tail(tmp_path: Path) -> None:
-    """Confirm an active pair revisits recent requested days only."""
+def test_active_recent_request_reuses_its_fresh_mutable_tail(tmp_path: Path) -> None:
+    """Confirm an active pair reuses a recent successful tail scan."""
     source = RangeSource(
         [market("BTCUSDT")],
         {"BTCUSDT": [date(2025, 1, day) for day in (2, 3, 4)]},
@@ -644,7 +701,7 @@ def test_active_recent_request_rescans_only_its_mutable_tail(tmp_path: Path) -> 
 
     downloader.get_results("BTCUSDT", "2025-01-02", "2025-01-04")
 
-    assert source.resource_calls == [("BTCUSDT", date(2025, 1, 2), date(2025, 1, 4))]
+    assert source.resource_calls == []
 
 
 def test_active_discovery_is_limited_to_the_cleaned_request(tmp_path: Path) -> None:
@@ -749,6 +806,160 @@ def test_multiple_pair_workflows_run_concurrently_and_preserve_order(
     assert [result.pair for result in results] == symbols
     assert all(result.complete for result in results)
     assert source.peak_calls >= 2
+
+
+def test_dataset_ingestion_limit_is_shared_by_every_pair(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Confirm one dataset limit bounds aggregate ingestion across all pairs.
+
+    Args:
+        tmp_path: The isolated downloader directory.
+        monkeypatch: The pytest helper used to lower the dataset limit.
+    """
+    symbols = ["BTCUSDT", "ETHUSDT", "ADAUSDT", "XRPUSDT"]
+    source = ObservedIngestionSource(
+        [market(symbol) for symbol in symbols],
+        {symbol: [date(2024, 1, 1)] for symbol in symbols},
+    )
+    specification = replace(SPOT_KLINES, max_concurrency=2)
+    monkeypatch.setattr(
+        downloader_module,
+        "get_dataset",
+        lambda *_args, **_kwargs: specification,
+    )
+
+    results = Downloader(
+        tmp_path,
+        source=source,
+        earliest_date=date(2020, 1, 1),
+        max_workers=8,
+    ).get_results(symbols, "2024-01-01", "2024-01-01", progress=False)
+
+    assert isinstance(results, list)
+    assert [result.pair for result in results] == symbols
+    assert all(not result.errors for result in results)
+    assert source.peak_ingestions == 2
+
+
+def test_shared_ingestion_executor_isolates_failures_and_preserves_order(
+    tmp_path: Path,
+) -> None:
+    """Confirm one failed pair does not reorder or stop sibling workflows.
+
+    Args:
+        tmp_path: The isolated downloader directory.
+    """
+    symbols = ["BTCUSDT", "ETHUSDT", "ADAUSDT"]
+    source = ObservedIngestionSource(
+        [market(symbol) for symbol in symbols],
+        {symbol: [date(2024, 1, 1)] for symbol in symbols},
+        failed_symbols={"ETHUSDT"},
+    )
+
+    results = Downloader(
+        tmp_path,
+        source=source,
+        earliest_date=date(2020, 1, 1),
+        max_workers=3,
+    ).get_results(symbols, "2024-01-01", "2024-01-01", progress=False)
+
+    assert isinstance(results, list)
+    assert [result.pair for result in results] == symbols
+    assert results[0].complete
+    assert [problem.code for problem in results[1].problems] == ["resource_failed"]
+    assert results[2].complete
+
+
+def test_pair_catalog_connections_are_bounded_by_active_workers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Confirm queued pairs do not each allocate an idle DuckDB connection.
+
+    Args:
+        tmp_path: The isolated downloader directory.
+        monkeypatch: The pytest helper used to observe catalog creation.
+    """
+    symbols = [f"PAIR{index}USDT" for index in range(10)]
+    source = RangeSource(
+        [market(symbol) for symbol in symbols],
+        {symbol: [date(2024, 1, 1)] for symbol in symbols},
+    )
+    initialized: list[bool] = []
+
+    @contextmanager
+    def counted_catalog(path: Path, *, initialize: bool = True) -> Iterator[Catalog]:
+        """Record whether each catalog connection initializes the schema.
+
+        Args:
+            path: The catalog database path.
+            initialize: Whether the connection should prepare the schema.
+
+        Yields:
+            The open catalog under observation.
+        """
+        initialized.append(initialize)
+        with open_catalog(path, initialize=initialize) as catalog:
+            yield catalog
+
+    monkeypatch.setattr(downloader_module, "open_catalog", counted_catalog)
+
+    results = Downloader(
+        tmp_path,
+        source=source,
+        earliest_date=date(2020, 1, 1),
+        max_workers=3,
+    ).get_results(symbols, "2024-01-01", "2024-01-01", progress=False)
+
+    assert isinstance(results, list)
+    assert len(results) == len(symbols)
+    assert initialized == [True, False, False, False]
+
+
+def test_equivalent_pair_spellings_share_one_workflow(tmp_path: Path) -> None:
+    """Confirm normalized aliases cannot race the same cache destination.
+
+    Args:
+        tmp_path: The isolated downloader directory.
+    """
+    source = RangeSource(
+        [market("BTCUSDT")],
+        {"BTCUSDT": [date(2024, 1, 1)]},
+        delay=0.02,
+    )
+
+    results = service(tmp_path, source).get_results(
+        ["btc-usdt", "BTCUSDT", "BTC/USDT"],
+        "2024-01-01",
+        "2024-01-01",
+        progress=False,
+    )
+
+    assert isinstance(results, list)
+    assert [result.pair for result in results] == ["BTCUSDT"] * 3
+    assert results[0] is results[1] is results[2]
+    assert source.first_calls == [("BTCUSDT", None, date(2025, 1, 4))]
+
+
+def test_unresolved_pair_spellings_keep_independent_errors(tmp_path: Path) -> None:
+    """Confirm unresolved aliases retain the caller's spelling in each error.
+
+    Args:
+        tmp_path: The isolated downloader directory.
+    """
+    source = RangeSource([market("BTCUSDT")], {"BTCUSDT": [date(2024, 1, 1)]})
+
+    results = service(tmp_path, source).get_results(
+        ["BTCSUDT", "btc-sudt"],
+        "2024-01-01",
+        "2024-01-01",
+        progress=False,
+    )
+
+    assert isinstance(results, list)
+    assert [result.pair for result in results] == ["BTCSUDT", "btc-sudt"]
+    assert "'BTCSUDT'" in results[0].errors[0].message
+    assert "'btc-sudt'" in results[1].errors[0].message
 
 
 @pytest.mark.parametrize(

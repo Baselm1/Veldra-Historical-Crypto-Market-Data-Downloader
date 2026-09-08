@@ -109,7 +109,7 @@ def test_binance_declares_supported_market_products() -> None:
     assert source.timeout == 12.0
     assert source.retries == 2
     assert source.backoff == 0.25
-    assert source.max_concurrency == 32
+    assert source.max_concurrency == 64
 
 
 def test_source_contract_remains_limited_to_five_operations() -> None:
@@ -693,6 +693,38 @@ def test_resource_discovery_records_dataset_metadata_and_archive_symbol() -> Non
 
 
 @pytest.mark.parametrize(
+    ("end_day", "expected_max_keys"),
+    [
+        (date(2025, 1, 1), "4"),
+        (date(2025, 1, 7), "16"),
+        (date(2025, 1, 31), "64"),
+        (date(2026, 12, 31), "1000"),
+    ],
+)
+def test_resource_listing_size_is_bounded_by_the_requested_range(
+    end_day: date, expected_max_keys: str
+) -> None:
+    """Confirm short ranges do not fetch Binance's default thousand objects.
+
+    Args:
+        end_day: The final requested archive day.
+        expected_max_keys: The bounded S3 page size sent to Binance.
+    """
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        """Record one complete empty bucket page."""
+        requests.append(request)
+        return httpx.Response(200, text=listing())
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        BinanceSource().resources(client, KEY, date(2025, 1, 1), end_day)
+
+    assert len(requests) == 1
+    assert requests[0].url.params["max-keys"] == expected_max_keys
+
+
+@pytest.mark.parametrize(
     ("dataset", "remote_name", "filename", "timestamp_column"),
     [
         ("trades", "trades", "BTCUSDT-trades-2025-01-01.zip", "event_time"),
@@ -931,7 +963,52 @@ def test_daily_resource_discovery_paginates_filters_and_stops_after_end() -> Non
     prefix = f"{SPOT_KLINES_PREFIX}BTCUSDT/1m/"
     assert requests[0].url.params["prefix"] == prefix
     assert requests[0].url.params["marker"] == f"{prefix}BTCUSDT-1m-2025-01-01"
+    assert requests[0].url.params["max-keys"] == "6"
     assert requests[1].url.params["marker"].endswith("BTCUSDT-1m-invalid.zip")
+    assert requests[1].url.params["max-keys"] == "6"
+
+
+def test_daily_resource_discovery_preserves_missing_days_across_pages() -> None:
+    """Confirm bounded pagination neither invents nor skips sparse archive days."""
+    prefix = f"{SPOT_KLINES_PREFIX}BTCUSDT/1m/"
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        """Return a sparse requested range followed by its boundary day."""
+        requests.append(request)
+        if len(requests) == 1:
+            return httpx.Response(
+                200,
+                text=listing(
+                    keys=(
+                        f"{prefix}BTCUSDT-1m-2025-01-01.zip",
+                        f"{prefix}BTCUSDT-1m-2025-01-01.zip.CHECKSUM",
+                    ),
+                    truncated="true",
+                    marker=f"{prefix}BTCUSDT-1m-2025-01-01.zip.CHECKSUM",
+                ),
+            )
+        return httpx.Response(
+            200,
+            text=listing(
+                keys=(
+                    f"{prefix}BTCUSDT-1m-2025-01-03.zip",
+                    f"{prefix}BTCUSDT-1m-2025-01-04.zip",
+                )
+            ),
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        resources = BinanceSource().resources(
+            client, KEY, date(2025, 1, 1), date(2025, 1, 3)
+        )
+
+    assert [resource.day for resource in resources] == [
+        date(2025, 1, 1),
+        date(2025, 1, 3),
+    ]
+    assert len(requests) == 2
+    assert all(request.url.params["max-keys"] == "8" for request in requests)
 
 
 def test_daily_listing_without_files_returns_empty_result() -> None:

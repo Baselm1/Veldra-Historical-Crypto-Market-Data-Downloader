@@ -121,7 +121,12 @@ def _write_chunks(
                     first = frame.iloc[0][dataset.time_column]
                 table = pa.Table.from_pandas(frame, preserve_index=False)
                 if writer is None:
-                    writer = pq.ParquetWriter(partial, table.schema, compression="zstd")
+                    writer = pq.ParquetWriter(
+                        partial,
+                        table.schema,
+                        compression="zstd",
+                        use_dictionary=False,
+                    )
                 writer.write_table(table)
                 rows += len(frame)
     except pd.errors.EmptyDataError as error:

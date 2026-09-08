@@ -1,6 +1,7 @@
 """Materialize discovered daily resources in the local Parquet cache."""
 
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Executor, ThreadPoolExecutor
+from contextlib import ExitStack
 from dataclasses import dataclass, field
 from datetime import date
 import logging
@@ -285,6 +286,7 @@ def _revalidate_cached_resources(
     client: httpx.Client,
     cached: list[tuple[Resource, Path]],
     worker_count: int,
+    executor: Executor | None,
 ) -> tuple[list[Path], list[tuple[Resource, Path]], list[Message]]:
     """Split cached partitions into reusable and source-corrected groups.
 
@@ -293,15 +295,19 @@ def _revalidate_cached_resources(
         client: The HTTPX client used for checksum sidecars.
         cached: Valid local resource paths to inspect.
         worker_count: The bounded concurrent checksum request count.
+        executor: An optional request-wide cache executor.
 
     Returns:
         Reusable local paths, partitions requiring ingestion, and warnings.
     """
     if not cached:
         return [], [], []
-    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+    with ExitStack() as stack:
+        active_executor = executor or stack.enter_context(
+            ThreadPoolExecutor(max_workers=worker_count)
+        )
         checked = list(
-            executor.map(
+            active_executor.map(
                 lambda item: _revalidate_cached_resource(source, client, item[0]),
                 cached,
             )
@@ -330,6 +336,7 @@ def _cached_coverage(
     offline: bool,
     refresh: bool,
     worker_count: int,
+    executor: Executor | None,
 ) -> tuple[CacheCoverage, list[tuple[Resource, Path]]]:
     """Build cache coverage and optionally revalidate local source archives.
 
@@ -343,6 +350,7 @@ def _cached_coverage(
         offline: Whether source access is forbidden.
         refresh: Whether ready resources must check remote checksums.
         worker_count: The bounded concurrent checksum request count.
+        executor: An optional request-wide cache executor.
 
     Returns:
         Cache coverage and resources still requiring ingestion.
@@ -363,6 +371,7 @@ def _cached_coverage(
         client,
         cached,
         worker_count,
+        executor,
     )
     coverage.paths.extend(paths)
     coverage.warnings.extend(warnings)
@@ -396,9 +405,11 @@ def _record_outcomes(
         outcomes: The matching ingestion metadata or exceptions.
         coverage: The cache coverage to update in place.
     """
+    ready: list[tuple[date, Path, IngestedResource]] = []
+    failed: list[tuple[date, str]] = []
     for (resource, destination), (metadata, error) in zip(pending, outcomes):
         if metadata is not None:
-            catalog.mark_ready(key, resource.day, destination, metadata)
+            ready.append((resource.day, destination, metadata))
             coverage.paths.append(destination)
             LOGGER.info(
                 "Daily resource cached: key=%s day=%s rows=%d path=%s",
@@ -409,7 +420,7 @@ def _record_outcomes(
             )
             continue
         message = str(error) if error is not None else "unknown ingestion failure"
-        catalog.mark_failed(key, resource.day, message)
+        failed.append((resource.day, message))
         coverage.problems.append(Message("resource_failed", message, resource.day))
         LOGGER.warning(
             "Daily resource failed: key=%s day=%s error=%s",
@@ -417,6 +428,7 @@ def _record_outcomes(
             resource.day,
             message,
         )
+    catalog.mark_outcomes(key, ready, failed)
 
 
 def cache_resources(
@@ -432,6 +444,7 @@ def cache_resources(
     refresh: bool = False,
     max_workers: int = 16,
     reporter: Reporter | None = None,
+    executor: Executor | None = None,
 ) -> CacheCoverage:
     """Reuse valid files and ingest every missing known resource.
 
@@ -447,6 +460,7 @@ def cache_resources(
         refresh: Whether ready resources must check their remote checksums.
         max_workers: The caller's maximum concurrent daily ingestions.
         reporter: The optional Rich activity reporter.
+        executor: An optional request-wide executor shared by every pair.
 
     Returns:
         Usable paths and isolated resource problems.
@@ -462,6 +476,7 @@ def cache_resources(
         offline=offline,
         refresh=refresh,
         worker_count=worker_count,
+        executor=executor,
     )
     display = reporter if reporter is not None else Reporter(False)
     noun = "file" if len(resources) == 1 else "files"
@@ -487,8 +502,11 @@ def cache_resources(
     outcomes: list[tuple[IngestedResource | None, Exception | None]] = []
     if pending:
         with display.downloads(key.symbol, len(pending)) as advance:
-            with ThreadPoolExecutor(max_workers=worker_count) as executor:
-                completed = executor.map(
+            with ExitStack() as stack:
+                active_executor = executor or stack.enter_context(
+                    ThreadPoolExecutor(max_workers=worker_count)
+                )
+                completed = active_executor.map(
                     lambda item: _ingest_resource(
                         source, client, dataset, item[0], item[1]
                     ),

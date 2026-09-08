@@ -7,12 +7,15 @@ from io import BytesIO
 import logging
 import os
 from pathlib import Path
+from ssl import SSLContext
+from unittest.mock import patch
 import zipfile
 
 import httpx
 import pandas as pd
 import pytest
 
+import crypto_downloader.downloader as downloader_module
 import crypto_downloader.pair as pair_module
 from crypto_downloader.cache import parquet_path, valid_cached_path
 from crypto_downloader.catalog import open_catalog
@@ -498,12 +501,20 @@ def test_corrupt_reused_parquet_is_detected_and_rebuilt(tmp_path: Path) -> None:
     path.write_bytes(b"x" * stat.st_size)
     os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns))
 
-    result = service.get_results("BTCUSDT", "2024-01-01", "2024-01-01")
+    with patch.object(
+        pair_module,
+        "cache_resources",
+        wraps=pair_module.cache_resources,
+    ) as observed_cache:
+        result = service.get_results("BTCUSDT", "2024-01-01", "2024-01-01")
 
     assert isinstance(result, Result)
     assert result.complete
     assert len(result.data) == 2
     assert server.archive_requests == 2
+    assert observed_cache.call_count == 2
+    executors = [call.kwargs["executor"] for call in observed_cache.call_args_list]
+    assert executors[0] is executors[1]
 
 
 def test_query_failure_remains_an_isolated_result_error(
@@ -854,6 +865,39 @@ def test_refresh_and_offline_cannot_be_requested_together(tmp_path: Path) -> Non
             offline=True,
         )
     assert server.market_requests == 0
+
+
+def test_offline_http_client_rejects_requests_without_loading_tls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Confirm offline clients avoid TLS setup and fail accidental HTTP access.
+
+    Args:
+        monkeypatch: The pytest helper used to forbid TLS context creation.
+    """
+
+    def fail_tls_setup() -> SSLContext:
+        """Fail if offline client creation attempts to load certificates."""
+        raise AssertionError("offline mode must not create a TLS context")
+
+    monkeypatch.setattr(downloader_module, "_ssl_context", fail_tls_setup)
+    with downloader_module._http_client(
+        None,
+        httpx.Limits(max_connections=1),
+        offline=True,
+    ) as client:
+        with pytest.raises(RuntimeError, match="offline mode attempted"):
+            client.get("https://example.test")
+
+
+def test_online_http_clients_reuse_one_tls_context() -> None:
+    """Confirm repeated online clients share one certificate context."""
+    downloader_module._ssl_context.cache_clear()
+
+    first = downloader_module._ssl_context()
+    second = downloader_module._ssl_context()
+
+    assert first is second
 
 
 @pytest.mark.parametrize("data_dir", ["", "   ", 1, None])

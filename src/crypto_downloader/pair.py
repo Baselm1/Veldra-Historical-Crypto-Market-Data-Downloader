@@ -1,5 +1,6 @@
 """Run the download workflow for one requested pair."""
 
+from concurrent.futures import Executor
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, time, timedelta
 import logging
@@ -17,7 +18,7 @@ from .display import Reporter, format_range, format_time
 from .discovery import discover_resources, requested_days
 from .models import Market, Message, MissingCandlesError, Resource, ResourceKey, Result
 from .matching import suggest_symbols
-from .query import empty_frame, missing_ranges, query_parquet
+from .query import empty_frame, missing_ranges, query_parquet, suspect_gap_paths
 from .request import Request, normalize_pair
 from .source import Source
 
@@ -558,6 +559,7 @@ def _query_result(
     result: Result,
     connection: duckdb.DuckDBPyConnection,
     paths: list[Path],
+    gap_paths: list[Path],
     dataset: DatasetSpec,
     request: Request,
     used_range: tuple[datetime, datetime],
@@ -570,6 +572,7 @@ def _query_result(
         result: The pair result to populate in place.
         connection: The DuckDB connection used for queries.
         paths: The valid local daily Parquet files.
+        gap_paths: The partitions whose metadata cannot prove continuity.
         dataset: The schema describing cached rows.
         request: The validated caller request.
         used_range: The cleaned inclusive-start, exclusive-end range.
@@ -577,12 +580,13 @@ def _query_result(
         reporter: The optional Rich activity reporter.
     """
     gap_policy = request.gap_policy
+    query_gap_policy = gap_policy
     if dataset.supports_gap_policy:
         if gap_policy is None:
             raise ValueError("candle dataset requires a resolved gap policy")
         result.gaps = missing_ranges(
             connection,
-            paths,
+            gap_paths,
             dataset,
             used_range[0],
             used_range[1],
@@ -609,6 +613,8 @@ def _query_result(
             )
             if gap_policy == "raise":
                 raise MissingCandlesError(result.pair, result.gaps)
+        else:
+            query_gap_policy = "keep"
     columns = dataset.resolve_columns(request.columns)
     result.data = query_parquet(
         connection,
@@ -617,7 +623,7 @@ def _query_result(
         used_range[0],
         used_range[1],
         columns,
-        gap_policy=gap_policy,
+        gap_policy=query_gap_policy,
         interval=request.interval,
     )
 
@@ -763,6 +769,7 @@ def _populate_query(
     result: Result,
     catalog: Catalog,
     paths: list[Path],
+    gap_paths: list[Path],
     dataset: DatasetSpec,
     request: Request,
     used_range: tuple[datetime, datetime],
@@ -775,6 +782,7 @@ def _populate_query(
         result: The pair result to populate.
         catalog: The catalog providing the DuckDB connection.
         paths: The usable daily Parquet files.
+        gap_paths: The partitions that require row-level gap inspection.
         dataset: The requested dataset schema.
         request: The validated caller request.
         used_range: The cleaned query range.
@@ -789,6 +797,7 @@ def _populate_query(
             result,
             catalog.connection,
             paths,
+            gap_paths,
             dataset,
             request,
             used_range,
@@ -818,6 +827,55 @@ def _query_failure(result: Result, error: Exception) -> bool:
     return False
 
 
+def _populate_cached_query(
+    result: Result,
+    catalog: Catalog,
+    key: ResourceKey,
+    paths: list[Path],
+    dataset: DatasetSpec,
+    request: Request,
+    used_range: tuple[datetime, datetime],
+    source_code: str,
+    reporter: Reporter,
+) -> Exception | None:
+    """Query cached paths after selecting only possible gap partitions.
+
+    Args:
+        result: The pair result to populate.
+        catalog: The catalog containing validated partition metadata.
+        key: The requested dataset identity.
+        paths: The local Parquet files to query.
+        dataset: The requested dataset schema.
+        request: The validated caller request.
+        used_range: The cleaned query range.
+        source_code: The source identifier used in diagnostics.
+        reporter: The optional Rich activity reporter.
+
+    Returns:
+        ``None`` after a successful query, otherwise the isolated exception.
+    """
+    first_day, last_day = requested_days(*used_range)
+    current_resources = catalog.resources(key, first_day, last_day)
+    gap_paths = suspect_gap_paths(current_resources, paths, dataset)
+    LOGGER.debug(
+        "Gap scan planned: key=%s paths=%d suspect=%d",
+        key,
+        len(paths),
+        len(gap_paths),
+    )
+    return _populate_query(
+        result,
+        catalog,
+        paths,
+        gap_paths,
+        dataset,
+        request,
+        used_range,
+        source_code,
+        reporter,
+    )
+
+
 def _query_with_recovery(
     result: Result,
     source: Source,
@@ -834,6 +892,7 @@ def _query_with_recovery(
     *,
     offline: bool,
     max_workers: int,
+    ingestion_executor: Executor | None,
 ) -> bool:
     """Query cached partitions and rebuild unreadable files once.
 
@@ -852,47 +911,15 @@ def _query_with_recovery(
         reporter: The optional activity reporter.
         offline: Whether recovery downloads are forbidden.
         max_workers: The maximum concurrent recovery downloads.
+        ingestion_executor: The request-wide cache executor, if one exists.
 
     Returns:
         True after a successful query, otherwise False with a result error.
     """
-    invalid = invalid_parquet_paths(paths)
-    if invalid:
-        invalid_error = RuntimeError("cached Parquet file is unreadable")
-        if offline:
-            return _query_failure(result, invalid_error)
-        for path in invalid:
-            try:
-                path.unlink()
-            except OSError as remove_error:
-                LOGGER.warning(
-                    "Unreadable Parquet could not be removed: path=%s error=%s",
-                    path,
-                    remove_error,
-                )
-                return _query_failure(result, invalid_error)
-        reporter.warning(
-            f"{result.pair}: rebuilding {len(invalid):,} unreadable cached file(s)"
-        )
-        recovered = cache_resources(
-            source,
-            catalog,
-            client,
-            key,
-            dataset,
-            resources,
-            data_dir,
-            max_workers=max_workers,
-            reporter=reporter,
-        )
-        result.warnings.extend(recovered.warnings)
-        result.problems.extend(recovered.problems)
-        if not recovered.paths:
-            return _query_failure(result, invalid_error)
-        paths = recovered.paths
-    error = _populate_query(
+    error = _populate_cached_query(
         result,
         catalog,
+        key,
         paths,
         dataset,
         request,
@@ -900,7 +927,52 @@ def _query_with_recovery(
         source.code,
         reporter,
     )
-    return True if error is None else _query_failure(result, error)
+    if error is None:
+        return True
+    invalid = invalid_parquet_paths(paths)
+    if not invalid or offline:
+        return _query_failure(result, error)
+    for path in invalid:
+        try:
+            path.unlink()
+        except OSError as remove_error:
+            LOGGER.warning(
+                "Unreadable Parquet could not be removed: path=%s error=%s",
+                path,
+                remove_error,
+            )
+            return _query_failure(result, error)
+    reporter.warning(
+        f"{result.pair}: rebuilding {len(invalid):,} unreadable cached file(s)"
+    )
+    recovered = cache_resources(
+        source,
+        catalog,
+        client,
+        key,
+        dataset,
+        resources,
+        data_dir,
+        max_workers=max_workers,
+        reporter=reporter,
+        executor=ingestion_executor,
+    )
+    result.warnings.extend(recovered.warnings)
+    result.problems.extend(recovered.problems)
+    if not recovered.paths:
+        return _query_failure(result, error)
+    retry_error = _populate_cached_query(
+        result,
+        catalog,
+        key,
+        recovered.paths,
+        dataset,
+        request,
+        used_range,
+        source.code,
+        reporter,
+    )
+    return True if retry_error is None else _query_failure(result, retry_error)
 
 
 def process_pair(
@@ -920,6 +992,7 @@ def process_pair(
     discovery_tail_days: int = 7,
     max_workers: int = 16,
     reporter: Reporter | None = None,
+    ingestion_executor: Executor | None = None,
 ) -> Result:
     """Discover, cache, and query one requested market.
 
@@ -939,6 +1012,7 @@ def process_pair(
         discovery_tail_days: The recent active-market days to rediscover.
         max_workers: The maximum concurrent daily archive ingestions.
         reporter: The optional Rich activity reporter.
+        ingestion_executor: An optional request-wide cache executor.
 
     Returns:
         The pair's data and structured outcome report.
@@ -1027,6 +1101,7 @@ def process_pair(
         refresh=refresh,
         max_workers=max_workers,
         reporter=display,
+        executor=ingestion_executor,
     )
     result.warnings.extend(coverage.warnings)
     result.problems.extend(coverage.problems)
@@ -1048,6 +1123,7 @@ def process_pair(
         display,
         offline=offline,
         max_workers=max_workers,
+        ingestion_executor=ingestion_executor,
     ):
         return _finish(result, display, started)
     return _finish(result, display, started)

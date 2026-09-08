@@ -1,12 +1,15 @@
 """Coordinate public cryptocurrency data requests."""
 
 import asyncio
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Executor, ThreadPoolExecutor
 from contextlib import ExitStack
 from datetime import UTC, date, datetime, time, timedelta
+from functools import cache
 import logging
 import math
 from pathlib import Path
+from queue import LifoQueue
+from ssl import SSLContext
 from time import perf_counter
 
 import httpx
@@ -18,8 +21,7 @@ from .datasets import DatasetSpec, get_dataset
 from .display import Reporter
 from .models import Market, Result
 from .pair import process_pair
-from .request import Request
-from .request import parse_timestamp
+from .request import Request, normalize_pair, parse_timestamp
 from .source import Source
 from .sources.binance import BinanceSource
 
@@ -42,6 +44,63 @@ def utc_now() -> datetime:
         The current timezone-aware UTC timestamp.
     """
     return datetime.now(UTC)
+
+
+@cache
+def _ssl_context() -> SSLContext:
+    """Create and retain the process-wide HTTP certificate context.
+
+    Returns:
+        The immutable TLS context shared by downloader request clients.
+    """
+    return httpx.create_ssl_context()
+
+
+def _reject_offline_request(request: httpx.Request) -> httpx.Response:
+    """Reject accidental HTTP access from an offline request.
+
+    Args:
+        request: The network request that offline mode attempted.
+
+    Raises:
+        RuntimeError: Always, because offline mode forbids HTTP access.
+    """
+    raise RuntimeError(f"offline mode attempted an HTTP request to {request.url}")
+
+
+def _http_client(
+    transport: httpx.BaseTransport | None,
+    limits: httpx.Limits,
+    *,
+    offline: bool,
+) -> httpx.Client:
+    """Create one request client without repeating expensive TLS setup.
+
+    Args:
+        transport: An optional caller-supplied HTTP transport.
+        limits: The source-wide connection-pool limits.
+        offline: Whether every attempted HTTP request must fail locally.
+
+    Returns:
+        A configured synchronous HTTPX client.
+    """
+    if offline:
+        return httpx.Client(
+            transport=httpx.MockTransport(_reject_offline_request),
+            follow_redirects=True,
+            limits=limits,
+        )
+    if transport is not None:
+        return httpx.Client(
+            transport=transport,
+            follow_redirects=True,
+            limits=limits,
+        )
+    return httpx.Client(
+        verify=_ssl_context(),
+        follow_redirects=True,
+        limits=limits,
+    )
 
 
 def _history_date(value: object) -> date | None:
@@ -157,6 +216,7 @@ def _run_pair(
     discovery_tail_days: int,
     max_workers: int,
     reporter: Reporter,
+    ingestion_executor: Executor,
 ) -> Result:
     """Run one pair against its dedicated catalog connection.
 
@@ -176,6 +236,7 @@ def _run_pair(
         discovery_tail_days: Recent active-market days to revisit.
         max_workers: Daily ingestion workers assigned to this pair.
         reporter: The optional Rich activity reporter.
+        ingestion_executor: The request-wide cache executor.
 
     Returns:
         The pair's data and structured diagnostics.
@@ -196,7 +257,36 @@ def _run_pair(
         discovery_tail_days=discovery_tail_days,
         max_workers=max_workers,
         reporter=reporter,
+        ingestion_executor=ingestion_executor,
     )
+
+
+def _pair_workflow_keys(
+    pairs: tuple[str, ...], markets: list[Market]
+) -> list[tuple[str, str]]:
+    """Group spellings that resolve uniquely to the same native market.
+
+    Args:
+        pairs: The caller's requested pair spellings.
+        markets: The current source market snapshot.
+
+    Returns:
+        One stable workflow identity for each requested pair.
+    """
+    native_symbols = {market.symbol for market in markets}
+    normalized_symbols: dict[str, list[str]] = {}
+    for market in markets:
+        normalized_symbols.setdefault(market.normalized_symbol, []).append(
+            market.symbol
+        )
+    keys: list[tuple[str, str]] = []
+    for pair in pairs:
+        if pair in native_symbols:
+            keys.append(("market", pair))
+            continue
+        matches = normalized_symbols.get(normalize_pair(pair), [])
+        keys.append(("market", matches[0]) if len(matches) == 1 else ("request", pair))
+    return keys
 
 
 def _process_pairs(
@@ -237,56 +327,67 @@ def _process_pairs(
     Returns:
         Results in the caller's original pair order.
     """
-    unique_pairs = list(dict.fromkeys(request.pairs))
+    workflow_keys = _pair_workflow_keys(request.pairs, markets)
+    representatives: dict[tuple[str, str], str] = {}
+    for key, pair in zip(workflow_keys, request.pairs):
+        representatives.setdefault(key, pair)
+    unique_keys = list(representatives)
+    unique_pairs = list(representatives.values())
     pair_workers = min(len(unique_pairs), max_workers)
-    ingestion_workers = max(1, max_workers // pair_workers)
+    ingestion_workers = min(max_workers, dataset.max_concurrency)
     LOGGER.info(
-        "Pair workflows planned: pairs=%d workers=%d ingestion_workers_per_pair=%d",
+        "Pair workflows planned: pairs=%d workers=%d ingestion_workers=%d",
         len(unique_pairs),
         pair_workers,
         ingestion_workers,
     )
-    with ExitStack() as stack:
-        catalogs = [
-            stack.enter_context(open_catalog(catalog_path)) for _ in unique_pairs
-        ]
-        arguments = list(zip(catalogs, unique_pairs))
+    with ThreadPoolExecutor(max_workers=ingestion_workers) as ingestion_executor:
+        with ExitStack() as stack:
+            catalog_pool: LifoQueue[Catalog] = LifoQueue()
+            for _ in range(pair_workers):
+                catalog_pool.put(
+                    stack.enter_context(open_catalog(catalog_path, initialize=False))
+                )
 
-        def run(argument: tuple[Catalog, str]) -> Result:
-            """Run one catalog and pair tuple.
+            def run(pair: str) -> Result:
+                """Run one pair with a catalog borrowed from the bounded pool.
 
-            Args:
-                argument: The dedicated catalog and requested pair.
+                Args:
+                    pair: The requested pair spelling.
 
-            Returns:
-                The completed pair result.
-            """
-            catalog, pair = argument
-            return _run_pair(
-                source,
-                catalog,
-                client,
-                data_dir,
-                markets,
-                pair,
-                request,
-                dataset,
-                earliest_date,
-                today,
-                refresh=refresh,
-                offline=offline,
-                discovery_tail_days=discovery_tail_days,
-                max_workers=ingestion_workers,
-                reporter=reporter,
-            )
+                Returns:
+                    The completed pair result.
+                """
+                catalog = catalog_pool.get()
+                try:
+                    return _run_pair(
+                        source,
+                        catalog,
+                        client,
+                        data_dir,
+                        markets,
+                        pair,
+                        request,
+                        dataset,
+                        earliest_date,
+                        today,
+                        refresh=refresh,
+                        offline=offline,
+                        discovery_tail_days=discovery_tail_days,
+                        max_workers=max_workers,
+                        reporter=reporter,
+                        ingestion_executor=ingestion_executor,
+                    )
+                finally:
+                    catalog_pool.put(catalog)
 
-        if pair_workers == 1:
-            unique_results = [run(arguments[0])]
-        else:
-            with ThreadPoolExecutor(max_workers=pair_workers) as executor:
-                unique_results = list(executor.map(run, arguments))
-    by_pair = dict(zip(unique_pairs, unique_results))
-    return [by_pair[pair] for pair in request.pairs]
+            if pair_workers == 1:
+                unique_results = [run(unique_pairs[0])]
+            else:
+                with ThreadPoolExecutor(max_workers=pair_workers) as executor:
+                    unique_results = list(executor.map(run, unique_pairs))
+    by_key = dict(zip(unique_keys, unique_results))
+    return [by_key[key] for key in workflow_keys]
 
 
 class Downloader:
@@ -428,11 +529,7 @@ class Downloader:
             max_keepalive_connections=source_limit,
         )
         with catalog_lock(catalog_path):
-            with httpx.Client(
-                transport=self.transport,
-                follow_redirects=True,
-                limits=limits,
-            ) as client:
+            with _http_client(self.transport, limits, offline=offline) as client:
                 with open_catalog(catalog_path) as catalog:
                     markets = _load_markets(
                         self.source,

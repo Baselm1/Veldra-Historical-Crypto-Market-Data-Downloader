@@ -2,7 +2,7 @@
 
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from threading import Lock
 from time import sleep
@@ -14,7 +14,12 @@ import pytest
 from crypto_downloader.cache import cache_resources, valid_cached_path
 from crypto_downloader.catalog import Catalog, catalog_lock
 from crypto_downloader.datasets import DatasetSpec, SPOT_KLINES
-from crypto_downloader.discovery import discover_resources
+from crypto_downloader.discovery import (
+    DISCOVERY_TTL,
+    _fresh_ranges,
+    _scan_ranges,
+    discover_resources,
+)
 from crypto_downloader.models import IngestedResource, Market, Resource, ResourceKey
 
 KEY = ResourceKey("binance", "spot", "klines", "BTCUSDT", "1m")
@@ -220,11 +225,36 @@ def test_inactive_discovery_reuses_a_complete_checkpoint() -> None:
     assert len(found) == 10
 
 
-def test_active_discovery_rescans_only_the_recent_tail() -> None:
-    """Confirm active markets revisit recent days without rescanning history."""
+def test_active_discovery_reuses_a_fresh_recent_tail() -> None:
+    """Confirm active markets do not immediately repeat a fresh listing."""
     source = DurableSource()
     store = catalog()
     discover_resources(source, store, httpx.Client(), KEY, START, END)
+    source.resource_calls.clear()
+
+    discover_resources(
+        source,
+        store,
+        httpx.Client(),
+        KEY,
+        START,
+        END,
+        active=True,
+        tail_days=3,
+    )
+
+    assert source.resource_calls == []
+
+
+def test_active_discovery_rescans_only_a_stale_recent_tail() -> None:
+    """Confirm an active market revisits stale tail days without scanning history."""
+    source = DurableSource()
+    store = catalog()
+    discover_resources(source, store, httpx.Client(), KEY, START, END)
+    store.connection.execute(
+        "UPDATE discovery_segments SET scanned_at = ?",
+        [datetime.now(UTC).replace(tzinfo=None) - DISCOVERY_TTL - timedelta(seconds=1)],
+    )
     source.resource_calls.clear()
 
     discover_resources(
@@ -300,6 +330,73 @@ def test_active_tail_merges_with_a_newer_uncovered_range() -> None:
     )
 
     assert source.resource_calls == [(date(2025, 1, 6), date(2025, 1, 10))]
+
+
+def test_active_tail_scans_only_days_without_fresh_coverage() -> None:
+    """Confirm overlapping fresh segments can jointly cover part of an active tail."""
+    now = datetime(2025, 1, 11, tzinfo=UTC)
+    checkpoints = [
+        (date(2025, 1, 1), date(2025, 1, 7), now - DISCOVERY_TTL - timedelta(1)),
+        (date(2025, 1, 8), date(2025, 1, 8), now),
+        (date(2025, 1, 10), date(2025, 1, 10), now),
+    ]
+
+    assert _scan_ranges(
+        date(2025, 1, 1),
+        date(2025, 1, 10),
+        checkpoints,
+        active=True,
+        refresh=False,
+        offline=False,
+        tail_days=3,
+        now=now,
+    ) == [(date(2025, 1, 9), date(2025, 1, 9))]
+
+
+def test_discovery_checkpoint_is_fresh_at_the_ttl_boundary() -> None:
+    """Confirm a checkpoint becomes stale only after the full TTL has elapsed."""
+    now = datetime(2025, 1, 11, tzinfo=UTC)
+
+    assert (
+        _scan_ranges(
+            date(2025, 1, 8),
+            date(2025, 1, 10),
+            [(date(2025, 1, 8), date(2025, 1, 10), now - DISCOVERY_TTL)],
+            active=True,
+            refresh=False,
+            offline=False,
+            tail_days=3,
+            now=now,
+        )
+        == []
+    )
+
+
+@pytest.mark.parametrize(
+    ("checkpoints", "now", "message"),
+    [
+        (
+            [(date(2025, 1, 8), date(2025, 1, 10), datetime(2025, 1, 10))],
+            datetime(2025, 1, 11, tzinfo=UTC),
+            "checkpoint",
+        ),
+        ([], datetime(2025, 1, 11), "clock"),
+    ],
+)
+def test_discovery_freshness_rejects_naive_timestamps(
+    checkpoints: list[tuple[date, date, datetime]],
+    now: datetime,
+    message: str,
+) -> None:
+    """Confirm TTL comparisons never mix ambiguous naive timestamps.
+
+    Args:
+        checkpoints: The checkpoints supplied to the freshness check.
+        now: The timestamp treated as the current time.
+        message: The expected validation error fragment.
+    """
+    with pytest.raises(ValueError, match=message):
+        _fresh_ranges(checkpoints, now)
 
 
 def test_discovery_rejects_a_nonpositive_tail() -> None:

@@ -115,7 +115,7 @@ def test_spot_kline_schema_matches_the_daily_archive_and_cache() -> None:
     assert spec.time_column == "open_time"
     assert spec.base_interval == "1m"
     assert spec.output_intervals == OUTPUT_INTERVALS
-    assert spec.max_concurrency == 32
+    assert spec.max_concurrency == 64
     assert spec.csv_header == "absent"
     assert spec.schema_version == 1
     assert spec.supports_resampling is True

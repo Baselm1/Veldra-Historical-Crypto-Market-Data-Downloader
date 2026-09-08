@@ -333,6 +333,11 @@ def test_disjoint_discoveries_remain_distinct_coverage_segments(
         (date(2025, 1, 1), date(2025, 1, 2)),
         (date(2025, 1, 8), date(2025, 1, 9)),
     ]
+    checkpoints = catalog.discovery_checkpoints(KEY)
+    assert [(start, end) for start, end, _ in checkpoints] == catalog.discovery_ranges(
+        KEY
+    )
+    assert all(scanned_at.tzinfo is UTC for _, _, scanned_at in checkpoints)
 
 
 def test_disjoint_discovery_segments_survive_catalog_reopening(tmp_path: Path) -> None:
@@ -498,6 +503,80 @@ def test_failed_resource_clears_stale_cache_metadata(
     assert found.first_timestamp is None
     assert found.last_timestamp is None
     assert found.last_attempt_at is not None
+
+
+def test_resource_outcomes_are_stored_together(
+    catalog: Catalog, tmp_path: Path
+) -> None:
+    """Confirm one batch stores successful and failed resource metadata.
+
+    Args:
+        catalog: The isolated metadata catalog.
+        tmp_path: The temporary directory used for Parquet paths.
+    """
+    resources = [resource(1), resource(2), resource(3)]
+    catalog.save_discovery(KEY, resources[0].day, resources[-1].day, resources)
+    first = replace(ingested(), parquet_mtime_ns=1_750_000_000_000_000_001)
+    third = replace(
+        ingested(),
+        parquet_mtime_ns=1_750_000_000_000_000_003,
+        first_timestamp=datetime(2025, 1, 3, tzinfo=UTC),
+        last_timestamp=datetime(2025, 1, 3, 0, 1, tzinfo=UTC),
+    )
+
+    catalog.mark_outcomes(
+        KEY,
+        [
+            (resources[0].day, tmp_path / "one.parquet", first),
+            (resources[2].day, tmp_path / "three.parquet", third),
+        ],
+        [(resources[1].day, "checksum mismatch")],
+    )
+
+    found = catalog.resources(KEY, resources[0].day, resources[-1].day)
+    assert [item.status for item in found] == ["ready", "failed", "ready"]
+    assert found[0].parquet_mtime_ns == first.parquet_mtime_ns
+    assert found[1].error == "checksum mismatch"
+    assert found[1].parquet_path is None
+    assert found[2].parquet_mtime_ns == third.parquet_mtime_ns
+    assert all(item.last_attempt_at is not None for item in found)
+
+
+def test_resource_outcome_batch_rolls_back_when_a_day_is_unknown(
+    catalog: Catalog, tmp_path: Path
+) -> None:
+    """Confirm an unknown day prevents every outcome in the batch.
+
+    Args:
+        catalog: The isolated metadata catalog.
+        tmp_path: The temporary directory used for a Parquet path.
+    """
+    catalog.save_discovery(KEY, date(2025, 1, 1), date(2025, 1, 1), [resource()])
+
+    with pytest.raises(KeyError, match="2025-01-02"):
+        catalog.mark_outcomes(
+            KEY,
+            [(date(2025, 1, 1), tmp_path / "one.parquet", ingested())],
+            [(date(2025, 1, 2), "missing")],
+        )
+
+    found = catalog.resources(KEY, date(2025, 1, 1), date(2025, 1, 1))[0]
+    assert found.status == "discovered"
+    assert found.parquet_path is None
+
+
+def test_resource_outcome_batch_rejects_duplicate_days(catalog: Catalog) -> None:
+    """Confirm one day cannot be reported as both ready and failed.
+
+    Args:
+        catalog: The isolated metadata catalog.
+    """
+    with pytest.raises(ValueError, match="duplicate"):
+        catalog.mark_outcomes(
+            KEY,
+            [(date(2025, 1, 1), Path("one.parquet"), ingested())],
+            [(date(2025, 1, 1), "failed")],
+        )
 
 
 @pytest.mark.parametrize("operation", ["ready", "failed"])

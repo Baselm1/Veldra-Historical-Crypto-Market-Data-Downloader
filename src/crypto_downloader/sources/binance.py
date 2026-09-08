@@ -35,6 +35,26 @@ DAILY_ROOTS: Mapping[str, str] = {
     "cm": "data/futures/cm/daily",
 }
 LOGGER = logging.getLogger(__name__)
+_S3_MAX_KEYS = 1_000
+_DAILY_KEYS_PER_ARCHIVE = 2
+
+
+def _resource_page_size(start_day: date, end_day: date) -> int:
+    """Return an S3 page size matched to an inclusive daily range.
+
+    Args:
+        start_day: The first requested archive day.
+        end_day: The last requested archive day.
+
+    Returns:
+        Enough keys for each ZIP and checksum plus the next day's boundary,
+        capped at Binance's maximum S3 page size.
+    """
+    requested_days = (end_day - start_day).days + 1
+    return min(
+        _S3_MAX_KEYS,
+        _DAILY_KEYS_PER_ARCHIVE * (requested_days + 1),
+    )
 
 
 class BinanceSource:
@@ -43,7 +63,7 @@ class BinanceSource:
     code: str = "binance"
     products: tuple[str, ...] = ("spot", "um", "cm")
     active_statuses: frozenset[str] = frozenset({"TRADING"})
-    max_concurrency: int = 32
+    max_concurrency: int = 64
 
     def __init__(
         self,
@@ -218,8 +238,14 @@ class BinanceSource:
         marker = f"{prefix}{stem}{start_day.isoformat()}"
         pattern = re.compile(re.escape(prefix + stem) + r"(\d{4}-\d{2}-\d{2})\.zip")
         found: dict[date, Resource] = {}
+        max_keys = _resource_page_size(start_day, end_day)
 
-        for keys, _ in self._pages(client, prefix, marker=marker):
+        for keys, _ in self._pages(
+            client,
+            prefix,
+            marker=marker,
+            max_keys=max_keys,
+        ):
             past_end = False
             for object_key in keys:
                 day = self._resource_day(object_key, pattern)

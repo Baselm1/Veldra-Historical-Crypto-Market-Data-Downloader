@@ -16,6 +16,24 @@ from .models import IngestedResource, Market, Resource, ResourceKey
 _CATALOG_LOCKS = tuple(RLock() for _ in range(64))
 LOGGER = logging.getLogger(__name__)
 
+type ReadyResourceOutcome = tuple[date, Path, IngestedResource]
+type FailedResourceOutcome = tuple[date, str]
+type DiscoveryCheckpoint = tuple[date, date, datetime]
+type ResourceOutcomeRow = tuple[
+    date,
+    str,
+    str | None,
+    str | None,
+    int | None,
+    int | None,
+    int | None,
+    datetime | None,
+    datetime | None,
+    str | None,
+    int | None,
+    str | None,
+]
+
 
 def _key_values(key: ResourceKey) -> tuple[str, str, str, str, str]:
     """Return a resource key as database parameter values.
@@ -118,11 +136,12 @@ def _utc_timestamp(value: datetime | None) -> datetime | None:
 
 
 @contextmanager
-def open_catalog(path: Path) -> Iterator[Catalog]:
+def open_catalog(path: Path, *, initialize: bool = True) -> Iterator[Catalog]:
     """Open a catalog database and close it after use.
 
     Args:
         path: The DuckDB file to create or open.
+        initialize: Whether to create and migrate the catalog schema.
 
     Yields:
         A catalog connected to the requested database.
@@ -131,7 +150,7 @@ def open_catalog(path: Path) -> Iterator[Catalog]:
     LOGGER.debug("Opening DuckDB catalog: path=%s", path)
     connection = duckdb.connect(str(path))
     try:
-        yield Catalog(connection)
+        yield Catalog(connection, initialize=initialize)
     finally:
         connection.close()
         LOGGER.debug("Closed DuckDB catalog: path=%s", path)
@@ -155,15 +174,19 @@ def catalog_lock(path: Path) -> Iterator[None]:
 class Catalog:
     """Read and write downloader metadata in one DuckDB connection."""
 
-    def __init__(self, connection: duckdb.DuckDBPyConnection) -> None:
+    def __init__(
+        self, connection: duckdb.DuckDBPyConnection, *, initialize: bool = True
+    ) -> None:
         """Prepare a catalog around an open DuckDB connection.
 
         Args:
             connection: The DuckDB connection used for catalog operations.
+            initialize: Whether to create and migrate the catalog schema.
         """
         self.connection = connection
         self.connection.execute("SET TimeZone = 'UTC'")
-        self._create_schema()
+        if initialize:
+            self._create_schema()
 
     def _create_schema(self) -> None:
         """Create metadata tables and migrate older catalogs when needed."""
@@ -563,6 +586,31 @@ class Catalog:
         ).fetchall()
         return [(row[0], row[1]) for row in rows]
 
+    def discovery_checkpoints(self, key: ResourceKey) -> list[DiscoveryCheckpoint]:
+        """Return searched day ranges together with their latest scan times.
+
+        Args:
+            key: The dataset identity whose discovery checkpoints are needed.
+
+        Returns:
+            Ordered inclusive ranges and their UTC-aware scan timestamps.
+        """
+        rows = self.connection.execute(
+            """
+            SELECT start_day, end_day, scanned_at
+            FROM discovery_segments
+            WHERE source = ? AND product = ? AND dataset = ?
+              AND symbol = ? AND interval = ?
+            ORDER BY start_day, end_day
+            """,
+            _key_values(key),
+        ).fetchall()
+        return [
+            (row[0], row[1], timestamp)
+            for row in rows
+            if (timestamp := _utc_timestamp(row[2])) is not None
+        ]
+
     def resource_bounds(self, key: ResourceKey) -> tuple[date, date] | None:
         """Return the earliest and latest discovered resource days.
 
@@ -661,6 +709,7 @@ class Catalog:
         """
         _validate_discovery(start_day, end_day, resources)
         key_values = _key_values(key)
+        scanned_at = _database_timestamp(datetime.now(UTC))
         rows = [
             (
                 *key_values,
@@ -743,8 +792,8 @@ class Catalog:
                     """
                 INSERT INTO discoveries (
                     source, product, dataset, symbol, interval,
-                    start_day, end_day
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    start_day, end_day, scanned_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT (
                     source, product, dataset, symbol, interval
                 ) DO UPDATE SET
@@ -752,20 +801,20 @@ class Catalog:
                     end_day = GREATEST(discoveries.end_day, excluded.end_day),
                     scanned_at = excluded.scanned_at
                     """,
-                    [*key_values, start_day, end_day],
+                    [*key_values, start_day, end_day, scanned_at],
                 )
                 self.connection.execute(
                     """
                     INSERT INTO discovery_segments (
                         source, product, dataset, symbol, interval,
-                        start_day, end_day
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                        start_day, end_day, scanned_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT (
                         source, product, dataset, symbol, interval,
                         start_day, end_day
                     ) DO UPDATE SET scanned_at = excluded.scanned_at
                     """,
-                    [*key_values, start_day, end_day],
+                    [*key_values, start_day, end_day, scanned_at],
                 )
         finally:
             if rows:
@@ -843,41 +892,7 @@ class Catalog:
             parquet_path: The path of the verified Parquet file.
             metadata: The file hashes, size, rows, and timestamp bounds.
         """
-        row = self.connection.execute(
-            """
-            UPDATE resources SET
-                status = 'ready',
-                archive_sha256 = ?,
-                parquet_path = ?,
-                parquet_size = ?,
-                parquet_mtime_ns = ?,
-                row_count = ?,
-                first_timestamp = ?,
-                last_timestamp = ?,
-                timestamp_column = ?,
-                schema_version = ?,
-                error = NULL,
-                last_attempt_at = current_timestamp
-            WHERE source = ? AND product = ? AND dataset = ?
-              AND symbol = ? AND interval = ? AND day = ?
-            RETURNING day
-            """,
-            [
-                metadata.archive_sha256,
-                str(parquet_path),
-                metadata.parquet_size,
-                metadata.parquet_mtime_ns,
-                metadata.row_count,
-                _database_timestamp(metadata.first_timestamp),
-                _database_timestamp(metadata.last_timestamp),
-                metadata.timestamp_column,
-                metadata.schema_version,
-                *_key_values(key),
-                day,
-            ],
-        ).fetchone()
-        if row is None:
-            raise KeyError(f"resource {day.isoformat()} was not discovered")
+        self.mark_outcomes(key, [(day, parquet_path, metadata)], [])
         LOGGER.debug("Resource marked ready: key=%s day=%s", key, day)
 
     def mark_failed(self, key: ResourceKey, day: date, error: str) -> None:
@@ -888,25 +903,110 @@ class Catalog:
             day: The resource day that failed.
             error: The failure reported by the downloader.
         """
-        row = self.connection.execute(
-            """
-            UPDATE resources SET
-                status = 'failed',
-                archive_sha256 = NULL,
-                parquet_path = NULL,
-                parquet_size = NULL,
-                parquet_mtime_ns = NULL,
-                row_count = NULL,
-                first_timestamp = NULL,
-                last_timestamp = NULL,
-                error = ?,
-                last_attempt_at = current_timestamp
-            WHERE source = ? AND product = ? AND dataset = ?
-              AND symbol = ? AND interval = ? AND day = ?
-            RETURNING day
-            """,
-            [error, *_key_values(key), day],
-        ).fetchone()
-        if row is None:
-            raise KeyError(f"resource {day.isoformat()} was not discovered")
+        self.mark_outcomes(key, [], [(day, error)])
         LOGGER.debug("Resource marked failed: key=%s day=%s error=%s", key, day, error)
+
+    def mark_outcomes(
+        self,
+        key: ResourceKey,
+        ready: Sequence[ReadyResourceOutcome],
+        failed: Sequence[FailedResourceOutcome],
+    ) -> None:
+        """Record successful and failed resource attempts in one transaction.
+
+        Args:
+            key: The dataset identity containing every resource.
+            ready: Successful days with their Parquet paths and metadata.
+            failed: Failed days with their error messages.
+        """
+        days = [day for day, _path, _metadata in ready]
+        days.extend(day for day, _error in failed)
+        if len(days) != len(set(days)):
+            raise ValueError("resource outcomes contain a duplicate day")
+        if not days:
+            return
+        columns = (
+            "day",
+            "status",
+            "archive_sha256",
+            "parquet_path",
+            "parquet_size",
+            "parquet_mtime_ns",
+            "row_count",
+            "first_timestamp",
+            "last_timestamp",
+            "timestamp_column",
+            "schema_version",
+            "error",
+        )
+        rows: list[ResourceOutcomeRow] = [
+            (
+                day,
+                "ready",
+                metadata.archive_sha256,
+                str(path),
+                metadata.parquet_size,
+                metadata.parquet_mtime_ns,
+                metadata.row_count,
+                _database_timestamp(metadata.first_timestamp),
+                _database_timestamp(metadata.last_timestamp),
+                metadata.timestamp_column,
+                metadata.schema_version,
+                None,
+            )
+            for day, path, metadata in ready
+        ]
+        rows.extend(
+            (day, "failed", None, None, None, None, None, None, None, None, None, error)
+            for day, error in failed
+        )
+        frame = pd.DataFrame.from_records(rows, columns=columns)
+        for index, column in (
+            (4, "parquet_size"),
+            (5, "parquet_mtime_ns"),
+            (6, "row_count"),
+            (10, "schema_version"),
+        ):
+            frame[column] = pd.array([row[index] for row in rows], dtype="Int64")
+        self.connection.register("incoming_resource_outcomes", frame)
+        try:
+            with self._transaction():
+                updated = self.connection.execute(
+                    """
+                    UPDATE resources AS stored SET
+                        status = incoming.status,
+                        archive_sha256 = incoming.archive_sha256,
+                        parquet_path = incoming.parquet_path,
+                        parquet_size = incoming.parquet_size,
+                        parquet_mtime_ns = incoming.parquet_mtime_ns,
+                        row_count = incoming.row_count,
+                        first_timestamp = incoming.first_timestamp,
+                        last_timestamp = incoming.last_timestamp,
+                        timestamp_column = CASE WHEN incoming.status = 'ready'
+                            THEN incoming.timestamp_column
+                            ELSE stored.timestamp_column END,
+                        schema_version = CASE WHEN incoming.status = 'ready'
+                            THEN incoming.schema_version
+                            ELSE stored.schema_version END,
+                        error = incoming.error,
+                        last_attempt_at = current_timestamp
+                    FROM incoming_resource_outcomes AS incoming
+                    WHERE stored.source = ? AND stored.product = ?
+                      AND stored.dataset = ? AND stored.symbol = ?
+                      AND stored.interval = ? AND stored.day = incoming.day
+                    RETURNING stored.day
+                    """,
+                    _key_values(key),
+                ).fetchall()
+                updated_days = {row[0] for row in updated}
+                if updated_days != set(days):
+                    missing = min(set(days) - updated_days)
+                    raise KeyError(f"resource {missing.isoformat()} was not discovered")
+        finally:
+            self.connection.unregister("incoming_resource_outcomes")
+        LOGGER.debug(
+            "Resource outcomes stored: key=%s ready=%d failed=%d",
+            key,
+            len(ready),
+            len(failed),
+        )
