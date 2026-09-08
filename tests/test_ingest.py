@@ -32,7 +32,7 @@ from crypto_downloader.datasets import (
 from crypto_downloader.http import ChecksumError
 from crypto_downloader.ingest import ArchiveError, _member, ingest_archive
 from crypto_downloader.models import Resource
-from crypto_downloader.processing import DataValidationError, file_sha256
+from crypto_downloader.processing import DataValidationError
 from crypto_downloader.sources.binance import BinanceSource
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -126,7 +126,6 @@ def test_ingest_archive_writes_atomic_canonical_parquet(
     assert tuple(frame.columns) == SPOT_KLINES.stored_columns
     assert len(frame) == metadata.row_count == 2
     assert metadata.archive_sha256 == digest
-    assert metadata.parquet_sha256 == file_sha256(destination)
     assert metadata.parquet_size == destination.stat().st_size
     assert metadata.parquet_mtime_ns == destination.stat().st_mtime_ns
     assert metadata.first_timestamp == frame.iloc[0]["open_time"].to_pydatetime()

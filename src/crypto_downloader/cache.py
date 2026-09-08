@@ -7,12 +7,12 @@ import logging
 from pathlib import Path
 
 import httpx
+import pyarrow.parquet as parquet
 
 from .catalog import Catalog
 from .datasets import DatasetSpec
 from .display import Reporter
 from .models import IngestedResource, Message, Resource, ResourceKey
-from .processing import file_sha256
 from .source import Source
 
 LOGGER = logging.getLogger(__name__)
@@ -25,6 +25,28 @@ class CacheCoverage:
     paths: list[Path] = field(default_factory=list)
     warnings: list[Message] = field(default_factory=list)
     problems: list[Message] = field(default_factory=list)
+
+
+def invalid_parquet_paths(paths: list[Path]) -> list[Path]:
+    """Return unreadable Parquet files before a DuckDB query.
+
+    Args:
+        paths: The cached partitions about to be queried.
+
+    Returns:
+        Paths whose Parquet metadata cannot be read.
+    """
+    invalid: list[Path] = []
+    for path in paths:
+        try:
+            with path.open("rb") as source:
+                parquet.ParquetFile(source)
+        except Exception as error:
+            LOGGER.warning(
+                "Cached Parquet is unreadable: path=%s error=%s", path, error
+            )
+            invalid.append(path)
+    return invalid
 
 
 def parquet_path(data_dir: Path, key: ResourceKey, day: date) -> Path:
@@ -48,25 +70,6 @@ def parquet_path(data_dir: Path, key: ResourceKey, day: date) -> Path:
         / (key.interval or "raw")
         / f"{day.isoformat()}.parquet"
     )
-
-
-def _cached_hash_matches(resource: Resource, path: Path) -> bool:
-    """Return whether a cached file matches its recorded content hash.
-
-    Args:
-        resource: The cataloged cache metadata.
-        path: The local Parquet file to hash.
-
-    Returns:
-        Whether the file content is unchanged.
-    """
-    if resource.parquet_sha256 is None:
-        return True
-    try:
-        return file_sha256(path) == resource.parquet_sha256
-    except OSError as error:
-        LOGGER.debug("Cached resource hashing failed: path=%s error=%s", path, error)
-        return False
 
 
 def valid_cached_path(resource: Resource, dataset: DatasetSpec) -> Path | None:
@@ -124,9 +127,7 @@ def valid_cached_path(resource: Resource, dataset: DatasetSpec) -> Path | None:
             (stat.st_size, stat.st_mtime_ns),
         )
         return None
-    valid_hash = _cached_hash_matches(resource, path)
-    LOGGER.debug("Cached resource hash checked: path=%s valid=%s", path, valid_hash)
-    return path if valid_hash else None
+    return path
 
 
 def _ingest_resource(

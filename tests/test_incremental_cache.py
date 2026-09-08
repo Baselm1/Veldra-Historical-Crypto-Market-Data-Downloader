@@ -16,7 +16,6 @@ from crypto_downloader.catalog import Catalog, catalog_lock
 from crypto_downloader.datasets import DatasetSpec, SPOT_KLINES
 from crypto_downloader.discovery import discover_resources
 from crypto_downloader.models import IngestedResource, Market, Resource, ResourceKey
-from crypto_downloader.processing import file_sha256
 
 KEY = ResourceKey("binance", "spot", "klines", "BTCUSDT", "1m")
 START = datetime(2025, 1, 1, tzinfo=UTC)
@@ -147,7 +146,6 @@ class DurableSource:
         timestamp = datetime.combine(item.day, datetime.min.time(), UTC)
         return IngestedResource(
             "a" * 64,
-            file_sha256(destination),
             stat.st_size,
             stat.st_mtime_ns,
             1,
@@ -340,10 +338,10 @@ def test_offline_discovery_reads_only_the_catalog() -> None:
     assert [item.day for item in found] == [date(2025, 1, 2)]
 
 
-def test_cache_rejects_content_corruption_even_when_stat_is_preserved(
+def test_cache_trusts_a_local_file_when_its_fast_metadata_is_preserved(
     tmp_path: Path,
 ) -> None:
-    """Confirm SHA-256 catches corruption hidden behind unchanged file metadata.
+    """Confirm warm validation avoids hashing an unchanged-size local file.
 
     Args:
         tmp_path: The isolated cache directory.
@@ -355,16 +353,17 @@ def test_cache_rejects_content_corruption_even_when_stat_is_preserved(
         resource(date(2025, 1, 1)),
         status="ready",
         parquet_path=path,
-        parquet_sha256=file_sha256(path),
         parquet_size=stat.st_size,
         parquet_mtime_ns=stat.st_mtime_ns,
+        timestamp_column=SPOT_KLINES.time_column,
+        schema_version=SPOT_KLINES.schema_version,
     )
     path.write_bytes(b"wrong")
     path.touch()
     path_stat = path.stat()
     item = replace(item, parquet_mtime_ns=path_stat.st_mtime_ns)
 
-    assert valid_cached_path(item, SPOT_KLINES) is None
+    assert valid_cached_path(item, SPOT_KLINES) == path
 
 
 def test_cache_rebuilds_a_partition_with_an_incompatible_schema(
@@ -464,7 +463,6 @@ def test_rediscovery_invalidates_ready_metadata_after_a_schema_change(
     assert current.status == "discovered"
     assert current.archive_sha256 is None
     assert current.parquet_path is None
-    assert current.parquet_sha256 is None
     assert current.parquet_size is None
     assert current.parquet_mtime_ns is None
     assert current.row_count is None

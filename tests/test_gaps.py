@@ -20,7 +20,6 @@ from crypto_downloader.models import (
     ResourceKey,
     Result,
 )
-from crypto_downloader.processing import file_sha256
 from crypto_downloader.query import missing_ranges, query_parquet
 from crypto_downloader.request import Request, parse_gap_policy
 
@@ -446,7 +445,6 @@ class GapSource:
         stat = destination.stat()
         return IngestedResource(
             "a" * 64,
-            file_sha256(destination),
             stat.st_size,
             stat.st_mtime_ns,
             len(frame),

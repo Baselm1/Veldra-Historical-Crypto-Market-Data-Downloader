@@ -12,7 +12,6 @@ import pytest
 from crypto_downloader.datasets import SPOT_KLINES
 from crypto_downloader.processing import (
     DataValidationError,
-    file_sha256,
     normalize_chunk,
     validate_chunk,
 )
@@ -70,16 +69,6 @@ def test_normalize_chunk_handles_millisecond_and_microsecond_epochs(
         if column not in {"open_time", "close_time", "trade_count"}
     )
     assert "ignore" not in result
-
-
-def test_file_sha256_hashes_file_bytes(tmp_path: Path) -> None:
-    """Confirm file hashing returns a lowercase SHA-256 digest."""
-    path = tmp_path / "value.bin"
-    path.write_bytes(b"abc")
-
-    assert file_sha256(path) == (
-        "ba7816bf8f01cfea414140de5dae2223" "b00361a396177a9cb410ff61f20015ad"
-    )
 
 
 def test_normalize_chunk_requires_exact_source_schema() -> None:

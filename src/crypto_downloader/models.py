@@ -89,7 +89,6 @@ class Resource:
     status: str = "discovered"
     archive_sha256: str | None = None
     parquet_path: Path | None = None
-    parquet_sha256: str | None = None
     parquet_size: int | None = None
     parquet_mtime_ns: int | None = None
     row_count: int | None = None
@@ -108,7 +107,6 @@ class IngestedResource:
     """Describe a verified Parquet file produced from one archive."""
 
     archive_sha256: str
-    parquet_sha256: str
     parquet_size: int
     parquet_mtime_ns: int
     row_count: int

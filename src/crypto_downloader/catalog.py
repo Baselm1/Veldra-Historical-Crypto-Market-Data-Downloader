@@ -200,7 +200,6 @@ class Catalog:
                 status VARCHAR NOT NULL DEFAULT 'discovered',
                 archive_sha256 VARCHAR,
                 parquet_path VARCHAR,
-                parquet_sha256 VARCHAR,
                 parquet_size BIGINT,
                 parquet_mtime_ns BIGINT,
                 row_count BIGINT,
@@ -270,6 +269,9 @@ class Catalog:
             self.connection.execute(statement)
         self.connection.execute(
             "UPDATE resources SET schema_version = 1 WHERE schema_version IS NULL"
+        )
+        self.connection.execute(
+            "ALTER TABLE resources DROP COLUMN IF EXISTS parquet_sha256"
         )
         self.connection.execute("""
             INSERT INTO discovery_segments
@@ -697,7 +699,6 @@ class Catalog:
                         status = 'discovered',
                         archive_sha256 = NULL,
                         parquet_path = NULL,
-                        parquet_sha256 = NULL,
                         parquet_size = NULL,
                         parquet_mtime_ns = NULL,
                         row_count = NULL,
@@ -794,7 +795,7 @@ class Catalog:
         rows = self.connection.execute(
             """
             SELECT day, url, checksum_url, status, archive_sha256,
-                   parquet_path, parquet_sha256, parquet_size, parquet_mtime_ns, row_count,
+                   parquet_path, parquet_size, parquet_mtime_ns, row_count,
                    first_timestamp, last_timestamp, archive_symbol, timestamp_column,
                    schema_version, error, last_attempt_at
             FROM resources
@@ -813,17 +814,16 @@ class Catalog:
                 status=row[3],
                 archive_sha256=row[4],
                 parquet_path=Path(row[5]) if row[5] is not None else None,
-                parquet_sha256=row[6],
-                parquet_size=row[7],
-                parquet_mtime_ns=row[8],
-                row_count=row[9],
-                first_timestamp=_utc_timestamp(row[10]),
-                last_timestamp=_utc_timestamp(row[11]),
-                archive_symbol=row[12],
-                timestamp_column=row[13],
-                schema_version=row[14],
-                error=row[15],
-                last_attempt_at=_utc_timestamp(row[16]),
+                parquet_size=row[6],
+                parquet_mtime_ns=row[7],
+                row_count=row[8],
+                first_timestamp=_utc_timestamp(row[9]),
+                last_timestamp=_utc_timestamp(row[10]),
+                archive_symbol=row[11],
+                timestamp_column=row[12],
+                schema_version=row[13],
+                error=row[14],
+                last_attempt_at=_utc_timestamp(row[15]),
             )
             for row in rows
         ]
@@ -849,7 +849,6 @@ class Catalog:
                 status = 'ready',
                 archive_sha256 = ?,
                 parquet_path = ?,
-                parquet_sha256 = ?,
                 parquet_size = ?,
                 parquet_mtime_ns = ?,
                 row_count = ?,
@@ -866,7 +865,6 @@ class Catalog:
             [
                 metadata.archive_sha256,
                 str(parquet_path),
-                metadata.parquet_sha256,
                 metadata.parquet_size,
                 metadata.parquet_mtime_ns,
                 metadata.row_count,
@@ -896,7 +894,6 @@ class Catalog:
                 status = 'failed',
                 archive_sha256 = NULL,
                 parquet_path = NULL,
-                parquet_sha256 = NULL,
                 parquet_size = NULL,
                 parquet_mtime_ns = NULL,
                 row_count = NULL,

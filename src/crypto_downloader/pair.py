@@ -11,7 +11,7 @@ import duckdb
 import httpx
 
 from .catalog import Catalog
-from .cache import cache_resources
+from .cache import cache_resources, invalid_parquet_paths
 from .datasets import DatasetSpec
 from .display import Reporter, format_range, format_time
 from .discovery import discover_resources, requested_days
@@ -768,7 +768,7 @@ def _populate_query(
     used_range: tuple[datetime, datetime],
     source_code: str,
     reporter: Reporter,
-) -> bool:
+) -> Exception | None:
     """Populate one result while isolating non-policy query failures.
 
     Args:
@@ -782,7 +782,7 @@ def _populate_query(
         reporter: The optional Rich activity reporter.
 
     Returns:
-        True when querying completed, otherwise False.
+        ``None`` when querying completed, otherwise the isolated failure.
     """
     try:
         _query_result(
@@ -795,13 +795,112 @@ def _populate_query(
             source_code,
             reporter,
         )
-        return True
+        return None
     except MissingCandlesError:
         raise
     except Exception as error:
-        LOGGER.exception("Parquet query failed: pair=%s", result.pair)
-        result.errors.append(Message("query_failed", str(error)))
-        return False
+        LOGGER.warning("Parquet query failed: pair=%s error=%s", result.pair, error)
+        return error
+
+
+def _query_failure(result: Result, error: Exception) -> bool:
+    """Record an unrecoverable Parquet query failure.
+
+    Args:
+        result: The pair result receiving the structured error.
+        error: The query exception shown to the caller.
+
+    Returns:
+        False for direct use as a failed workflow outcome.
+    """
+    LOGGER.exception("Parquet query failed: pair=%s", result.pair, exc_info=error)
+    result.errors.append(Message("query_failed", str(error)))
+    return False
+
+
+def _query_with_recovery(
+    result: Result,
+    source: Source,
+    catalog: Catalog,
+    client: httpx.Client,
+    key: ResourceKey,
+    resources: list[Resource],
+    paths: list[Path],
+    data_dir: Path,
+    dataset: DatasetSpec,
+    request: Request,
+    used_range: tuple[datetime, datetime],
+    reporter: Reporter,
+    *,
+    offline: bool,
+    max_workers: int,
+) -> bool:
+    """Query cached partitions and rebuild unreadable files once.
+
+    Args:
+        result: The pair result to populate.
+        source: The source strategy used for recovery downloads.
+        catalog: The metadata catalog containing resource state.
+        client: The HTTPX client used for recovery downloads.
+        key: The requested source dataset identity.
+        resources: The requested catalog resources.
+        paths: The initially valid local partitions.
+        data_dir: The root downloader data directory.
+        dataset: The requested dataset schema.
+        request: The validated caller request.
+        used_range: The cleaned query range.
+        reporter: The optional activity reporter.
+        offline: Whether recovery downloads are forbidden.
+        max_workers: The maximum concurrent recovery downloads.
+
+    Returns:
+        True after a successful query, otherwise False with a result error.
+    """
+    invalid = invalid_parquet_paths(paths)
+    if invalid:
+        invalid_error = RuntimeError("cached Parquet file is unreadable")
+        if offline:
+            return _query_failure(result, invalid_error)
+        for path in invalid:
+            try:
+                path.unlink()
+            except OSError as remove_error:
+                LOGGER.warning(
+                    "Unreadable Parquet could not be removed: path=%s error=%s",
+                    path,
+                    remove_error,
+                )
+                return _query_failure(result, invalid_error)
+        reporter.warning(
+            f"{result.pair}: rebuilding {len(invalid):,} unreadable cached file(s)"
+        )
+        recovered = cache_resources(
+            source,
+            catalog,
+            client,
+            key,
+            dataset,
+            resources,
+            data_dir,
+            max_workers=max_workers,
+            reporter=reporter,
+        )
+        result.warnings.extend(recovered.warnings)
+        result.problems.extend(recovered.problems)
+        if not recovered.paths:
+            return _query_failure(result, invalid_error)
+        paths = recovered.paths
+    error = _populate_query(
+        result,
+        catalog,
+        paths,
+        dataset,
+        request,
+        used_range,
+        source.code,
+        reporter,
+    )
+    return True if error is None else _query_failure(result, error)
 
 
 def process_pair(
@@ -934,15 +1033,21 @@ def process_pair(
     if not coverage.paths:
         return _finish(result, display, started)
 
-    if not _populate_query(
+    if not _query_with_recovery(
         result,
+        source,
         catalog,
+        client,
+        key,
+        requested_resources,
         coverage.paths,
+        data_dir,
         dataset,
         request,
         used_range,
-        source.code,
         display,
+        offline=offline,
+        max_workers=max_workers,
     ):
         return _finish(result, display, started)
     return _finish(result, display, started)

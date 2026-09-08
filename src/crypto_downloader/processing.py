@@ -2,9 +2,7 @@
 
 from collections.abc import Callable
 from datetime import date
-import hashlib
 import logging
-from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -16,22 +14,6 @@ LOGGER = logging.getLogger(__name__)
 
 class DataValidationError(ValueError):
     """Report malformed or inconsistent source rows."""
-
-
-def file_sha256(path: Path) -> str:
-    """Calculate the SHA-256 digest of one file.
-
-    Args:
-        path: The file whose bytes should be hashed.
-
-    Returns:
-        The lowercase hexadecimal SHA-256 digest.
-    """
-    digest = hashlib.sha256()
-    with path.open("rb") as source:
-        for block in iter(lambda: source.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
 
 
 def _number(values: pd.Series, column: str) -> pd.Series:

@@ -14,7 +14,7 @@ import pyarrow.parquet as pq
 from .datasets import DatasetSpec
 from .http import download
 from .models import IngestedResource, Resource
-from .processing import file_sha256, normalize_chunk, validate_chunk
+from .processing import normalize_chunk, validate_chunk
 
 LOGGER = logging.getLogger(__name__)
 
@@ -204,12 +204,10 @@ def ingest_archive(
             except zipfile.BadZipFile as error:
                 raise ArchiveError("source file is not a valid ZIP archive") from error
 
-        parquet_sha256 = file_sha256(partial)
         partial.replace(destination)
         stat = destination.stat()
         metadata = IngestedResource(
             archive_sha256=archive_sha256,
-            parquet_sha256=parquet_sha256,
             parquet_size=stat.st_size,
             parquet_mtime_ns=stat.st_mtime_ns,
             row_count=rows,

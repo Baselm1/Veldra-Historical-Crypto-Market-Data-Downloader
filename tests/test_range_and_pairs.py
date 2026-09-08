@@ -20,7 +20,6 @@ from crypto_downloader.models import (
     ResourceKey,
     Result,
 )
-from crypto_downloader.processing import file_sha256
 from crypto_downloader.request import normalize_pair
 
 TODAY = date(2025, 1, 5)
@@ -178,10 +177,8 @@ class RangeSource:
         destination.parent.mkdir(parents=True, exist_ok=True)
         frame.to_parquet(destination, index=False)
         stat = destination.stat()
-        digest = file_sha256(destination)
         return IngestedResource(
             archive_sha256="a" * 64,
-            parquet_sha256=digest,
             parquet_size=stat.st_size,
             parquet_mtime_ns=stat.st_mtime_ns,
             row_count=1,
