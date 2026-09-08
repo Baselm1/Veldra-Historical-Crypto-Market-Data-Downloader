@@ -546,24 +546,122 @@ def _day_count(ranges: list[tuple[date, date]]) -> int:
     return sum((end - start).days + 1 for start, end in _merge_ranges(ranges))
 
 
-def _configured_range(
+def _configured_start(
     remote_range: tuple[date, date] | None,
     earliest_date: date | None,
-) -> tuple[date, date] | None:
-    """Clip known source bounds to the configured history boundary.
+) -> date | None:
+    """Return the configured or source-derived first usable day.
 
     Args:
-        remote_range: The inclusive known archive bounds.
+        remote_range: The inclusive verified or active source bounds.
         earliest_date: The optional configured first usable day.
 
     Returns:
-        Inclusive configured bounds, or ``None`` without usable known files.
+        The configured first day, a source fallback, or ``None``.
     """
-    if remote_range is None:
+    if earliest_date is not None:
+        return earliest_date
+    return remote_range[0] if remote_range is not None else None
+
+
+def _configured_end(
+    remote_range: tuple[date, date] | None,
+    market: Market,
+    today: date,
+) -> date | None:
+    """Return the active policy end or known inactive source end.
+
+    Args:
+        remote_range: The inclusive verified or active source bounds.
+        market: The market whose activity controls the policy end.
+        today: The current UTC day.
+
+    Returns:
+        The configured final day, or ``None`` when it cannot be known.
+    """
+    if market.active:
+        return today - timedelta(days=1)
+    return remote_range[1] if remote_range is not None else None
+
+
+def _configured_range(
+    remote_range: tuple[date, date] | None,
+    earliest_date: date | None,
+    market: Market,
+    today: date,
+) -> tuple[date, date] | None:
+    """Return the configured policy window beside source availability.
+
+    Args:
+        remote_range: The inclusive verified or active source bounds.
+        earliest_date: The optional configured first usable day.
+        market: The market whose activity controls the policy end.
+        today: The current UTC day.
+
+    Returns:
+        Inclusive configured bounds, or ``None`` without a usable policy window.
+    """
+    start = _configured_start(remote_range, earliest_date)
+    end = _configured_end(remote_range, market, today)
+    if start is None or end is None or start > end:
         return None
-    start, end = remote_range
-    configured_start = max(start, earliest_date) if earliest_date is not None else start
-    return (configured_start, end) if configured_start <= end else None
+    return start, end
+
+
+def _clip_ranges(
+    ranges: list[tuple[date, date]],
+    boundary: tuple[date, date] | None,
+) -> list[tuple[date, date]]:
+    """Clip inclusive ranges to a boundary and merge the remaining coverage.
+
+    Args:
+        ranges: The inclusive ranges to clip.
+        boundary: The optional inclusive permitted boundary.
+
+    Returns:
+        Merged ranges that overlap the boundary.
+    """
+    if boundary is None:
+        return []
+    first, last = boundary
+    return _merge_ranges(
+        [
+            (max(start, first), min(end, last))
+            for start, end in ranges
+            if start <= last and end >= first
+        ]
+    )
+
+
+def _remote_range(
+    catalog: Catalog,
+    key: ResourceKey,
+    market: Market,
+    today: date,
+) -> tuple[date, date] | None:
+    """Return source bounds without confusing them with bounded discoveries.
+
+    Args:
+        catalog: The catalog containing verified source boundaries.
+        key: The exact stored dataset identity.
+        market: The market whose current activity controls the final day.
+        today: The current UTC day.
+
+    Returns:
+        Inclusive source archive bounds, or ``None`` when no boundary is known.
+    """
+    bounds = catalog.source_bounds(key)
+    if bounds is None:
+        return None
+    first, final = bounds
+    if market.active:
+        final = today - timedelta(days=1)
+    elif final is None:
+        known = catalog.resource_bounds(key)
+        final = known[1] if known is not None else None
+    if final is None or final < first:
+        return None
+    return first, final
 
 
 @dataclass(frozen=True)
@@ -611,6 +709,7 @@ def _availability(
     catalog: Catalog,
     key: ResourceKey,
     dataset: DatasetSpec,
+    market: Market,
     output_interval: str | None,
 ) -> Availability:
     """Summarize remote discovery and local cache metadata.
@@ -620,16 +719,30 @@ def _availability(
         catalog: The open metadata catalog.
         key: The exact stored dataset identity.
         dataset: The current schema expected by the caller.
+        market: The resolved market controlling active source bounds.
         output_interval: The effective caller-facing output interval.
 
     Returns:
         Immutable known coverage counts and bounds.
     """
-    remote_range = catalog.resource_bounds(key)
-    resources = (
-        catalog.resources(key, *remote_range) if remote_range is not None else []
+    today = utc_today()
+    remote_range = _remote_range(catalog, key, market, today)
+    configured_range = _configured_range(
+        remote_range,
+        downloader.earliest_date,
+        market,
+        today,
     )
-    scanned = _merge_ranges(catalog.discovery_ranges(key))
+    usable_range = None
+    if remote_range is not None and configured_range is not None:
+        start = max(remote_range[0], configured_range[0])
+        end = min(remote_range[1], configured_range[1])
+        usable_range = (start, end) if start <= end else None
+    coverage_range = usable_range or configured_range
+    resources = (
+        catalog.resources(key, *coverage_range) if coverage_range is not None else []
+    )
+    scanned = _clip_ranges(catalog.discovery_ranges(key), coverage_range)
     local = _local_coverage(resources, dataset)
     available_days = {resource.day for resource in resources}
     cached_range = (
@@ -644,7 +757,7 @@ def _availability(
         interval=output_interval,
         storage_interval=key.interval,
         remote_range=remote_range,
-        configured_range=_configured_range(remote_range, downloader.earliest_date),
+        configured_range=configured_range,
         cached_range=cached_range,
         scanned_ranges=tuple(scanned),
         scanned_days=scanned_days,
@@ -702,8 +815,43 @@ def get_availability(
                 catalog,
                 key,
                 specification,
+                market,
                 output_interval,
             )
+
+
+def _source_boundary(
+    downloader: Downloader,
+    catalog: Catalog,
+    client: httpx.Client,
+    key: ResourceKey,
+    *,
+    refresh: bool,
+    progress: bool,
+) -> None:
+    """Discover and cache the first source archive when it is not known.
+
+    Args:
+        downloader: The configured internal downloader.
+        catalog: The catalog receiving source boundary metadata.
+        client: The HTTPX client used for Binance requests.
+        key: The exact stored dataset identity.
+        refresh: Whether to repeat source-boundary discovery.
+        progress: Whether to show Rich activity.
+    """
+    if catalog.source_bounds(key) is not None and not refresh:
+        return
+    with Reporter(progress).status(f"Finding the first {key.symbol} daily file"):
+        first = downloader.source.first_resource(
+            client,
+            key,
+            None,
+            utc_today() - timedelta(days=1),
+        )
+    if first is None:
+        return
+    catalog.save_discovery(key, first.day, first.day, [first])
+    catalog.save_source_bounds(key, first.day, None)
 
 
 def discover_availability(
@@ -777,6 +925,14 @@ def discover_availability(
                     specification,
                     market,
                 )
+                _source_boundary(
+                    downloader,
+                    catalog,
+                    client,
+                    key,
+                    refresh=selected_refresh,
+                    progress=progress,
+                )
                 _first, last = requested_days(request.start, request.end)
                 recent = last >= utc_today() - timedelta(
                     days=downloader.discovery_tail_days
@@ -797,6 +953,7 @@ def discover_availability(
                     catalog,
                     key,
                     specification,
+                    market,
                     output_interval,
                 )
     LOGGER.info(

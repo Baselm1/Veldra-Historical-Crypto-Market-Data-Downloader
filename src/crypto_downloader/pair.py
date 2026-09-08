@@ -269,6 +269,7 @@ def _first_resource(
         return None
     if first is not None:
         catalog.save_discovery(key, first.day, first.day, [first])
+        catalog.save_source_bounds(key, first.day, None)
     return first
 
 
@@ -337,6 +338,9 @@ def _availability_range(
         )
         if resources is None:
             return None
+        bounds = catalog.resource_bounds(key)
+        if bounds is not None:
+            catalog.save_source_bounds(key, first.day, bounds[1])
     source_range = _availability(catalog.resource_bounds(key), active, today)
     if source_range is None:
         return None

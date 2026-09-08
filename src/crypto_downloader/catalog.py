@@ -216,6 +216,18 @@ class Catalog:
                     start_day, end_day
                 )
             );
+
+            CREATE TABLE IF NOT EXISTS source_bounds (
+                source VARCHAR NOT NULL,
+                product VARCHAR NOT NULL,
+                dataset VARCHAR NOT NULL,
+                symbol VARCHAR NOT NULL,
+                interval VARCHAR NOT NULL,
+                first_day DATE NOT NULL,
+                last_day DATE,
+                checked_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
+                PRIMARY KEY (source, product, dataset, symbol, interval)
+            );
             """)
         self.connection.execute(
             "ALTER TABLE markets ADD COLUMN IF NOT EXISTS refreshed_at TIMESTAMP"
@@ -473,6 +485,65 @@ class Catalog:
         if row is None or row[0] is None or row[1] is None:
             return None
         return row[0], row[1]
+
+    def source_bounds(self, key: ResourceKey) -> tuple[date, date | None] | None:
+        """Return separately verified source archive boundaries.
+
+        Args:
+            key: The dataset identity whose source boundaries are needed.
+
+        Returns:
+            The first and optional final source days, or ``None`` when unknown.
+        """
+        row = self.connection.execute(
+            """
+            SELECT first_day, last_day
+            FROM source_bounds
+            WHERE source = ? AND product = ? AND dataset = ?
+              AND symbol = ? AND interval = ?
+            """,
+            _key_values(key),
+        ).fetchone()
+        return (row[0], row[1]) if row is not None else None
+
+    def save_source_bounds(
+        self,
+        key: ResourceKey,
+        first_day: date,
+        last_day: date | None,
+    ) -> None:
+        """Store verified source boundaries independently from bounded scans.
+
+        Args:
+            key: The dataset identity whose boundaries were checked.
+            first_day: The first archive day found at the source.
+            last_day: The final archive day when it is known.
+        """
+        if last_day is not None and last_day < first_day:
+            raise ValueError("source boundary ends before it starts")
+        self.connection.execute(
+            """
+            INSERT INTO source_bounds (
+                source, product, dataset, symbol, interval, first_day, last_day
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (source, product, dataset, symbol, interval)
+            DO UPDATE SET
+                first_day = LEAST(source_bounds.first_day, excluded.first_day),
+                last_day = CASE
+                    WHEN source_bounds.last_day IS NULL THEN excluded.last_day
+                    WHEN excluded.last_day IS NULL THEN source_bounds.last_day
+                    ELSE GREATEST(source_bounds.last_day, excluded.last_day)
+                END,
+                checked_at = now()
+            """,
+            [*_key_values(key), first_day, last_day],
+        )
+        LOGGER.debug(
+            "Source boundaries stored: key=%s first=%s last=%s",
+            key,
+            first_day,
+            last_day,
+        )
 
     def save_discovery(
         self,

@@ -71,7 +71,13 @@ def test_catalog_creates_the_metadata_tables_and_uses_utc(catalog: Catalog) -> N
         ).fetchall()
     }
 
-    assert tables == {"markets", "resources", "discoveries", "discovery_segments"}
+    assert tables == {
+        "markets",
+        "resources",
+        "discoveries",
+        "discovery_segments",
+        "source_bounds",
+    }
     timezone = catalog.connection.execute(
         "SELECT current_setting('TimeZone')"
     ).fetchone()
@@ -515,3 +521,39 @@ def test_reversed_resource_query_range_is_rejected(catalog: Catalog) -> None:
     """Confirm resource queries reject a last day before the first day."""
     with pytest.raises(ValueError, match="range"):
         catalog.resources(KEY, date(2025, 1, 2), date(2025, 1, 1))
+
+
+def test_source_bounds_are_stored_separately_from_discovered_rows(
+    catalog: Catalog,
+) -> None:
+    """Confirm a bounded listing cannot redefine the source archive boundaries.
+
+    Args:
+        catalog: The isolated metadata catalog.
+    """
+    catalog.save_source_bounds(KEY, date(2017, 8, 17), None)
+    catalog.save_discovery(
+        KEY,
+        date(2025, 1, 1),
+        date(2025, 1, 1),
+        [resource()],
+    )
+
+    assert catalog.source_bounds(KEY) == (date(2017, 8, 17), None)
+    assert catalog.resource_bounds(KEY) == (date(2025, 1, 1), date(2025, 1, 1))
+
+
+def test_source_bounds_expand_without_losing_a_known_edge(catalog: Catalog) -> None:
+    """Confirm later boundary observations merge with existing source metadata.
+
+    Args:
+        catalog: The isolated metadata catalog.
+    """
+    catalog.save_source_bounds(KEY, date(2020, 1, 1), None)
+    catalog.save_source_bounds(KEY, date(2017, 8, 17), date(2024, 12, 31))
+    catalog.save_source_bounds(KEY, date(2018, 1, 1), None)
+
+    assert catalog.source_bounds(KEY) == (
+        date(2017, 8, 17),
+        date(2024, 12, 31),
+    )

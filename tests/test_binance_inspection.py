@@ -19,6 +19,18 @@ DAY_3 = date(2024, 1, 3)
 DAY_5 = date(2024, 1, 5)
 
 
+@pytest.fixture(autouse=True)
+def fixed_inspection_day(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep active-market policy bounds deterministic in inspection tests.
+
+    Args:
+        monkeypatch: The pytest helper used to replace the UTC clock.
+    """
+    monkeypatch.setattr(
+        "crypto_downloader.inspection.utc_today", lambda: DAY_5 + date.resolution
+    )
+
+
 def market(
     symbol: str,
     *,
@@ -117,6 +129,7 @@ def seed_availability(
             DAY_5,
             [resource(DAY_1), resource(DAY_2), resource(DAY_3)],
         )
+        catalog.save_source_bounds(key, DAY_1, None)
         catalog.mark_ready(
             key,
             DAY_1,
@@ -385,8 +398,8 @@ def test_get_availability_reports_every_remote_and_local_state(
         symbol="BTCUSDT",
         interval="1h",
         storage_interval="1m",
-        remote_range=(DAY_1, DAY_3),
-        configured_range=(DAY_1, DAY_3),
+        remote_range=(DAY_1, DAY_5),
+        configured_range=(date(2020, 1, 1), DAY_5),
         cached_range=(DAY_1, DAY_1),
         scanned_ranges=((DAY_1, DAY_5),),
         scanned_days=5,
@@ -413,8 +426,8 @@ def test_get_availability_respects_the_configured_history_boundary(
 
     value = service.get_availability("BTCUSDT", product="spot", dataset="klines")
 
-    assert value.remote_range == (DAY_1, DAY_3)
-    assert value.configured_range == (DAY_2, DAY_3)
+    assert value.remote_range == (DAY_1, DAY_5)
+    assert value.configured_range == (DAY_2, DAY_5)
 
 
 def test_get_availability_detects_a_missing_or_changed_ready_file(
@@ -513,9 +526,10 @@ def test_discover_availability_lists_only_the_bounded_range_without_ingestion(
         tmp_path: The isolated facade data directory.
         monkeypatch: The pytest helper used to replace source requests.
     """
-    service = Binance(tmp_path, progress=False)
+    service = Binance(tmp_path, discovery_tail_days=1, progress=False)
     source = source_for(service)
     scans: list[tuple[ResourceKey, date, date]] = []
+    first_calls: list[ResourceKey] = []
 
     def markets(_client: httpx.Client, _product: str) -> list[Market]:
         """Return the market selected for bounded discovery."""
@@ -528,12 +542,23 @@ def test_discover_availability_lists_only_the_bounded_range_without_ingestion(
         scans.append((key, start, end))
         return [resource(DAY_2)]
 
+    def first_resource(
+        _client: httpx.Client,
+        key: ResourceKey,
+        _start: date | None,
+        _end: date,
+    ) -> Resource:
+        """Return and record the true first source archive."""
+        first_calls.append(key)
+        return resource(DAY_1)
+
     def ingest(*_args: object, **_kwargs: object) -> None:
         """Fail if availability inspection attempts archive ingestion."""
         raise AssertionError("discovery must not ingest archives")
 
     monkeypatch.setattr(source, "markets", markets)
     monkeypatch.setattr(source, "resources", resources)
+    monkeypatch.setattr(source, "first_resource", first_resource)
     monkeypatch.setattr(source, "ingest", ingest)
 
     first = service.discover_availability(
@@ -563,17 +588,22 @@ def test_discover_availability_lists_only_the_bounded_range_without_ingestion(
     )
 
     assert scans == [
-        (ResourceKey("binance", "spot", "klines", "BTCUSDT", "1m"), DAY_1, DAY_3),
+        (ResourceKey("binance", "spot", "klines", "BTCUSDT", "1m"), DAY_2, DAY_3),
         (ResourceKey("binance", "spot", "klines", "BTCUSDT", "1m"), DAY_1, DAY_3),
     ]
+    assert first_calls == [
+        ResourceKey("binance", "spot", "klines", "BTCUSDT", "1m"),
+        ResourceKey("binance", "spot", "klines", "BTCUSDT", "1m"),
+    ]
     assert first == second == refreshed
-    assert first.remote_range == (DAY_2, DAY_2)
+    assert first.remote_range == (DAY_1, DAY_5)
+    assert first.configured_range == (date(2020, 1, 1), DAY_5)
     assert first.scanned_ranges == ((DAY_1, DAY_3),)
     assert first.scanned_days == 3
-    assert first.available_days == 1
+    assert first.available_days == 2
     assert first.cached_days == 0
-    assert first.missing_days == 1
-    assert first.unavailable_days == 2
+    assert first.missing_days == 2
+    assert first.unavailable_days == 1
 
 
 def test_discover_availability_maps_coin_m_index_archive_symbols(
@@ -600,8 +630,18 @@ def test_discover_availability_maps_coin_m_index_archive_symbols(
         keys.append(key)
         return []
 
+    def first_resource(
+        _client: httpx.Client,
+        _key: ResourceKey,
+        _start: date | None,
+        _end: date,
+    ) -> None:
+        """Report that the test source has no matching archive."""
+        return None
+
     monkeypatch.setattr(source, "markets", markets)
     monkeypatch.setattr(source, "resources", resources)
+    monkeypatch.setattr(source, "first_resource", first_resource)
 
     value = service.discover_availability(
         "BTCUSD_PERP",
