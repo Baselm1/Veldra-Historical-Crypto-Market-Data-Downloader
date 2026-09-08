@@ -12,12 +12,11 @@ import httpx
 import pandas as pd
 import pytest
 
-import crypto_downloader as crypto
 import crypto_downloader.pair as pair_module
 from crypto_downloader.cache import parquet_path, valid_cached_path
 from crypto_downloader.catalog import open_catalog
 from crypto_downloader.discovery import _validate_resources, requested_days
-from crypto_downloader.downloader import Downloader
+from crypto_downloader.downloader import Downloader, get_data, get_results
 from crypto_downloader.models import Resource, ResourceKey, Result
 from crypto_downloader.sources.binance import BinanceSource
 
@@ -316,11 +315,11 @@ def test_refresh_rechecks_a_cached_archive_without_redownloading_it(
     assert server.checksum_requests == 2
 
 
-def test_public_get_data_returns_a_dataframe_with_its_report(tmp_path: Path) -> None:
-    """Confirm the convenience function exposes the intended imported API."""
+def test_internal_get_data_returns_a_dataframe_with_its_report(tmp_path: Path) -> None:
+    """Confirm the engine convenience function retains its DataFrame adapter."""
     server = BinanceServer()
 
-    frame = crypto.get_data(
+    frame = get_data(
         "BTCUSDT",
         "2024-01-01",
         "2024-01-01",
@@ -336,11 +335,11 @@ def test_public_get_data_returns_a_dataframe_with_its_report(tmp_path: Path) -> 
     assert frame.attrs["download"]["complete"] is True
 
 
-def test_public_get_results_returns_the_structured_result(tmp_path: Path) -> None:
-    """Confirm the convenience report API does not discard diagnostics."""
+def test_internal_get_results_returns_the_structured_result(tmp_path: Path) -> None:
+    """Confirm the engine convenience function retains structured diagnostics."""
     server = BinanceServer()
 
-    result = crypto.get_results(
+    result = get_results(
         "BTCUSDT",
         "2024-01-01",
         "2024-01-01",

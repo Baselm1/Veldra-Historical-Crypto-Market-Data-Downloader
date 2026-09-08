@@ -3,24 +3,41 @@
 from importlib import import_module
 import logging
 
+from crypto_downloader.binance import Binance
+from crypto_downloader.models import Gap, Message, MissingCandlesError, Result
+
 
 def test_package_can_be_imported() -> None:
     """Confirm that Python can import the package and find its public exports."""
     package = import_module("crypto_downloader")
 
     assert package.__all__ == (
-        "Downloader",
+        "Binance",
         "Gap",
         "Message",
         "MissingCandlesError",
         "Result",
-        "aget_data",
-        "get_data",
-        "get_results",
-        "render_result",
-        "render_results",
     )
+    assert package.Binance is Binance
+    assert package.Gap is Gap
+    assert package.Message is Message
+    assert package.MissingCandlesError is MissingCandlesError
+    assert package.Result is Result
     assert any(
         isinstance(handler, logging.NullHandler)
         for handler in logging.getLogger("crypto_downloader").handlers
     )
+
+
+def test_package_root_hides_internal_services_and_helpers() -> None:
+    """Confirm the package root exposes no generic or internal data service."""
+    package = import_module("crypto_downloader")
+
+    assert not hasattr(package, "Downloader")
+    assert not hasattr(package, "BinanceSource")
+    assert not hasattr(package, "get_data")
+    assert not hasattr(package, "get_results")
+    assert not hasattr(package, "aget_data")
+    assert not hasattr(package, "render_result")
+    assert not hasattr(package, "render_results")
+    assert not hasattr(package, "get_klines")

@@ -1,18 +1,23 @@
-"""Download a small Spot kline range and render its structured results."""
+"""Download a small Spot Kline range through the public Binance facade."""
 
-import crypto_downloader as crypto
+from crypto_downloader import Binance
 
 
 def main() -> None:
     """Run one small imported-library example."""
-    results = crypto.get_results(
+    binance = Binance(data_dir="data")
+    frames = binance.get_klines(
         ["BTCUSDT", "ETHUSDT", "NOTREALPAIR"],
-        "2025-01-01",
-        "2025-01-03",
+        start="2025-01-01",
+        end="2025-01-03",
         interval="1h",
-        desired_columns=["open_time", "open", "high", "low", "close", "volume"],
+        columns=["open_time", "open", "high", "low", "close", "volume"],
     )
-    crypto.render_results(results)
+    for frame in frames:
+        report = frame.attrs["download"]
+        print(f"{report['pair']}: {len(frame):,} rows, complete={report['complete']}")
+        print(frame.head())
+        print(report)
 
 
 if __name__ == "__main__":

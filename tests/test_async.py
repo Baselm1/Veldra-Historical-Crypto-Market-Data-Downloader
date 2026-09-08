@@ -7,8 +7,7 @@ from threading import get_ident
 import pandas as pd
 import pytest
 
-import crypto_downloader as crypto
-from crypto_downloader.downloader import Downloader
+from crypto_downloader.downloader import Downloader, aget_data
 from crypto_downloader.source import Source
 
 
@@ -97,7 +96,7 @@ def test_module_async_adapter_constructs_and_forwards_downloader_settings(
     monkeypatch.setattr(Downloader, "aget_data", fake_aget_data)
 
     actual = asyncio.run(
-        crypto.aget_data(
+        aget_data(
             ["BTCUSDT", "ETHUSDT"],
             "2025-01-01",
             "2025-01-02",

@@ -5,16 +5,17 @@ historical market data.
 
 This project is currently under development.
 
-Planned usage:
+Usage:
 
 ```python
-import crypto_downloader as crypto
+from crypto_downloader import Binance
 
-frame = crypto.get_data(
+binance = Binance(data_dir="data")
+frame = binance.get_klines(
     "BTCUSDT",
-    "2025-01-01",
-    "2025-01-07",
+    start="2025-01-01",
+    end="2025-01-07",
     product="spot",
-    dataset="klines",
+    interval="1h",
 )
 ```
