@@ -7,19 +7,30 @@ from urllib.parse import unquote, urlsplit
 import zipfile
 
 import httpx
-import pandas as pd
+from collections.abc import Callable
+from datetime import date, datetime
+from typing import Any
+import pyarrow.csv as csv
 import pyarrow as pa
 import pyarrow.parquet as pq
 
 from crypto_downloader._core.datasets import DatasetSpec
 from crypto_downloader._core.download import download
-from crypto_downloader._core.models import IngestedResource, Resource
-from crypto_downloader._core.processing import normalize_chunk, validate_chunk
+from crypto_downloader._core.models import (
+    DataValidationError,
+    IngestedResource,
+    Resource,
+)
+
+type Normalizer = Callable[[Any, DatasetSpec, float | None], Any]
+type Validator = Callable[
+    [Any, DatasetSpec, date, datetime | None, date | None], datetime
+]
 
 LOGGER = logging.getLogger(__name__)
 
 
-class ArchiveError(ValueError):
+class ArchiveError(DataValidationError):
     """Report an unsafe or malformed source archive."""
 
 
@@ -78,59 +89,73 @@ def _write_chunks(
     dataset: DatasetSpec,
     partial: Path,
     chunk_rows: int,
-) -> tuple[int, pd.Timestamp, pd.Timestamp]:
-    """Normalize, validate, and write every source CSV chunk.
+    normalizer: Normalizer,
+    validator: Validator,
+) -> tuple[int, datetime, datetime]:
+    """Stream a CSV through its source normalizer into one Parquet file.
 
     Args:
-        archive: The opened source ZIP file.
-        member: The validated CSV member.
-        resource: The daily resource being processed.
-        dataset: The schema used to interpret source rows.
-        partial: The temporary Parquet output path.
-        chunk_rows: The number of CSV rows processed at once.
+        archive: Opened ZIP archive.
+        member: Verified CSV member.
+        resource: Physical source archive and date bounds.
+        dataset: Column and type declaration.
+        partial: Temporary Parquet destination.
+        chunk_rows: Maximum rows passed to validation at once.
+        normalizer: Exchange-specific Arrow conversion function.
+        validator: Exchange-specific Arrow validation function.
 
     Returns:
-        The row count and first and last source timestamps.
+        Row count and first/last UTC timestamps.
     """
     writer: pq.ParquetWriter | None = None
     rows = 0
-    first: pd.Timestamp | None = None
-    previous: pd.Timestamp | None = None
+    first: datetime | None = None
+    previous: datetime | None = None
+    read_options = csv.ReadOptions(
+        column_names=(
+            list(dataset.source_columns) if dataset.csv_header == "absent" else None
+        ),
+        block_size=max(1024, min(chunk_rows * 128, 8 * 1024 * 1024)),
+        use_threads=False,
+    )
+    convert_options = csv.ConvertOptions(
+        column_types={name: pa.string() for name in dataset.source_columns},
+        strings_can_be_null=True,
+        null_values=[""],
+    )
     try:
         with archive.open(member, "r") as source:
-            chunks = pd.read_csv(
-                source,
-                header=dataset.csv_header_row,
-                dtype=str,
-                chunksize=chunk_rows,
+            reader = csv.open_csv(
+                source, read_options=read_options, convert_options=convert_options
             )
-            for raw in chunks:
-                if raw.shape[1] != len(dataset.source_columns):
-                    raise ArchiveError("CSV does not have the expected field count")
-                if dataset.csv_header == "absent":
-                    raw.columns = dataset.source_columns
-                frame = normalize_chunk(
-                    raw,
-                    dataset,
-                    contract_size=resource.contract_size,
+            if tuple(reader.schema.names) != dataset.source_columns:
+                raise ArchiveError(
+                    "CSV does not match the expected source columns or field count"
                 )
-                previous = validate_chunk(
-                    frame, dataset, resource.day, previous_timestamp=previous
-                )
-                if first is None:
-                    first = frame.iloc[0][dataset.time_column]
-                table = pa.Table.from_pandas(frame, preserve_index=False)
-                if writer is None:
-                    writer = pq.ParquetWriter(
-                        partial,
-                        table.schema,
-                        compression="zstd",
-                        use_dictionary=False,
+            for batch in reader:
+                for offset in range(0, batch.num_rows, chunk_rows):
+                    raw = pa.Table.from_batches([batch.slice(offset, chunk_rows)])
+                    table = normalizer(raw, dataset, resource.contract_size)
+                    previous = validator(
+                        table,
+                        dataset,
+                        resource.day,
+                        previous,
+                        getattr(resource, "end_day", None),
                     )
-                writer.write_table(table)
-                rows += len(frame)
-    except pd.errors.EmptyDataError as error:
-        raise ArchiveError("CSV cannot be empty") from error
+                    if first is None:
+                        first = table[dataset.time_column][0].as_py()
+                    if writer is None:
+                        writer = pq.ParquetWriter(
+                            partial,
+                            table.schema,
+                            compression="zstd",
+                            use_dictionary=False,
+                        )
+                    writer.write_table(table)
+                    rows += table.num_rows
+    except pa.ArrowException as error:
+        raise ArchiveError(f"invalid or empty CSV: {error}") from error
     finally:
         if writer is not None:
             writer.close()
@@ -145,6 +170,8 @@ def ingest_archive(
     dataset: DatasetSpec,
     destination: Path,
     *,
+    normalizer: Normalizer,
+    validator: Validator,
     timeout: float = 30.0,
     retries: int = 3,
     backoff: float = 0.5,
@@ -159,6 +186,8 @@ def ingest_archive(
         resource: The daily archive and checksum URLs.
         dataset: The schema used to interpret source rows.
         destination: The final Parquet path.
+        normalizer: Exchange-specific Arrow conversion function.
+        validator: Exchange-specific Arrow validation function.
         timeout: The timeout for each HTTP request in seconds.
         retries: The number of retries after the first HTTP attempt.
         backoff: The initial exponential retry delay in seconds.
@@ -205,6 +234,8 @@ def ingest_archive(
                         dataset,
                         partial,
                         chunk_rows,
+                        normalizer,
+                        validator,
                     )
             except zipfile.BadZipFile as error:
                 raise ArchiveError("source file is not a valid ZIP archive") from error
@@ -216,8 +247,8 @@ def ingest_archive(
             parquet_size=stat.st_size,
             parquet_mtime_ns=stat.st_mtime_ns,
             row_count=rows,
-            first_timestamp=first.to_pydatetime(),
-            last_timestamp=last.to_pydatetime(),
+            first_timestamp=first,
+            last_timestamp=last,
             timestamp_column=dataset.time_column,
             schema_version=dataset.schema_version,
         )

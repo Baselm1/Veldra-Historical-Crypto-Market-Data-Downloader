@@ -11,7 +11,7 @@ from crypto_downloader.binance.datasets import (
     CM_MARK_PRICE_KLINES,
     UM_MARK_PRICE_KLINES,
 )
-from crypto_downloader._core.processing import (
+from arrow_helpers import (
     DataValidationError,
     normalize_chunk,
     validate_chunk,

@@ -7,6 +7,7 @@ from io import BytesIO
 from pathlib import Path
 import zipfile
 
+from crypto_downloader.binance.processing import normalize_chunk, validate_chunk
 import httpx
 import pandas as pd
 import pytest
@@ -32,7 +33,7 @@ from crypto_downloader.binance.datasets import (
 from crypto_downloader._core.download import ChecksumError
 from crypto_downloader._core.ingest import ArchiveError, _member, ingest_archive
 from crypto_downloader._core.models import Resource
-from crypto_downloader._core.processing import DataValidationError
+from crypto_downloader.binance.processing import DataValidationError
 from crypto_downloader.binance.connector import BinanceConnector
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -119,7 +120,13 @@ def test_ingest_archive_writes_atomic_canonical_parquet(
 
     with httpx.Client(transport=httpx.MockTransport(handler)) as client:
         metadata = ingest_archive(
-            client, resource, SPOT_KLINES, destination, chunk_rows=1
+            client,
+            resource,
+            SPOT_KLINES,
+            destination,
+            chunk_rows=1,
+            normalizer=normalize_chunk,
+            validator=validate_chunk,
         )
 
     frame = pd.read_parquet(destination)
@@ -144,7 +151,15 @@ def test_ingest_archive_reads_a_dataset_declared_csv_header(tmp_path: Path) -> N
     destination = tmp_path / "headered.parquet"
 
     with client_for(payload) as client:
-        metadata = ingest_archive(client, RESOURCE, dataset, destination, chunk_rows=1)
+        metadata = ingest_archive(
+            client,
+            RESOURCE,
+            dataset,
+            destination,
+            chunk_rows=1,
+            normalizer=normalize_chunk,
+            validator=validate_chunk,
+        )
 
     frame = pd.read_parquet(destination)
     assert tuple(frame.columns) == dataset.stored_columns
@@ -200,7 +215,15 @@ def test_ingest_archive_writes_canonical_spot_event_parquet(
 
     destination = tmp_path / f"{dataset.name}.parquet"
     with httpx.Client(transport=httpx.MockTransport(handler)) as client:
-        metadata = ingest_archive(client, resource, dataset, destination, chunk_rows=2)
+        metadata = ingest_archive(
+            client,
+            resource,
+            dataset,
+            destination,
+            chunk_rows=2,
+            normalizer=normalize_chunk,
+            validator=validate_chunk,
+        )
 
     frame = pd.read_parquet(destination)
     assert tuple(frame.columns) == dataset.stored_columns
@@ -282,7 +305,15 @@ def test_ingest_archive_writes_canonical_futures_trade_parquet(
 
     destination = tmp_path / f"{dataset.product}-trades.parquet"
     with httpx.Client(transport=httpx.MockTransport(handler)) as client:
-        metadata = ingest_archive(client, resource, dataset, destination, chunk_rows=1)
+        metadata = ingest_archive(
+            client,
+            resource,
+            dataset,
+            destination,
+            chunk_rows=1,
+            normalizer=normalize_chunk,
+            validator=validate_chunk,
+        )
 
     frame = pd.read_parquet(destination)
     assert tuple(frame.columns) == dataset.stored_columns
@@ -350,7 +381,15 @@ def test_ingest_archive_writes_canonical_mark_price_parquet(
 
     destination = tmp_path / f"{dataset.product}-mark-price.parquet"
     with httpx.Client(transport=httpx.MockTransport(handler)) as client:
-        metadata = ingest_archive(client, resource, dataset, destination, chunk_rows=1)
+        metadata = ingest_archive(
+            client,
+            resource,
+            dataset,
+            destination,
+            chunk_rows=1,
+            normalizer=normalize_chunk,
+            validator=validate_chunk,
+        )
 
     frame = pd.read_parquet(destination)
     assert tuple(frame.columns) == dataset.stored_columns
@@ -407,7 +446,15 @@ def test_ingest_archive_writes_canonical_futures_metrics_parquet(
 
     destination = tmp_path / f"{dataset.product}-metrics.parquet"
     with httpx.Client(transport=httpx.MockTransport(handler)) as client:
-        metadata = ingest_archive(client, resource, dataset, destination, chunk_rows=1)
+        metadata = ingest_archive(
+            client,
+            resource,
+            dataset,
+            destination,
+            chunk_rows=1,
+            normalizer=normalize_chunk,
+            validator=validate_chunk,
+        )
 
     frame = pd.read_parquet(destination)
     assert tuple(frame.columns) == dataset.stored_columns
@@ -464,7 +511,15 @@ def test_ingest_archive_writes_canonical_futures_book_depth_parquet(
 
     destination = tmp_path / f"{dataset.product}-book-depth.parquet"
     with httpx.Client(transport=httpx.MockTransport(handler)) as client:
-        metadata = ingest_archive(client, resource, dataset, destination, chunk_rows=3)
+        metadata = ingest_archive(
+            client,
+            resource,
+            dataset,
+            destination,
+            chunk_rows=3,
+            normalizer=normalize_chunk,
+            validator=validate_chunk,
+        )
 
     frame = pd.read_parquet(destination)
     assert tuple(frame.columns) == dataset.stored_columns
@@ -482,7 +537,14 @@ def test_ingest_archive_rejects_a_wrong_declared_csv_header(tmp_path: Path) -> N
 
     with client_for(payload) as client:
         with pytest.raises(DataValidationError, match="source columns"):
-            ingest_archive(client, RESOURCE, dataset, tmp_path / "wrong-header.parquet")
+            ingest_archive(
+                client,
+                RESOURCE,
+                dataset,
+                tmp_path / "wrong-header.parquet",
+                normalizer=normalize_chunk,
+                validator=validate_chunk,
+            )
 
 
 @pytest.mark.parametrize(
@@ -512,7 +574,14 @@ def test_ingest_archive_rejects_unsafe_or_unexpected_members(
 
     with client_for(payload) as client:
         with pytest.raises(ArchiveError):
-            ingest_archive(client, RESOURCE, SPOT_KLINES, destination)
+            ingest_archive(
+                client,
+                RESOURCE,
+                SPOT_KLINES,
+                destination,
+                normalizer=normalize_chunk,
+                validator=validate_chunk,
+            )
 
     assert not destination.exists()
     assert not destination.with_name("result.parquet.part").exists()
@@ -522,7 +591,14 @@ def test_ingest_archive_rejects_invalid_zip(tmp_path: Path) -> None:
     """Confirm checksum-valid non-ZIP bytes cannot produce Parquet."""
     with client_for(b"not a zip") as client:
         with pytest.raises(ArchiveError, match="ZIP"):
-            ingest_archive(client, RESOURCE, SPOT_KLINES, tmp_path / "out.parquet")
+            ingest_archive(
+                client,
+                RESOURCE,
+                SPOT_KLINES,
+                tmp_path / "out.parquet",
+                normalizer=normalize_chunk,
+                validator=validate_chunk,
+            )
 
 
 def test_ingest_archive_rejects_oversized_csv(tmp_path: Path) -> None:
@@ -536,6 +612,8 @@ def test_ingest_archive_rejects_oversized_csv(tmp_path: Path) -> None:
                 SPOT_KLINES,
                 tmp_path / "out.parquet",
                 max_csv_bytes=1,
+                normalizer=normalize_chunk,
+                validator=validate_chunk,
             )
 
 
@@ -572,7 +650,14 @@ def test_ingest_archive_rejects_empty_or_wrong_width_csv(
     payload = archive_bytes(content)
     with client_for(payload) as client:
         with pytest.raises((ArchiveError, DataValidationError)):
-            ingest_archive(client, RESOURCE, SPOT_KLINES, tmp_path / "out.parquet")
+            ingest_archive(
+                client,
+                RESOURCE,
+                SPOT_KLINES,
+                tmp_path / "out.parquet",
+                normalizer=normalize_chunk,
+                validator=validate_chunk,
+            )
 
 
 def test_ingest_failure_preserves_existing_destination(tmp_path: Path) -> None:
@@ -585,7 +670,15 @@ def test_ingest_failure_preserves_existing_destination(tmp_path: Path) -> None:
 
     with client_for(payload) as client:
         with pytest.raises(DataValidationError):
-            ingest_archive(client, RESOURCE, SPOT_KLINES, destination, chunk_rows=2)
+            ingest_archive(
+                client,
+                RESOURCE,
+                SPOT_KLINES,
+                destination,
+                chunk_rows=2,
+                normalizer=normalize_chunk,
+                validator=validate_chunk,
+            )
 
     assert destination.read_bytes() == b"existing"
     assert not destination.with_name("result.parquet.part").exists()
@@ -611,6 +704,8 @@ def test_checksum_failure_preserves_existing_destination(tmp_path: Path) -> None
                 SPOT_KLINES,
                 destination,
                 retries=0,
+                normalizer=normalize_chunk,
+                validator=validate_chunk,
             )
 
     assert destination.read_bytes() == b"existing"
@@ -652,7 +747,9 @@ def test_ingest_archive_rejects_invalid_limits_without_http(
                 RESOURCE,
                 SPOT_KLINES,
                 tmp_path / "out.parquet",
-                **arguments,  # type: ignore[arg-type]
+                **arguments,
+                normalizer=normalize_chunk,
+                validator=validate_chunk,  # type: ignore[arg-type]
             )
     assert calls == 0
 

@@ -9,7 +9,7 @@ import pytest
 
 from crypto_downloader._core.datasets import DatasetSpec
 from crypto_downloader.binance.datasets import SPOT_AGG_TRADES, SPOT_TRADES
-from crypto_downloader._core.processing import (
+from arrow_helpers import (
     DataValidationError,
     normalize_chunk,
     validate_chunk,

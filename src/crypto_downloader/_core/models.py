@@ -15,6 +15,10 @@ type JsonValue = (
 LOGGER = logging.getLogger(__name__)
 
 
+class DataValidationError(ValueError):
+    """Report malformed source rows or archive structure."""
+
+
 @dataclass(frozen=True)
 class Market:
     """Describe one market reported by a source."""

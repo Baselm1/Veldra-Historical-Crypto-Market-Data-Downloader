@@ -10,7 +10,7 @@ import pandas as pd
 import pytest
 
 from crypto_downloader.binance.datasets import SPOT_KLINES
-from crypto_downloader._core.processing import (
+from arrow_helpers import (
     DataValidationError,
     normalize_chunk,
     validate_chunk,

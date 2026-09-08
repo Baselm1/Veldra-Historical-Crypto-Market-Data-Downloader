@@ -9,6 +9,7 @@ import re
 from urllib.parse import quote
 from crypto_downloader._core.portal import pages
 
+from crypto_downloader.binance.processing import normalize_chunk, validate_chunk
 import httpx
 
 from crypto_downloader._core.download import archive_checksum, get
@@ -338,6 +339,8 @@ class BinanceConnector:
             timeout=self.timeout,
             retries=self.retries,
             backoff=self.backoff,
+            normalizer=normalize_chunk,
+            validator=validate_chunk,
         )
 
     @staticmethod

@@ -8,7 +8,7 @@ import pytest
 
 from crypto_downloader._core.datasets import DatasetSpec
 from crypto_downloader.binance.datasets import CM_KLINES, UM_KLINES
-from crypto_downloader._core.processing import (
+from arrow_helpers import (
     DataValidationError,
     normalize_chunk,
     validate_chunk,
