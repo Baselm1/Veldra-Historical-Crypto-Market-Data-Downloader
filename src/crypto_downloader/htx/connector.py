@@ -5,14 +5,22 @@ from dataclasses import replace
 from datetime import UTC, date, datetime, time, timedelta
 import logging
 import math
+from pathlib import Path
 import re
 from typing import Literal
 from urllib.parse import quote
 
 import httpx
 
+from crypto_downloader.core.datasets import DatasetSpec
 from crypto_downloader.core.download import archive_checksum, get
-from crypto_downloader.core.models import Market, Resource, ResourceKey
+from crypto_downloader.core.ingest import ingest_archive
+from crypto_downloader.core.models import (
+    IngestedResource,
+    Market,
+    Resource,
+    ResourceKey,
+)
 from crypto_downloader.core.portal import pages
 from crypto_downloader.core.request import normalize_pair
 from crypto_downloader.htx.datasets import (
@@ -22,6 +30,7 @@ from crypto_downloader.htx.datasets import (
     PRODUCTS,
     supports,
 )
+from crypto_downloader.htx.processing import normalize_chunk, validate_chunk
 
 LISTING_URL = "https://www.htx.com/data/"
 ARCHIVE_URL = "https://www.htx.com/data"
@@ -258,6 +267,36 @@ class HTXConnector:
         first_day = min(resource.day for resource in candidates)
         matching = [resource for resource in candidates if resource.day == first_day]
         return matching[-1]
+
+    def ingest(
+        self,
+        client: httpx.Client,
+        resource: Resource,
+        dataset: DatasetSpec,
+        destination: Path,
+    ) -> IngestedResource:
+        """Convert one verified HTX CSV archive into Parquet.
+
+        Args:
+            client: The shared HTTP client.
+            resource: The HTX archive to ingest.
+            dataset: The schema used to interpret its CSV.
+            destination: The final Parquet path.
+
+        Returns:
+            Integrity and range metadata for the cached Parquet file.
+        """
+        return ingest_archive(
+            client,
+            resource,
+            dataset,
+            destination,
+            timeout=self.timeout,
+            retries=self.retries,
+            backoff=self.backoff,
+            normalizer=normalize_chunk,
+            validator=validate_chunk,
+        )
 
     def _route_resources(
         self,
