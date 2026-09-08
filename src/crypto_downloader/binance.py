@@ -8,6 +8,13 @@ import pandas as pd
 
 from .downloader import Downloader
 from .http import _validate_settings
+from .inspection import (
+    discover_availability as _discover_availability,
+    find_markets as _find_markets,
+    get_availability as _get_availability,
+    get_markets as _get_markets,
+)
+from .models import Availability, Market
 from .sources.binance import BinanceSource
 
 type DateInput = str | date | datetime
@@ -710,4 +717,136 @@ class Binance:
             columns=columns,
             refresh=refresh,
             offline=offline,
+        )
+
+    def get_markets(
+        self,
+        *,
+        product: Product = "spot",
+        status: str | None = None,
+        quote_asset: str | None = None,
+        refresh: bool = False,
+        offline: bool = False,
+    ) -> list[Market]:
+        """Return Binance markets matching optional exact filters.
+
+        Args:
+            product: Spot, USD-M perpetual, or COIN-M perpetual.
+            status: An optional native Binance status.
+            quote_asset: An optional exact quote asset.
+            refresh: Whether to replace cached market metadata now.
+            offline: Whether to require cached market metadata.
+
+        Returns:
+            Matching immutable markets ordered by native symbol.
+        """
+        return _get_markets(
+            self._downloader,
+            product=product,
+            status=status,
+            quote_asset=quote_asset,
+            refresh=refresh,
+            offline=offline,
+            progress=self._progress,
+        )
+
+    def find_markets(
+        self,
+        query: str,
+        *,
+        product: Product | None = None,
+        status: str | None = None,
+        quote_asset: str | None = None,
+        limit: int = 10,
+        refresh: bool = False,
+        offline: bool = False,
+    ) -> list[Market]:
+        """Return exact, prefix, and fuzzy Binance market matches.
+
+        Args:
+            query: The native or normalized market text to find.
+            product: An optional product restriction.
+            status: An optional native Binance status.
+            quote_asset: An optional exact quote asset.
+            limit: The maximum number of matches to return.
+            refresh: Whether to replace cached market metadata now.
+            offline: Whether to require cached market metadata.
+
+        Returns:
+            Ranked immutable market matches without automatic substitution.
+        """
+        return _find_markets(
+            self._downloader,
+            query,
+            product=product,
+            status=status,
+            quote_asset=quote_asset,
+            limit=limit,
+            refresh=refresh,
+            offline=offline,
+            progress=self._progress,
+        )
+
+    def get_availability(
+        self,
+        pair: str,
+        *,
+        product: Product,
+        dataset: str,
+        interval: str | None = None,
+    ) -> Availability:
+        """Return already-cataloged remote and local dataset coverage.
+
+        Args:
+            pair: The native or normalized Binance market.
+            product: Spot, USD-M perpetual, or COIN-M perpetual.
+            dataset: The Binance dataset to inspect.
+            interval: An optional Kline output interval.
+
+        Returns:
+            Known coverage without making a network request.
+        """
+        return _get_availability(
+            self._downloader,
+            pair,
+            product=product,
+            dataset=dataset,
+            interval=interval,
+        )
+
+    def discover_availability(
+        self,
+        pair: str,
+        start: DateInput,
+        end: DateInput,
+        *,
+        product: Product,
+        dataset: str,
+        interval: str | None = None,
+        refresh: bool = False,
+    ) -> Availability:
+        """Discover bounded remote coverage without downloading archives.
+
+        Args:
+            pair: The native or normalized Binance market.
+            start: The inclusive discovery start.
+            end: The inclusive date or exclusive timestamp discovery end.
+            product: Spot, USD-M perpetual, or COIN-M perpetual.
+            dataset: The Binance dataset to inspect.
+            interval: An optional Kline output interval.
+            refresh: Whether to rescan the complete bounded range.
+
+        Returns:
+            Updated remote and local coverage for the dataset.
+        """
+        return _discover_availability(
+            self._downloader,
+            pair,
+            start,
+            end,
+            product=product,
+            dataset=dataset,
+            interval=interval,
+            refresh=refresh,
+            progress=self._progress,
         )

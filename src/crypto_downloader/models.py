@@ -29,6 +29,41 @@ class Market:
     contract_size: float | None = None
     onboard_time: datetime | None = None
     delivery_time: datetime | None = None
+    source: str | None = None
+    product: str | None = None
+
+    @property
+    def active(self) -> bool:
+        """Return whether Binance currently reports the market as trading.
+
+        Returns:
+            True when the native market status is ``TRADING``.
+        """
+        return self.status == "TRADING"
+
+
+@dataclass(frozen=True)
+class Availability:
+    """Summarize known remote and local coverage for one dataset."""
+
+    source: str
+    product: str
+    dataset: str
+    symbol: str
+    interval: str | None
+    storage_interval: str | None
+    remote_range: tuple[date, date] | None
+    configured_range: tuple[date, date] | None
+    cached_range: tuple[date, date] | None
+    scanned_ranges: tuple[tuple[date, date], ...]
+    scanned_days: int
+    available_days: int
+    cached_days: int
+    missing_days: int
+    unavailable_days: int
+    failed_days: int
+    row_count: int
+    local_bytes: int
 
 
 @dataclass(frozen=True)

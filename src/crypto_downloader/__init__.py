@@ -3,13 +3,15 @@
 import logging
 
 from .binance import Binance
-from .models import Gap, Message, MissingCandlesError, Result
+from .models import Availability, Gap, Market, Message, MissingCandlesError, Result
 
 logging.getLogger(__name__).addHandler(logging.NullHandler())
 
 __all__: tuple[str, ...] = (
     "Binance",
+    "Availability",
     "Gap",
+    "Market",
     "Message",
     "MissingCandlesError",
     "Result",

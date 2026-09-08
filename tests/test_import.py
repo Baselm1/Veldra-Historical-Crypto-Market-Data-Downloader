@@ -4,7 +4,14 @@ from importlib import import_module
 import logging
 
 from crypto_downloader.binance import Binance
-from crypto_downloader.models import Gap, Message, MissingCandlesError, Result
+from crypto_downloader.models import (
+    Availability,
+    Gap,
+    Market,
+    Message,
+    MissingCandlesError,
+    Result,
+)
 
 
 def test_package_can_be_imported() -> None:
@@ -13,13 +20,17 @@ def test_package_can_be_imported() -> None:
 
     assert package.__all__ == (
         "Binance",
+        "Availability",
         "Gap",
+        "Market",
         "Message",
         "MissingCandlesError",
         "Result",
     )
     assert package.Binance is Binance
+    assert package.Availability is Availability
     assert package.Gap is Gap
+    assert package.Market is Market
     assert package.Message is Message
     assert package.MissingCandlesError is MissingCandlesError
     assert package.Result is Result
