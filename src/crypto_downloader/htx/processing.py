@@ -82,6 +82,138 @@ def _epoch_seconds(values: Any, column: str) -> Any:
     return pc.cast(micros, pa.timestamp("us", "UTC"))
 
 
+def _epoch_milliseconds(values: Any, column: str) -> Any:
+    """Convert HTX epoch-millisecond values to UTC timestamps.
+
+    Args:
+        values: The Arrow source values.
+        column: The canonical field named in errors.
+
+    Returns:
+        An Arrow UTC timestamp array.
+    """
+    milliseconds = _integer(values, column)
+    if len(milliseconds):
+        low, high = pc.min(milliseconds).as_py(), pc.max(milliseconds).as_py()
+        if low is None or low < 100_000_000_000 or high >= 100_000_000_000_000:
+            raise DataValidationError(f"invalid timestamp unit for {column}")
+    return pc.cast(pc.multiply_checked(milliseconds, 1_000), pa.timestamp("us", "UTC"))
+
+
+def _text(values: Any, column: str) -> Any:
+    """Normalize one required source text column.
+
+    Args:
+        values: The Arrow source values.
+        column: The canonical field named in errors.
+
+    Returns:
+        A lowercase Arrow string array without outer whitespace.
+    """
+    result = pc.utf8_lower(pc.utf8_trim_whitespace(pc.cast(values, pa.string())))
+    if result.null_count:
+        raise DataValidationError(f"invalid {column} value")
+    _reject(pc.equal(result, ""), f"invalid {column} value")
+    return result
+
+
+def _kline_mapping(table: Any) -> dict[str, str]:
+    """Return the canonical mapping for one HTX Kline source variant.
+
+    Args:
+        table: The raw Arrow source table.
+
+    Returns:
+        Canonical column names mapped to source fields.
+    """
+    names = set(table.column_names)
+    if "id" in names:
+        return {
+            "open_time": "id",
+            "open": "open",
+            "high": "high",
+            "low": "low",
+            "close": "close",
+            "base_volume": "amount",
+            "quote_volume": "vol",
+        }
+    if "instId" in names and "open" in names:
+        return {
+            "open_time": "ts",
+            "open": "open",
+            "high": "high",
+            "low": "low",
+            "close": "close",
+            "base_volume": "vol",
+            "quote_volume": "volCcyQuote",
+        }
+    raise DataValidationError("CSV does not match an HTX Kline schema")
+
+
+def _normalize_klines(table: Any, dataset: DatasetSpec) -> Any:
+    """Normalize an old or new HTX Kline source table.
+
+    Args:
+        table: The raw Arrow source table.
+        dataset: The canonical Kline declaration.
+
+    Returns:
+        Canonical Kline columns.
+    """
+    result = {
+        target: (
+            _epoch_seconds(table[source], target)
+            if target == "open_time"
+            else _number(table[source], target)
+        )
+        for target, source in _kline_mapping(table).items()
+    }
+    return pa.table({column: result[column] for column in dataset.stored_columns})
+
+
+def _normalize_trades(table: Any, dataset: DatasetSpec) -> Any:
+    """Normalize an old or new HTX Spot trade source table.
+
+    Args:
+        table: The raw Arrow source table.
+        dataset: The canonical trade declaration.
+
+    Returns:
+        Canonical trade columns with derived quote quantity.
+    """
+    names = set(table.column_names)
+    if "tradeId" in names:
+        mapping = {
+            "trade_id": "tradeId",
+            "price": "px",
+            "base_quantity": "size",
+            "side": "side",
+            "event_time": "ts",
+        }
+    elif "id" in names and "direction" in names:
+        mapping = {
+            "trade_id": "id",
+            "price": "price",
+            "base_quantity": "amount",
+            "side": "direction",
+            "event_time": "ts",
+        }
+    else:
+        raise DataValidationError("CSV does not match an HTX trade schema")
+    result: dict[str, Any] = {}
+    for target, source in mapping.items():
+        if target in dataset.integer_columns:
+            result[target] = _integer(table[source], target)
+        elif target in dataset.timestamp_columns:
+            result[target] = _epoch_milliseconds(table[source], target)
+        elif target in dataset.string_columns:
+            result[target] = _text(table[source], target)
+        else:
+            result[target] = _number(table[source], target)
+    result["quote_quantity"] = pc.multiply(result["base_quantity"], result["price"])
+    return pa.table({column: result[column] for column in dataset.stored_columns})
+
+
 def normalize_chunk(
     table: Any, dataset: DatasetSpec, contract_size: float | None = None
 ) -> Any:
@@ -96,53 +228,26 @@ def normalize_chunk(
         A canonical Arrow table ready for validation.
     """
     del contract_size
-    if dataset.product != "spot" or dataset.name != "klines":
-        raise ValueError(f"unsupported normalizer: {dataset.product}/{dataset.name}")
-    names = set(table.column_names)
-    if "id" in names:
-        mapping = {
-            "open_time": "id",
-            "open": "open",
-            "high": "high",
-            "low": "low",
-            "close": "close",
-            "base_volume": "amount",
-            "quote_volume": "vol",
-        }
-    elif "ts" in names:
-        mapping = {
-            "open_time": "ts",
-            "open": "open",
-            "high": "high",
-            "low": "low",
-            "close": "close",
-            "base_volume": "vol",
-            "quote_volume": "volCcyQuote",
-        }
-    else:
-        raise DataValidationError("CSV does not match an HTX Kline schema")
-    result = {
-        target: (
-            _epoch_seconds(table[source], target)
-            if target == "open_time"
-            else _number(table[source], target)
-        )
-        for target, source in mapping.items()
-    }
-    return pa.table({column: result[column] for column in dataset.stored_columns})
+    if dataset.product == "spot" and dataset.name == "klines":
+        return _normalize_klines(table, dataset)
+    if dataset.product == "spot" and dataset.name == "trades":
+        return _normalize_trades(table, dataset)
+    raise ValueError(f"unsupported normalizer: {dataset.product}/{dataset.name}")
 
 
-def _ordered(values: Any) -> bool:
-    """Return whether Arrow timestamps are strictly increasing.
+def _ordered(values: Any, *, strict: bool) -> bool:
+    """Return whether Arrow values are increasing.
 
     Args:
         values: The timestamp array to inspect.
+        strict: Whether equal adjacent values are invalid.
 
     Returns:
         Whether every timestamp follows the preceding timestamp.
     """
+    compare = pc.less_equal if strict else pc.less
     return not pc.any(
-        pc.less_equal(values.slice(1), values.slice(0, len(values) - 1))
+        compare(values.slice(1), values.slice(0, len(values) - 1))
     ).as_py()
 
 
@@ -159,11 +264,11 @@ def _coverage(day: date) -> tuple[datetime, datetime]:
     return start, start + timedelta(days=1)
 
 
-def _validate_types(table: Any, dataset: DatasetSpec) -> None:
-    """Validate canonical Kline columns and Arrow types.
+def _validate_schema(table: Any, dataset: DatasetSpec) -> None:
+    """Validate canonical columns and primary timestamp type.
 
     Args:
-        table: The canonical Arrow table.
+        table: The canonical HTX table.
         dataset: The schema defining exact stored columns.
     """
     if tuple(table.column_names) != dataset.stored_columns or not table.num_rows:
@@ -174,11 +279,24 @@ def _validate_types(table: Any, dataset: DatasetSpec) -> None:
         or not pa.types.is_timestamp(times.type)
         or times.type.tz != "UTC"
     ):
-        raise DataValidationError("open_time must contain UTC timestamps")
+        raise DataValidationError(f"{dataset.time_column} must contain UTC timestamps")
+
+
+def _validate_values(table: Any, dataset: DatasetSpec) -> None:
+    """Validate nonnull canonical numeric and text values.
+
+    Args:
+        table: The canonical HTX table.
+        dataset: The schema declaring typed columns.
+    """
     for column in dataset.stored_columns:
         if column in dataset.timestamp_columns:
             continue
         values = table[column]
+        if column in dataset.string_columns:
+            if values.null_count or not pa.types.is_string(values.type):
+                raise DataValidationError("text values must be nonnull strings")
+            continue
         _reject(pc.invert(pc.is_finite(values)), "numeric values must be finite")
         if values.null_count:
             raise DataValidationError("numeric values must be finite")
@@ -204,8 +322,8 @@ def _validate_times(
         The table's final UTC timestamp.
     """
     times = table[dataset.time_column]
-    if not _ordered(times):
-        raise DataValidationError("open_time must be increasing")
+    if not _ordered(times, strict=dataset.supports_resampling):
+        raise DataValidationError(f"{dataset.time_column} must be increasing")
     first = cast(datetime, times[0].as_py())
     last = cast(datetime, times[-1].as_py())
     if previous_timestamp is not None and first <= previous_timestamp:
@@ -214,10 +332,11 @@ def _validate_times(
     _, end = _coverage(end_day or day)
     if first < start or last >= end:
         raise DataValidationError("timestamps fall outside the HTX source day")
-    _reject(
-        pc.not_equal(times, pc.floor_temporal(times, unit="minute")),
-        "open_time is not aligned to one minute",
-    )
+    if dataset.supports_resampling:
+        _reject(
+            pc.not_equal(times, pc.floor_temporal(times, unit="minute")),
+            "open_time is not aligned to one minute",
+        )
     return last
 
 
@@ -243,6 +362,33 @@ def _validate_ohlc(table: Any) -> None:
         _reject(pc.less(table[column], 0), "volume values must be nonnegative")
 
 
+def _validate_trades(table: Any) -> None:
+    """Validate Spot trade IDs, quantities, prices, and sides.
+
+    Args:
+        table: The canonical trade table.
+    """
+    identifiers = table["trade_id"]
+    _reject(pc.less(identifiers, 0), "trade_id must be nonnegative")
+    same_time = pc.equal(
+        table["event_time"].slice(1), table["event_time"].slice(0, len(table) - 1)
+    )
+    nonincreasing_id = pc.less_equal(
+        identifiers.slice(1), identifiers.slice(0, len(table) - 1)
+    )
+    _reject(
+        pc.and_(same_time, nonincreasing_id),
+        "trade_id must increase within a timestamp",
+    )
+    _reject(pc.less_equal(table["price"], 0), "trade price must be positive")
+    for column in ("base_quantity", "quote_quantity"):
+        _reject(pc.less(table[column], 0), "trade quantities must be nonnegative")
+    _reject(
+        pc.invert(pc.is_in(table["side"], value_set=pa.array(["buy", "sell"]))),
+        "trade side must be buy or sell",
+    )
+
+
 def validate_chunk(
     table: Any,
     dataset: DatasetSpec,
@@ -262,9 +408,13 @@ def validate_chunk(
     Returns:
         The final UTC timestamp in the validated table.
     """
-    if dataset.product != "spot" or dataset.name != "klines":
+    if dataset.product != "spot" or dataset.name not in {"klines", "trades"}:
         raise ValueError(f"unsupported validator: {dataset.product}/{dataset.name}")
-    _validate_types(table, dataset)
+    _validate_schema(table, dataset)
+    _validate_values(table, dataset)
     last = _validate_times(table, dataset, day, previous_timestamp, end_day)
-    _validate_ohlc(table)
+    if dataset.name == "klines":
+        _validate_ohlc(table)
+    else:
+        _validate_trades(table)
     return last

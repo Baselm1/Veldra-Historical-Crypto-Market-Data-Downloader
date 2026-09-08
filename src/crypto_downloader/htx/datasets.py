@@ -87,6 +87,8 @@ NEW_KLINE_COLUMNS = (
     "volCcyQuote",
     "ts",
 )
+OLD_TRADE_COLUMNS = ("id", "ts", "price", "amount", "direction")
+NEW_TRADE_COLUMNS = ("instId", "tradeId", "px", "side", "size", "ts")
 SPOT_KLINES = DatasetSpec(
     product="spot",
     name="klines",
@@ -119,9 +121,41 @@ SPOT_KLINES = DatasetSpec(
     ),
     sort_source_rows=True,
 )
+SPOT_TRADES = DatasetSpec(
+    product="spot",
+    name="trades",
+    remote_name="trades",
+    source_columns=OLD_TRADE_COLUMNS,
+    stored_columns=(
+        "event_time",
+        "trade_id",
+        "price",
+        "base_quantity",
+        "quote_quantity",
+        "side",
+    ),
+    time_column="event_time",
+    base_interval=None,
+    output_intervals=(),
+    aliases=MappingProxyType({}),
+    max_concurrency=16,
+    ordering_columns=("event_time", "trade_id"),
+    timestamp_columns=("event_time",),
+    integer_columns=("trade_id",),
+    string_columns=("side",),
+    archive_symbol_attribute="pair",
+    source_schemas=(
+        CsvSchema(OLD_TRADE_COLUMNS, "present"),
+        CsvSchema(NEW_TRADE_COLUMNS, "present"),
+    ),
+    sort_source_rows=True,
+)
 
 DATASETS: Mapping[tuple[str, str], DatasetSpec] = MappingProxyType(
-    {("spot", "klines"): SPOT_KLINES}
+    {
+        ("spot", "klines"): SPOT_KLINES,
+        ("spot", "trades"): SPOT_TRADES,
+    }
 )
 
 

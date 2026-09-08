@@ -175,3 +175,70 @@ class HTX:
             gap_policy=gap_policy,
             progress=self._progress,
         )
+
+    @overload
+    def get_trades(
+        self,
+        pairs: str,
+        start: DateInput,
+        end: DateInput,
+        *,
+        product: Product = "spot",
+        columns: ColumnSelection = None,
+        refresh: bool = False,
+        offline: bool = False,
+    ) -> pd.DataFrame:
+        """Describe the return type for one trade pair."""
+        ...
+
+    @overload
+    def get_trades(
+        self,
+        pairs: list[str],
+        start: DateInput,
+        end: DateInput,
+        *,
+        product: Product = "spot",
+        columns: ColumnSelection = None,
+        refresh: bool = False,
+        offline: bool = False,
+    ) -> list[pd.DataFrame]:
+        """Describe the return type for several trade pairs."""
+        ...
+
+    def get_trades(
+        self,
+        pairs: str | list[str],
+        start: DateInput,
+        end: DateInput,
+        *,
+        product: Product = "spot",
+        columns: ColumnSelection = None,
+        refresh: bool = False,
+        offline: bool = False,
+    ) -> pd.DataFrame | list[pd.DataFrame]:
+        """Return HTX individual trades for one or several pairs.
+
+        Args:
+            pairs: One native/normalized pair or an ordered pair list.
+            start: The inclusive request start.
+            end: The inclusive date or exclusive timestamp request end.
+            product: Spot or one of the two perpetual products.
+            columns: Optional selected or renamed canonical columns.
+            refresh: Whether to repeat complete discovery for the range.
+            offline: Whether to forbid all source requests.
+
+        Returns:
+            One trade DataFrame or an ordered DataFrame list.
+        """
+        return self._downloader.get_data(
+            pairs,
+            start,
+            end,
+            product=product,
+            dataset="trades",
+            desired_columns=columns,
+            refresh=refresh,
+            offline=offline,
+            progress=self._progress,
+        )

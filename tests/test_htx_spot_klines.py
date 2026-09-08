@@ -141,7 +141,7 @@ def test_dataset_resolution_accepts_only_implemented_spot_one_minute_storage() -
     with pytest.raises(ValueError, match="currently stores"):
         get_dataset("spot", "klines", kline_base_interval="5m")
     with pytest.raises(ValueError, match="unsupported dataset"):
-        get_dataset("spot", "trades")
+        get_dataset("spot", "funding_rates")
 
 
 def archive_bytes(filename: str, csv_text: str) -> bytes:
