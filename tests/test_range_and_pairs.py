@@ -266,6 +266,92 @@ def test_unknown_pair_returns_ranked_suggestions_without_substitution(
     assert source.resource_calls == []
 
 
+@pytest.mark.parametrize(
+    "spelling",
+    ["BTcuSDT", "btcusdt", "btc-usdt", "BTC/USDT"],
+)
+def test_pair_normalization_resolves_case_and_common_separators(
+    tmp_path: Path,
+    spelling: str,
+) -> None:
+    """Confirm harmless formatting differences resolve without fuzzy matching.
+
+    Args:
+        tmp_path: The isolated downloader directory.
+        spelling: One human-formatted spelling of BTCUSDT.
+    """
+    source = RangeSource([market("BTCUSDT")], {"BTCUSDT": [date(2024, 1, 1)]})
+
+    result = one_result(
+        service(tmp_path, source).get_results(spelling, "2024-01-01", "2024-01-01")
+    )
+
+    assert result.pair == "BTCUSDT"
+    assert result.errors == []
+
+
+def test_exact_real_market_wins_instead_of_becoming_a_typo_suggestion(
+    tmp_path: Path,
+) -> None:
+    """Confirm a real BTTCUSDT request is never rewritten as BTCUSDT.
+
+    Args:
+        tmp_path: The isolated downloader directory.
+    """
+    source = RangeSource(
+        [market("BTCUSDT"), market("BTTCUSDT")],
+        {"BTTCUSDT": [date(2024, 1, 1)]},
+    )
+
+    result = one_result(
+        service(tmp_path, source).get_results("BTTCUSDT", "2024-01-01", "2024-01-01")
+    )
+
+    assert result.pair == "BTTCUSDT"
+    assert result.errors == []
+
+
+@pytest.mark.parametrize("spelling", ["BBTCUSDT", "BTCIUSDT", "BCTUSDT"])
+def test_unknown_pair_uses_high_confidence_edit_aware_suggestions(
+    tmp_path: Path,
+    spelling: str,
+) -> None:
+    """Confirm insertions and transpositions rank BTCUSDT first.
+
+    Args:
+        tmp_path: The isolated downloader directory.
+        spelling: One misspelled BTCUSDT request.
+    """
+    source = RangeSource(
+        [market("BTCUSDT"), market("BCCUSDT"), market("ETHUSDT")],
+        {},
+    )
+
+    result = one_result(
+        service(tmp_path, source).get_results(spelling, "2024-01-01", "2024-01-01")
+    )
+
+    assert result.errors[0].suggestions[0] == "BTCUSDT"
+    assert len(result.errors[0].suggestions) <= 3
+
+
+def test_unrelated_unknown_pair_has_no_low_confidence_suggestions(
+    tmp_path: Path,
+) -> None:
+    """Confirm unrelated text does not produce noisy market guesses.
+
+    Args:
+        tmp_path: The isolated downloader directory.
+    """
+    source = RangeSource([market("BTCUSDT"), market("ETHUSDT")], {})
+
+    result = one_result(
+        service(tmp_path, source).get_results("NOTREALPAIR", "2024-01-01", "2024-01-01")
+    )
+
+    assert result.errors[0].suggestions == ()
+
+
 def test_ambiguous_normalized_pair_lists_exact_candidates(tmp_path: Path) -> None:
     """Confirm normalized collisions require the caller to choose a native symbol."""
     source = RangeSource([market("BTC-USDT"), market("BTC_USDT")], {})

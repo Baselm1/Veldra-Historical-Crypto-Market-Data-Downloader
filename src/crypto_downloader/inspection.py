@@ -2,7 +2,6 @@
 
 from dataclasses import dataclass, replace
 from datetime import date, timedelta
-from difflib import get_close_matches
 import logging
 from pathlib import Path
 
@@ -14,6 +13,7 @@ from .discovery import _merge_ranges, discover_resources, requested_days
 from .display import Reporter
 from .downloader import Downloader, _load_markets, _source_limit, utc_today
 from .models import Availability, Market, Resource, ResourceKey
+from .matching import rank_markets
 from .request import Request, normalize_pair, parse_identifier, parse_pairs
 
 LOGGER = logging.getLogger(__name__)
@@ -207,58 +207,6 @@ def get_markets(
     ]
 
 
-def _fuzzy_matches(query: str, markets: list[Market]) -> list[Market]:
-    """Return markets grouped by descending normalized similarity.
-
-    Args:
-        query: The normalized query text.
-        markets: Candidate markets not already matched.
-
-    Returns:
-        Similar markets grouped in deterministic product and symbol order.
-    """
-    by_normalized: dict[str, list[Market]] = {}
-    for market in markets:
-        by_normalized.setdefault(market.normalized_symbol, []).append(market)
-    if not by_normalized:
-        return []
-    close = get_close_matches(
-        query,
-        by_normalized,
-        n=len(by_normalized),
-        cutoff=0.6,
-    )
-    return [market for candidate in close for market in by_normalized[candidate]]
-
-
-def _ranked_matches(query: str, markets: list[Market], limit: int) -> list[Market]:
-    """Rank exact, prefix, and fuzzy matches without selecting one.
-
-    Args:
-        query: The normalized query text.
-        markets: The filtered candidate markets.
-        limit: The maximum number of matches.
-
-    Returns:
-        Ranked markets with no duplicates.
-    """
-    exact = [market for market in markets if market.normalized_symbol == query]
-    prefix = [
-        market
-        for market in markets
-        if market.normalized_symbol != query
-        and market.normalized_symbol.startswith(query)
-    ]
-    remaining = [
-        market
-        for market in markets
-        if market.normalized_symbol != query
-        and not market.normalized_symbol.startswith(query)
-    ]
-    fuzzy = _fuzzy_matches(query, remaining)
-    return [*exact, *prefix, *fuzzy][:limit]
-
-
 def _search_products(downloader: Downloader, product: object) -> tuple[str, ...]:
     """Return one selected product or every source product.
 
@@ -393,7 +341,7 @@ def find_markets(
         skip_missing=selected_offline and product is None,
         progress=progress,
     )
-    return _ranked_matches(normalized_query, markets, selected_limit)
+    return rank_markets(normalized_query, markets, selected_limit)
 
 
 def _unknown_market(requested: str, markets: list[Market]) -> ValueError:
@@ -406,7 +354,7 @@ def _unknown_market(requested: str, markets: list[Market]) -> ValueError:
     Returns:
         The descriptive lookup error.
     """
-    suggestions = _ranked_matches(normalize_pair(requested), markets, 3)
+    suggestions = rank_markets(normalize_pair(requested), markets, 3)
     if not suggestions:
         return ValueError(f"Pair '{requested}' was not found.")
     symbols = ", ".join(market.symbol for market in suggestions)

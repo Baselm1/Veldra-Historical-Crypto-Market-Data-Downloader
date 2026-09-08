@@ -2,7 +2,6 @@
 
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, time, timedelta
-from difflib import get_close_matches
 import logging
 import math
 from pathlib import Path
@@ -17,6 +16,7 @@ from .datasets import DatasetSpec
 from .display import Reporter, format_range, format_time
 from .discovery import discover_resources, requested_days
 from .models import Market, Message, MissingCandlesError, Resource, ResourceKey, Result
+from .matching import suggest_symbols
 from .query import empty_frame, missing_ranges, query_parquet
 from .request import Request, normalize_pair
 from .source import Source
@@ -132,13 +132,7 @@ def _suggestions(pair: str, markets: list[Market]) -> tuple[str, ...]:
     Returns:
         Up to three ranked native symbol suggestions.
     """
-    normalized = normalize_pair(pair)
-    by_normalized: dict[str, list[str]] = {}
-    for market in markets:
-        by_normalized.setdefault(market.normalized_symbol, []).append(market.symbol)
-    close = get_close_matches(normalized, by_normalized, n=3, cutoff=0.6)
-    symbols = [symbol for candidate in close for symbol in by_normalized[candidate]]
-    return tuple(symbols[:3])
+    return suggest_symbols(normalize_pair(pair), markets)
 
 
 def _resolve_market(

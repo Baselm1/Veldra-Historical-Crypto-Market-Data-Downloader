@@ -319,7 +319,13 @@ def test_find_markets_ranks_exact_prefix_and_fuzzy_matches_across_products(
     def markets(_client: httpx.Client, product: str) -> list[Market]:
         """Return overlapping symbols across all Binance products."""
         if product == "spot":
-            return [market("BTCUSDT"), market("BTCUSDC", quote="USDC")]
+            return [
+                market("BTCUSDT"),
+                market("BTCUSDC", quote="USDC"),
+                market("BTCSTUSDT", base="BTCST"),
+                market("ZBTUSDT", base="ZBT"),
+                market("WCTUSDT", base="WCT"),
+            ]
         if product == "um":
             return [market("BTCUSDT", pair="BTCUSDT")]
         return [market("BTCUSD_PERP", pair="BTCUSD", quote="USD")]
@@ -327,8 +333,9 @@ def test_find_markets_ranks_exact_prefix_and_fuzzy_matches_across_products(
     monkeypatch.setattr(source_for(service), "markets", markets)
 
     exact = service.find_markets("btc-usdt", limit=2)
-    prefix = service.find_markets("btcus", product="spot", limit=5)
+    prefix = service.find_markets("btcus", product="spot", limit=2)
     fuzzy = service.find_markets("btcsudt", status="trading", limit=2)
+    transposed = service.find_markets("bctusdt", product="spot", limit=1)
 
     assert [(value.product, value.symbol) for value in exact] == [
         ("spot", "BTCUSDT"),
@@ -339,6 +346,7 @@ def test_find_markets_ranks_exact_prefix_and_fuzzy_matches_across_products(
         ("spot", "BTCUSDT"),
         ("um", "BTCUSDT"),
     ]
+    assert [value.symbol for value in transposed] == ["BTCUSDT"]
 
 
 @pytest.mark.parametrize(
