@@ -12,18 +12,18 @@ import httpx
 import pandas as pd
 import pytest
 
-import crypto_downloader.downloader as downloader_module
-from crypto_downloader.datasets import DatasetSpec, SPOT_KLINES
-from crypto_downloader.downloader import Downloader
-from crypto_downloader.catalog import Catalog, open_catalog
-from crypto_downloader.models import (
+import crypto_downloader._core.engine as downloader_module
+from crypto_downloader._core.datasets import DatasetSpec, SPOT_KLINES
+from crypto_downloader._core.engine import Downloader
+from crypto_downloader._core.catalog import Catalog, open_catalog
+from crypto_downloader._core.models import (
     IngestedResource,
     Market,
     Resource,
     ResourceKey,
     Result,
 )
-from crypto_downloader.request import normalize_pair
+from crypto_downloader._core.request import normalize_pair
 
 TODAY = date(2025, 1, 5)
 

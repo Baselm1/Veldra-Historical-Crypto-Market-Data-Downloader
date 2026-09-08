@@ -3,7 +3,14 @@
 import logging
 
 from .binance import Binance
-from .models import Availability, Gap, Market, Message, MissingCandlesError, Result
+from ._core.models import (
+    Availability,
+    Gap,
+    Market,
+    Message,
+    MissingCandlesError,
+    Result,
+)
 
 logging.getLogger(__name__).addHandler(logging.NullHandler())
 

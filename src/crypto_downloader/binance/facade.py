@@ -6,16 +6,16 @@ from typing import Literal, overload
 
 import pandas as pd
 
-from .downloader import Downloader
-from .http import _validate_settings
-from .inspection import (
+from crypto_downloader._core.engine import Downloader
+from crypto_downloader._core.download import _validate_settings
+from crypto_downloader._core.inspection import (
     discover_availability as _discover_availability,
     find_markets as _find_markets,
     get_availability as _get_availability,
     get_markets as _get_markets,
 )
-from .models import Availability, Market
-from .sources.binance import BinanceSource
+from crypto_downloader._core.models import Availability, Market
+from crypto_downloader.binance.connector import BinanceSource
 
 type DateInput = str | date | datetime
 type ColumnSelection = list[str] | dict[str, str] | None

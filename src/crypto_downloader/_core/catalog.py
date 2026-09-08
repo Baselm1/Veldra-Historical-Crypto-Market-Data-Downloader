@@ -11,7 +11,12 @@ from threading import RLock
 import duckdb
 import pandas as pd
 
-from .models import IngestedResource, Market, Resource, ResourceKey
+from crypto_downloader._core.models import (
+    IngestedResource,
+    Market,
+    Resource,
+    ResourceKey,
+)
 
 _CATALOG_LOCKS = tuple(RLock() for _ in range(64))
 LOGGER = logging.getLogger(__name__)

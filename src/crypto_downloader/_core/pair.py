@@ -11,16 +11,28 @@ from time import perf_counter
 import duckdb
 import httpx
 
-from .catalog import Catalog
-from .cache import cache_resources, invalid_parquet_paths
-from .datasets import DatasetSpec
-from .display import Reporter, format_range, format_time
-from .discovery import discover_resources, requested_days
-from .models import Market, Message, MissingCandlesError, Resource, ResourceKey, Result
-from .matching import suggest_symbols
-from .query import empty_frame, missing_ranges, query_parquet, suspect_gap_paths
-from .request import Request, normalize_pair
-from .source import Source
+from crypto_downloader._core.catalog import Catalog
+from crypto_downloader._core.cache import cache_resources, invalid_parquet_paths
+from crypto_downloader._core.datasets import DatasetSpec
+from crypto_downloader._core.reporting import Reporter, format_range, format_time
+from crypto_downloader._core.discovery import discover_resources, requested_days
+from crypto_downloader._core.models import (
+    Market,
+    Message,
+    MissingCandlesError,
+    Resource,
+    ResourceKey,
+    Result,
+)
+from crypto_downloader._core.matching import suggest_symbols
+from crypto_downloader._core.query import (
+    empty_frame,
+    missing_ranges,
+    query_parquet,
+    suspect_gap_paths,
+)
+from crypto_downloader._core.request import Request, normalize_pair
+from crypto_downloader._core.source import Source
 
 LOGGER = logging.getLogger(__name__)
 

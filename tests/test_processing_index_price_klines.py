@@ -6,12 +6,12 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from crypto_downloader.datasets import (
+from crypto_downloader._core.datasets import (
     CM_INDEX_PRICE_KLINES,
     UM_INDEX_PRICE_KLINES,
     DatasetSpec,
 )
-from crypto_downloader.processing import normalize_chunk, validate_chunk
+from crypto_downloader._core.processing import normalize_chunk, validate_chunk
 
 FIXTURES = Path(__file__).parent / "fixtures"
 

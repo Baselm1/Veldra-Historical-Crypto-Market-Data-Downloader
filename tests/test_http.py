@@ -11,7 +11,7 @@ from urllib.parse import quote
 import httpx
 import pytest
 
-from crypto_downloader.http import (
+from crypto_downloader._core.download import (
     ChecksumError,
     DownloadSizeError,
     archive_checksum,
@@ -19,7 +19,7 @@ from crypto_downloader.http import (
     get,
     retry_delay,
 )
-from crypto_downloader.models import Resource
+from crypto_downloader._core.models import Resource
 
 
 class Chunks(httpx.SyncByteStream):

@@ -11,10 +11,10 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from .datasets import DatasetSpec
-from .http import download
-from .models import IngestedResource, Resource
-from .processing import normalize_chunk, validate_chunk
+from crypto_downloader._core.datasets import DatasetSpec
+from crypto_downloader._core.download import download
+from crypto_downloader._core.models import IngestedResource, Resource
+from crypto_downloader._core.processing import normalize_chunk, validate_chunk
 
 LOGGER = logging.getLogger(__name__)
 

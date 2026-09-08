@@ -8,8 +8,13 @@ from pathlib import Path
 import duckdb
 import pytest
 
-from crypto_downloader.catalog import Catalog, open_catalog
-from crypto_downloader.models import IngestedResource, Market, Resource, ResourceKey
+from crypto_downloader._core.catalog import Catalog, open_catalog
+from crypto_downloader._core.models import (
+    IngestedResource,
+    Market,
+    Resource,
+    ResourceKey,
+)
 
 KEY = ResourceKey("binance", "spot", "klines", "BTCUSDT", "1m")
 

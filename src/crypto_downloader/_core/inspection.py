@@ -8,14 +8,29 @@ from typing import Protocol, cast
 
 import httpx
 
-from .catalog import Catalog, catalog_lock, open_catalog
-from .datasets import DatasetSpec, get_dataset
-from .discovery import _merge_ranges, discover_resources, requested_days
-from .display import Reporter
-from .downloader import Downloader, _load_markets, _source_limit, utc_now, utc_today
-from .models import Availability, Market, Resource, ResourceKey
-from .matching import rank_markets
-from .request import Request, normalize_pair, parse_identifier, parse_pairs
+from crypto_downloader._core.catalog import Catalog, catalog_lock, open_catalog
+from crypto_downloader._core.datasets import DatasetSpec, get_dataset
+from crypto_downloader._core.discovery import (
+    _merge_ranges,
+    discover_resources,
+    requested_days,
+)
+from crypto_downloader._core.reporting import Reporter
+from crypto_downloader._core.engine import (
+    Downloader,
+    _load_markets,
+    _source_limit,
+    utc_now,
+    utc_today,
+)
+from crypto_downloader._core.models import Availability, Market, Resource, ResourceKey
+from crypto_downloader._core.matching import rank_markets
+from crypto_downloader._core.request import (
+    Request,
+    normalize_pair,
+    parse_identifier,
+    parse_pairs,
+)
 
 LOGGER = logging.getLogger(__name__)
 

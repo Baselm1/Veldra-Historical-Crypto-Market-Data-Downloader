@@ -4,14 +4,14 @@ from datetime import UTC, date, datetime
 
 import pandas as pd
 
-from crypto_downloader.datasets import (
+from crypto_downloader._core.datasets import (
     CM_INDEX_PRICE_KLINES,
     CM_TRADES,
     UM_INDEX_PRICE_KLINES,
     UM_TRADES,
 )
-from crypto_downloader.models import Market, Resource, Result
-from crypto_downloader.pair import _archive_symbol, _with_contract_size
+from crypto_downloader._core.models import Market, Resource, Result
+from crypto_downloader._core.pair import _archive_symbol, _with_contract_size
 
 
 def result() -> Result:

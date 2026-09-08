@@ -2,7 +2,7 @@
 
 import pytest
 
-from crypto_downloader.datasets import (
+from crypto_downloader._core.datasets import (
     CM_BOOK_DEPTH,
     CM_INDEX_PRICE_KLINES,
     CM_METRICS,
@@ -22,7 +22,7 @@ from crypto_downloader.datasets import (
     DatasetSpec,
     get_dataset,
 )
-from crypto_downloader.request import Request
+from crypto_downloader._core.request import Request
 
 SOURCE_COLUMNS = (
     "open_time",

@@ -17,10 +17,9 @@ from rich.progress import (
     TimeElapsedColumn,
 )
 from rich.progress import TaskID
-from rich.table import Table
 from rich.text import Text
 
-from .models import Market, Message, Result, TimeRange
+from crypto_downloader._core.models import Market, TimeRange
 
 ProgressCallback = Callable[[date, bool], None]
 LOGGER = logging.getLogger(__name__)
@@ -272,125 +271,3 @@ class Reporter:
                     progress.update(task, completed=total)
             self._finish_task(progress, task)
         LOGGER.debug("Rich download progress finished: symbol=%s", symbol)
-
-
-def _row_limit(rows: object) -> int:
-    """Validate a result preview row limit.
-
-    Args:
-        rows: The proposed number of rows to show.
-
-    Returns:
-        The validated non-negative row limit.
-    """
-    if isinstance(rows, bool) or not isinstance(rows, int):
-        raise TypeError("rows must be an integer")
-    if rows < 0:
-        raise ValueError("rows must not be negative")
-    return rows
-
-
-def _message_text(kind: str, message: Message) -> Text:
-    """Build one styled structured result message.
-
-    Args:
-        kind: The warning, problem, or error category.
-        message: The structured message being rendered.
-
-    Returns:
-        Rich text containing every available message detail.
-    """
-    styles = {"WARNING": "yellow", "PROBLEM": "yellow", "ERROR": "bold red"}
-    parts = [f"{kind} {message.code}: {message.message}"]
-    if message.date is not None:
-        parts.append(f"Date: {message.date.isoformat()}.")
-    if message.suggestions:
-        parts.append(f"Suggestions: {', '.join(message.suggestions)}.")
-    return Text(" ".join(parts), style=styles[kind])
-
-
-def _data_table(result: Result, rows: int) -> Table:
-    """Build a Rich table containing the requested DataFrame preview.
-
-    Args:
-        result: The result whose rows should be previewed.
-        rows: The maximum number of rows to show.
-
-    Returns:
-        A Rich table containing the selected columns and rows.
-    """
-    table = Table(show_header=True, header_style="bold cyan")
-    for column in result.data.columns:
-        table.add_column(str(column))
-    for values in result.data.head(rows).itertuples(index=False, name=None):
-        table.add_row(*(str(value) for value in values))
-    return table
-
-
-def render_result(
-    result: Result, *, console: Console | None = None, rows: int = 10
-) -> None:
-    """Render one result summary and a preview of its data.
-
-    Args:
-        result: The result to render.
-        console: The optional destination used for Rich output.
-        rows: The maximum number of data rows to preview.
-    """
-    limit = _row_limit(rows)
-    target = console if console is not None else Console()
-    state = "complete" if result.complete else "incomplete"
-    style = "green" if result.complete else "yellow"
-    target.print(
-        Text.assemble(
-            (result.pair, "bold cyan"),
-            f": {len(result.data):,} rows, ",
-            (state, style),
-        )
-    )
-    metadata = Table.grid(padding=(0, 2))
-    metadata.add_column(style="bold")
-    metadata.add_column()
-    metadata.add_row("Requested", format_range(result.requested_range))
-    metadata.add_row("Available", format_range(result.available_range))
-    metadata.add_row("Used", format_range(result.used_range))
-    target.print(metadata)
-    for kind, messages in (
-        ("WARNING", result.warnings),
-        ("PROBLEM", result.problems),
-        ("ERROR", result.errors),
-    ):
-        for message in messages:
-            target.print(_message_text(kind, message))
-    if result.data.empty:
-        target.print(Text("No rows returned.", style="dim"))
-    elif limit == 0:
-        target.print(Text("Data preview disabled.", style="dim"))
-    else:
-        target.print(_data_table(result, limit))
-        if len(result.data) > limit:
-            target.print(
-                Text(f"Showing {limit:,} of {len(result.data):,} rows.", style="dim")
-            )
-
-
-def render_results(
-    results: Result | Sequence[Result],
-    *,
-    console: Console | None = None,
-    rows: int = 10,
-) -> None:
-    """Render one result or an ordered collection of results.
-
-    Args:
-        results: One result or the results to render in order.
-        console: The optional destination used for Rich output.
-        rows: The maximum number of rows to preview per result.
-    """
-    limit = _row_limit(rows)
-    target = console if console is not None else Console()
-    values = [results] if isinstance(results, Result) else list(results)
-    for index, result in enumerate(values):
-        if index:
-            target.print()
-        render_result(result, console=target, rows=limit)

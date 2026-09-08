@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, cast
 import pandas as pd
 
 if TYPE_CHECKING:
-    from .datasets import DatasetSpec
+    from crypto_downloader._core.datasets import DatasetSpec
 
 type TimeRange = tuple[datetime, datetime]
 type ColumnSelection = dict[str, str] | None

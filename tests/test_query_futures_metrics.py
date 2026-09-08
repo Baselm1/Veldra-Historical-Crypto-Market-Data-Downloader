@@ -7,8 +7,8 @@ import duckdb
 import pandas as pd
 import pytest
 
-from crypto_downloader.datasets import CM_METRICS, UM_METRICS, DatasetSpec
-from crypto_downloader.query import query_parquet
+from crypto_downloader._core.datasets import CM_METRICS, UM_METRICS, DatasetSpec
+from crypto_downloader._core.query import query_parquet
 
 
 @pytest.fixture

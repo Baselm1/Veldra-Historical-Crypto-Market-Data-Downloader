@@ -15,15 +15,15 @@ import httpx
 import pandas as pd
 import pytest
 
-import crypto_downloader.downloader as downloader_module
-import crypto_downloader.pair as pair_module
-from crypto_downloader.cache import parquet_path, valid_cached_path
-from crypto_downloader.catalog import open_catalog
-from crypto_downloader.datasets import SPOT_KLINES
-from crypto_downloader.discovery import _validate_resources, requested_days
-from crypto_downloader.downloader import Downloader, get_data, get_results
-from crypto_downloader.models import Resource, ResourceKey, Result
-from crypto_downloader.sources.binance import BinanceSource
+import crypto_downloader._core.engine as downloader_module
+import crypto_downloader._core.pair as pair_module
+from crypto_downloader._core.cache import parquet_path, valid_cached_path
+from crypto_downloader._core.catalog import open_catalog
+from crypto_downloader._core.datasets import SPOT_KLINES
+from crypto_downloader._core.discovery import _validate_resources, requested_days
+from crypto_downloader._core.engine import Downloader
+from crypto_downloader._core.models import Resource, ResourceKey, Result
+from crypto_downloader.binance.connector import BinanceSource
 
 FIXTURES = Path(__file__).parent / "fixtures"
 DAY = date(2024, 1, 1)
@@ -353,43 +353,6 @@ def test_refresh_rechecks_a_cached_archive_without_redownloading_it(
     assert refreshed.warnings == []
     assert server.archive_requests == 1
     assert server.checksum_requests == 2
-
-
-def test_internal_get_data_returns_a_dataframe_with_its_report(tmp_path: Path) -> None:
-    """Confirm the engine convenience function retains its DataFrame adapter."""
-    server = BinanceServer()
-
-    frame = get_data(
-        "BTCUSDT",
-        "2024-01-01",
-        "2024-01-01",
-        data_dir=tmp_path,
-        desired_columns=["open_time", "close"],
-        source=BinanceSource(retries=0),
-        transport=httpx.MockTransport(server),
-    )
-
-    assert isinstance(frame, pd.DataFrame)
-    assert len(frame) == 2
-    assert frame.attrs["download"]["pair"] == "BTCUSDT"
-    assert frame.attrs["download"]["complete"] is True
-
-
-def test_internal_get_results_returns_the_structured_result(tmp_path: Path) -> None:
-    """Confirm the engine convenience function retains structured diagnostics."""
-    server = BinanceServer()
-
-    result = get_results(
-        "BTCUSDT",
-        "2024-01-01",
-        "2024-01-01",
-        data_dir=tmp_path,
-        source=BinanceSource(retries=0),
-        transport=httpx.MockTransport(server),
-    )
-
-    assert isinstance(result, Result)
-    assert result.complete
 
 
 def test_dataframe_list_preserves_requested_pair_order(tmp_path: Path) -> None:

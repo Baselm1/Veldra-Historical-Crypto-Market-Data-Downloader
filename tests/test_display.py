@@ -10,14 +10,12 @@ import pandas as pd
 import pytest
 from rich.console import Console
 
-from crypto_downloader.display import (
+from crypto_downloader._core.reporting import (
     Reporter,
     format_range,
     format_time,
-    render_result,
-    render_results,
 )
-from crypto_downloader.models import Market, Message, Result
+from crypto_downloader._core.models import Market, Message, Result
 
 
 def output_console(*, color: bool = False) -> tuple[Console, StringIO]:
@@ -194,7 +192,7 @@ def test_status_and_download_progress_are_visible(
     console, stream = output_console(color=True)
     reporter = Reporter(console=console)
 
-    with caplog.at_level(logging.DEBUG, logger="crypto_downloader.display"):
+    with caplog.at_level(logging.DEBUG, logger="crypto_downloader._core.reporting"):
         with reporter.status("Refreshing markets"):
             pass
     with reporter.downloads("BTCUSDT", 2) as advance:
@@ -273,65 +271,3 @@ def test_reporter_does_not_configure_the_callers_root_logger() -> None:
 
     assert tuple(root.handlers) == handlers
     assert root.level == level
-
-
-def test_render_result_shows_metadata_colored_table_and_row_limit() -> None:
-    """Confirm shared rendering produces a readable summary and data preview."""
-    console, stream = output_console(color=True)
-
-    render_result(result(), console=console, rows=1)
-
-    output = stream.getvalue()
-    assert "BTCUSDT" in output
-    assert "2 rows" in output
-    assert "complete" in output
-    assert "Requested" in output and "Available" in output and "Used" in output
-    assert "open_time" in output and "open" in output and "close" in output
-    assert "100.0" in output
-    assert "2025-01-01 01:00:00+00:00" not in output
-    assert "Showing 1 of 2 rows" in output
-    assert "\x1b[" in output
-
-
-def test_render_result_shows_every_structured_message_and_suggestion() -> None:
-    """Confirm failures and adjustments are not hidden by table rendering."""
-    console, stream = output_console()
-
-    render_result(result(complete=False), console=console)
-
-    output = stream.getvalue()
-    assert "incomplete" in output
-    assert "start_trimmed" in output and "The start was trimmed." in output
-    assert "resource_unavailable" in output and "2025-01-01" in output
-    assert "unknown_pair" in output and "BTCUSDT, BTCUSDC" in output
-
-
-def test_render_result_explains_an_empty_frame() -> None:
-    """Confirm empty results have a clear human-readable message."""
-    console, stream = output_console()
-
-    render_result(result(empty=True), console=console)
-
-    assert "No rows returned" in stream.getvalue()
-
-
-def test_render_results_preserves_result_order() -> None:
-    """Confirm one shared renderer handles ordered multi-pair results."""
-    console, stream = output_console()
-
-    render_results([result("ETHUSDT"), result("BTCUSDT")], console=console, rows=0)
-
-    output = stream.getvalue()
-    assert output.index("ETHUSDT") < output.index("BTCUSDT")
-    assert "Data preview disabled" in output
-
-
-@pytest.mark.parametrize("rows", [-1, 1.5, True, "10"])
-def test_rendering_rejects_invalid_row_limits(rows: object) -> None:
-    """Confirm preview limits are non-negative integers.
-
-    Args:
-        rows: The invalid preview limit.
-    """
-    with pytest.raises((TypeError, ValueError), match="rows"):
-        render_result(result(), rows=rows)  # type: ignore[arg-type]

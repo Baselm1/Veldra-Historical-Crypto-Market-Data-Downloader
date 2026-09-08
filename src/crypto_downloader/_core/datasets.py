@@ -6,7 +6,7 @@ import logging
 from types import MappingProxyType
 from typing import Literal
 
-from .request import ColumnSelection
+from crypto_downloader._core.request import ColumnSelection
 
 type Columns = tuple[str, ...]
 type CsvHeader = Literal["absent", "present"]

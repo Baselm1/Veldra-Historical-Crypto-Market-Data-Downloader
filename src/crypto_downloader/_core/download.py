@@ -13,7 +13,7 @@ from urllib.parse import unquote, urlsplit
 
 import httpx
 
-from .models import Resource
+from crypto_downloader._core.models import Resource
 
 RETRYABLE_STATUS_CODES = frozenset({408, 429, 500, 502, 503, 504})
 LOGGER = logging.getLogger(__name__)

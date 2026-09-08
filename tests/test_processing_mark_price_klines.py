@@ -6,12 +6,12 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from crypto_downloader.datasets import (
+from crypto_downloader._core.datasets import (
     CM_MARK_PRICE_KLINES,
     UM_MARK_PRICE_KLINES,
     DatasetSpec,
 )
-from crypto_downloader.processing import (
+from crypto_downloader._core.processing import (
     DataValidationError,
     normalize_chunk,
     validate_chunk,

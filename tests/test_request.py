@@ -5,8 +5,8 @@ from datetime import date, datetime, timedelta, timezone
 import pandas as pd
 import pytest
 
-from crypto_downloader.datasets import DatasetSpec, get_dataset
-from crypto_downloader.request import Request, normalize_pair, parse_timestamp
+from crypto_downloader._core.datasets import DatasetSpec, get_dataset
+from crypto_downloader._core.request import Request, normalize_pair, parse_timestamp
 
 UTC = timezone.utc
 

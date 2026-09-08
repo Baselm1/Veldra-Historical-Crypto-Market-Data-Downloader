@@ -7,7 +7,7 @@ import logging
 import numpy as np
 import pandas as pd
 
-from .datasets import DatasetSpec
+from crypto_downloader._core.datasets import DatasetSpec
 
 LOGGER = logging.getLogger(__name__)
 

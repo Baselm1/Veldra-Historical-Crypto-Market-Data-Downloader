@@ -8,8 +8,8 @@ import duckdb
 import pandas as pd
 import pytest
 
-from crypto_downloader.datasets import SPOT_KLINES
-from crypto_downloader.query import query_parquet
+from crypto_downloader._core.datasets import SPOT_KLINES
+from crypto_downloader._core.query import query_parquet
 
 
 @pytest.fixture

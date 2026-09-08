@@ -8,14 +8,14 @@ import duckdb
 import pandas as pd
 import pytest
 
-from crypto_downloader.datasets import (
+from crypto_downloader._core.datasets import (
     SPOT_AGG_TRADES,
     SPOT_KLINES,
     SPOT_TRADES,
     DatasetSpec,
 )
-from crypto_downloader.processing import normalize_chunk
-from crypto_downloader.query import empty_frame, query_parquet
+from crypto_downloader._core.processing import normalize_chunk
+from crypto_downloader._core.query import empty_frame, query_parquet
 
 
 @pytest.fixture

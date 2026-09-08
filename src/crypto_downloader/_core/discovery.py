@@ -5,10 +5,10 @@ import logging
 
 import httpx
 
-from .catalog import Catalog, DiscoveryCheckpoint
-from .display import Reporter
-from .models import Resource, ResourceKey
-from .source import Source
+from crypto_downloader._core.catalog import Catalog, DiscoveryCheckpoint
+from crypto_downloader._core.reporting import Reporter
+from crypto_downloader._core.models import Resource, ResourceKey
+from crypto_downloader._core.source import Source
 
 LOGGER = logging.getLogger(__name__)
 DISCOVERY_TTL = timedelta(hours=24)

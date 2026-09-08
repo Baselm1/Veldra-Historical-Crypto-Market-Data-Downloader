@@ -6,7 +6,7 @@ import json
 import pandas as pd
 
 from crypto_downloader import Gap, Message, MissingCandlesError, Result
-from crypto_downloader.models import result_report
+from crypto_downloader._core.models import result_report
 
 UTC = timezone.utc
 START = datetime(2025, 1, 1, tzinfo=UTC)

@@ -6,8 +6,13 @@ from typing import Protocol
 
 import httpx
 
-from .datasets import DatasetSpec
-from .models import IngestedResource, Market, Resource, ResourceKey
+from crypto_downloader._core.datasets import DatasetSpec
+from crypto_downloader._core.models import (
+    IngestedResource,
+    Market,
+    Resource,
+    ResourceKey,
+)
 
 
 class Source(Protocol):

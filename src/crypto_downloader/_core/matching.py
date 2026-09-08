@@ -4,7 +4,7 @@ from collections.abc import Sequence
 
 from rapidfuzz.distance import JaroWinkler
 
-from .models import Market
+from crypto_downloader._core.models import Market
 
 MINIMUM_SIMILARITY = 0.90
 

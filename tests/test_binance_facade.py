@@ -8,9 +8,9 @@ from typing import cast
 import pandas as pd
 import pytest
 
-from crypto_downloader.binance import Binance
-from crypto_downloader.downloader import Downloader
-from crypto_downloader.sources.binance import BinanceSource
+from crypto_downloader.binance.facade import Binance
+from crypto_downloader._core.engine import Downloader
+from crypto_downloader.binance.connector import BinanceSource
 
 
 def facade(
@@ -313,7 +313,7 @@ def test_pair_lists_preserve_the_engine_return_shape(
 
 def test_binance_module_does_not_publish_dataset_functions() -> None:
     """Confirm retrieval names exist only as configured facade methods."""
-    import crypto_downloader.binance as module
+    import crypto_downloader.binance.facade as module
 
     assert not hasattr(module, "get_klines")
     assert not hasattr(module, "get_trades")

@@ -9,9 +9,9 @@ from time import perf_counter
 import duckdb
 import pandas as pd
 
-from .datasets import DatasetSpec
-from .models import Gap, Resource
-from .request import parse_gap_policy
+from crypto_downloader._core.datasets import DatasetSpec
+from crypto_downloader._core.models import Gap, Resource
+from crypto_downloader._core.request import parse_gap_policy
 
 EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 LOGGER = logging.getLogger(__name__)

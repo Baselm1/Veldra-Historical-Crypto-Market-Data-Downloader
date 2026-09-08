@@ -10,11 +10,16 @@ from pathlib import Path
 import httpx
 import pyarrow.parquet as parquet
 
-from .catalog import Catalog
-from .datasets import DatasetSpec
-from .display import Reporter
-from .models import IngestedResource, Message, Resource, ResourceKey
-from .source import Source
+from crypto_downloader._core.catalog import Catalog
+from crypto_downloader._core.datasets import DatasetSpec
+from crypto_downloader._core.reporting import Reporter
+from crypto_downloader._core.models import (
+    IngestedResource,
+    Message,
+    Resource,
+    ResourceKey,
+)
+from crypto_downloader._core.source import Source
 
 LOGGER = logging.getLogger(__name__)
 

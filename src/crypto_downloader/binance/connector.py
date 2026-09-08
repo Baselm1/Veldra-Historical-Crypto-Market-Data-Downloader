@@ -11,11 +11,16 @@ import xml.etree.ElementTree as ElementTree
 
 import httpx
 
-from ..http import archive_checksum, get
-from ..datasets import DatasetSpec, get_dataset
-from ..ingest import ingest_archive
-from ..models import IngestedResource, Market, Resource, ResourceKey
-from ..request import normalize_pair
+from crypto_downloader._core.download import archive_checksum, get
+from crypto_downloader._core.datasets import DatasetSpec, get_dataset
+from crypto_downloader._core.ingest import ingest_archive
+from crypto_downloader._core.models import (
+    IngestedResource,
+    Market,
+    Resource,
+    ResourceKey,
+)
+from crypto_downloader._core.request import normalize_pair
 
 EXCHANGE_INFO_URLS: Mapping[str, str] = {
     "spot": "https://api.binance.com/api/v3/exchangeInfo",

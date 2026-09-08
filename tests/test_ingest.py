@@ -11,7 +11,7 @@ import httpx
 import pandas as pd
 import pytest
 
-from crypto_downloader.datasets import (
+from crypto_downloader._core.datasets import (
     CM_BOOK_DEPTH,
     CM_INDEX_PRICE_KLINES,
     CM_MARK_PRICE_KLINES,
@@ -29,11 +29,11 @@ from crypto_downloader.datasets import (
     UM_TRADES,
     DatasetSpec,
 )
-from crypto_downloader.http import ChecksumError
-from crypto_downloader.ingest import ArchiveError, _member, ingest_archive
-from crypto_downloader.models import Resource
-from crypto_downloader.processing import DataValidationError
-from crypto_downloader.sources.binance import BinanceSource
+from crypto_downloader._core.download import ChecksumError
+from crypto_downloader._core.ingest import ArchiveError, _member, ingest_archive
+from crypto_downloader._core.models import Resource
+from crypto_downloader._core.processing import DataValidationError
+from crypto_downloader.binance.connector import BinanceSource
 
 FIXTURES = Path(__file__).parent / "fixtures"
 DAY = date(2024, 1, 1)

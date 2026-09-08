@@ -3,8 +3,8 @@
 from importlib import import_module
 import logging
 
-from crypto_downloader.binance import Binance
-from crypto_downloader.models import (
+from crypto_downloader.binance.facade import Binance
+from crypto_downloader._core.models import (
     Availability,
     Gap,
     Market,
