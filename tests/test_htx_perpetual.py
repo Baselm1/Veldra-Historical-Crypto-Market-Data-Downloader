@@ -6,9 +6,9 @@ from datetime import date
 import pyarrow as pa
 import pytest
 
-from crypto_downloader.core.datasets import DatasetSpec
-from crypto_downloader.core.models import DataValidationError
-from crypto_downloader.htx.datasets import (
+from veldra.core.datasets import DatasetSpec
+from veldra.core.models import DataValidationError
+from veldra.htx.datasets import (
     COIN_KLINES,
     COIN_TRADES,
     LINEAR_KLINES,
@@ -20,7 +20,7 @@ from crypto_downloader.htx.datasets import (
     OLD_LINEAR_TRADE_COLUMNS,
     get_dataset,
 )
-from crypto_downloader.htx.processing import normalize_chunk, validate_chunk
+from veldra.htx.processing import normalize_chunk, validate_chunk
 
 
 def raw_table(columns: tuple[str, ...], rows: Sequence[tuple[object, ...]]) -> pa.Table:

@@ -3,9 +3,9 @@ requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "crypto-downloader"
+name = "veldra-market-data"
 version = "0.1.0"
-description = "Download, verify, cache, and query Binance historical data"
+description = "Download, verify, cache, and query historical cryptocurrency market data"
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
@@ -42,7 +42,7 @@ addopts = [
     "--strict-markers",
     "-n",
     "8",
-    "--cov=crypto_downloader",
+    "--cov=veldra",
     "--cov-branch",
     "--cov-report=term-missing",
     "--cov-fail-under=90",
@@ -59,4 +59,4 @@ ignore_missing_imports = true
 
 [tool.coverage.run]
 branch = true
-source = ["crypto_downloader"]
+source = ["veldra"]

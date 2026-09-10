@@ -1,6 +1,6 @@
 """Test pair resolution and independent availability cleanup."""
 
-from crypto_downloader.binance.datasets import get_dataset
+from veldra.binance.datasets import get_dataset
 
 
 from collections.abc import Iterator
@@ -15,19 +15,19 @@ import httpx
 import pandas as pd
 import pytest
 
-import crypto_downloader.core.engine as downloader_module
-from crypto_downloader.core.datasets import DatasetSpec
-from crypto_downloader.binance.datasets import SPOT_KLINES
-from crypto_downloader.core.engine import RetrievalEngine
-from crypto_downloader.core.catalog import Catalog, open_catalog
-from crypto_downloader.core.models import (
+import veldra.core.engine as downloader_module
+from veldra.core.datasets import DatasetSpec
+from veldra.binance.datasets import SPOT_KLINES
+from veldra.core.engine import RetrievalEngine
+from veldra.core.catalog import Catalog, open_catalog
+from veldra.core.models import (
     IngestedResource,
     Market,
     Resource,
     ResourceKey,
     Result,
 )
-from crypto_downloader.core.request import normalize_pair
+from veldra.core.request import normalize_pair
 
 TODAY = date(2025, 1, 5)
 
@@ -1005,4 +1005,4 @@ def test_invalid_earliest_history_boundary_is_rejected(
         )
 
 
-from crypto_downloader.binance.connector import BinanceConnector
+from veldra.binance.connector import BinanceConnector

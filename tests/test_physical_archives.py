@@ -4,8 +4,8 @@ from dataclasses import replace
 from datetime import UTC, date, datetime
 from pathlib import Path
 import duckdb
-from crypto_downloader.core.catalog import Catalog
-from crypto_downloader.core.models import Resource, ResourceKey, IngestedResource
+from veldra.core.catalog import Catalog
+from veldra.core.models import Resource, ResourceKey, IngestedResource
 
 KEY = ResourceKey("binance", "spot", "klines", "BTCUSDT", "1m")
 

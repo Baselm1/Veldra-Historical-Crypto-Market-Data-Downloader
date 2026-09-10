@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Literal
 
-from crypto_downloader.core.datasets import CsvSchema, DatasetSpec
+from veldra.core.datasets import CsvSchema, DatasetSpec
 
 type HTXProduct = Literal["spot", "linear_swap", "coin_swap"]
 type HTXDataset = Literal[

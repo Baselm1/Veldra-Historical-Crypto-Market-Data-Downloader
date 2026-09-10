@@ -12,7 +12,7 @@ import duckdb
 import pyarrow as pa
 from typing import Any
 
-from crypto_downloader.core.models import (
+from veldra.core.models import (
     IngestedResource,
     Market,
     Resource,

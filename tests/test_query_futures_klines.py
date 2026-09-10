@@ -8,9 +8,9 @@ import duckdb
 import pandas as pd
 import pytest
 
-from crypto_downloader.core.datasets import DatasetSpec
-from crypto_downloader.binance.datasets import CM_KLINES, UM_KLINES
-from crypto_downloader.core.query import query_parquet
+from veldra.core.datasets import DatasetSpec
+from veldra.binance.datasets import CM_KLINES, UM_KLINES
+from veldra.core.query import query_parquet
 
 
 @pytest.fixture

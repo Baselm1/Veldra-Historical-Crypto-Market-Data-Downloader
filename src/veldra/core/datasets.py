@@ -5,7 +5,7 @@ from dataclasses import dataclass
 import logging
 from typing import Literal, Protocol
 
-from crypto_downloader.core.request import ColumnSelection
+from veldra.core.request import ColumnSelection
 
 type Columns = tuple[str, ...]
 type CsvHeader = Literal["absent", "present"]

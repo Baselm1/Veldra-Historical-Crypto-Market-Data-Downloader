@@ -11,19 +11,19 @@ import httpx
 import pandas as pd
 import pytest
 
-from crypto_downloader.core.datasets import DatasetSpec
-from crypto_downloader.core.ingest import ArchiveError
-from crypto_downloader.core.models import Resource
-from crypto_downloader.htx.connector import HTXConnector
-from crypto_downloader.htx.datasets import (
+from veldra.core.datasets import DatasetSpec
+from veldra.core.ingest import ArchiveError
+from veldra.core.models import Resource
+from veldra.htx.connector import HTXConnector
+from veldra.htx.datasets import (
     COIN_ORDER_BOOK_UPDATES,
     LINEAR_ORDER_BOOK_UPDATES,
     SPOT_ORDER_BOOK_UPDATES,
     SPOT_KLINES,
     get_dataset,
 )
-from crypto_downloader.htx.facade import HTX
-from crypto_downloader.htx.orderbook import ingest_order_book
+from veldra.htx.facade import HTX
+from veldra.htx.orderbook import ingest_order_book
 
 
 def tar_bytes(

@@ -3,9 +3,9 @@
 from datetime import date
 import pyarrow as pa
 import pytest
-from crypto_downloader.binance.datasets import SPOT_TRADES
-from crypto_downloader.binance.datasets import SPOT_KLINES
-from crypto_downloader.binance.processing import (
+from veldra.binance.datasets import SPOT_TRADES
+from veldra.binance.datasets import SPOT_KLINES
+from veldra.binance.processing import (
     normalize_chunk,
     validate_chunk,
     DataValidationError,

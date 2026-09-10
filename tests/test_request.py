@@ -5,9 +5,9 @@ from datetime import date, datetime, timedelta, timezone
 import pandas as pd
 import pytest
 
-from crypto_downloader.core.datasets import DatasetSpec
-from crypto_downloader.binance.datasets import get_dataset
-from crypto_downloader.core.request import Request, normalize_pair, parse_timestamp
+from veldra.core.datasets import DatasetSpec
+from veldra.binance.datasets import get_dataset
+from veldra.core.request import Request, normalize_pair, parse_timestamp
 
 UTC = timezone.utc
 

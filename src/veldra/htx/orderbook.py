@@ -14,10 +14,10 @@ import httpx
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from crypto_downloader.core.datasets import DatasetSpec
-from crypto_downloader.core.download import download
-from crypto_downloader.core.ingest import ArchiveError
-from crypto_downloader.core.models import IngestedResource, Resource
+from veldra.core.datasets import DatasetSpec
+from veldra.core.download import download
+from veldra.core.ingest import ArchiveError
+from veldra.core.models import IngestedResource, Resource
 
 type BookRow = tuple[datetime, int, str, str, int, float, float]
 
@@ -320,7 +320,7 @@ def ingest_order_book(
     partial = destination.with_name(f"{destination.name}.part")
     partial.unlink(missing_ok=True)
     try:
-        with TemporaryDirectory(prefix="crypto-downloader-") as directory:
+        with TemporaryDirectory(prefix="veldra-market-data-") as directory:
             archive_path = Path(directory) / "source.tar.gz"
             archive_sha256 = download(
                 client,

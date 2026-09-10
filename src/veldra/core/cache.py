@@ -10,16 +10,16 @@ from pathlib import Path
 import httpx
 import pyarrow.parquet as parquet
 
-from crypto_downloader.core.catalog import Catalog
-from crypto_downloader.core.datasets import DatasetSpec
-from crypto_downloader.core.reporting import Reporter
-from crypto_downloader.core.models import (
+from veldra.core.catalog import Catalog
+from veldra.core.datasets import DatasetSpec
+from veldra.core.reporting import Reporter
+from veldra.core.models import (
     IngestedResource,
     Message,
     Resource,
     ResourceKey,
 )
-from crypto_downloader.core.connector import Connector
+from veldra.core.connector import Connector
 
 LOGGER = logging.getLogger(__name__)
 

@@ -4,15 +4,15 @@ from datetime import UTC, date, datetime
 import httpx
 import pytest
 
-from crypto_downloader.core.models import Market, ResourceKey
-from crypto_downloader.htx.connector import (
+from veldra.core.models import Market, ResourceKey
+from veldra.htx.connector import (
     ARCHIVE_URL,
     LISTING_URL,
     MARKET_URLS,
     TICKER_URL,
     HTXConnector,
 )
-from crypto_downloader.htx.datasets import (
+from veldra.htx.datasets import (
     KLINE_INTERVALS,
     NEW_INTERVALS,
     OLD_INTERVALS,

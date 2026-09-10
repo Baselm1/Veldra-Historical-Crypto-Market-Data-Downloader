@@ -8,16 +8,16 @@ import pandas as pd
 import pyarrow as pa
 import pytest
 
-from crypto_downloader.core.models import DataValidationError
-from crypto_downloader.core.query import empty_frame
-from crypto_downloader.htx.datasets import (
+from veldra.core.models import DataValidationError
+from veldra.core.query import empty_frame
+from veldra.htx.datasets import (
     NEW_TRADE_COLUMNS,
     OLD_TRADE_COLUMNS,
     SPOT_TRADES,
     get_dataset,
 )
-from crypto_downloader.htx.facade import HTX
-from crypto_downloader.htx.processing import normalize_chunk, validate_chunk
+from veldra.htx.facade import HTX
+from veldra.htx.processing import normalize_chunk, validate_chunk
 
 
 def raw_table(columns: tuple[str, ...], rows: Sequence[tuple[object, ...]]) -> pa.Table:

@@ -7,6 +7,7 @@
 /.codex/
 /.agents/
 /experiments/
+/examples/
 
 # Local datasets and generated databases
 /data/
@@ -69,4 +70,3 @@ htmlcov/
 .DS_Store
 Thumbs.db
 Desktop.ini
-

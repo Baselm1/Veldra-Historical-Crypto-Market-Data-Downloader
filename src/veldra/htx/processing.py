@@ -7,8 +7,8 @@ from typing import Any, cast
 import pyarrow as pa
 import pyarrow.compute as pc
 
-from crypto_downloader.core.datasets import DatasetSpec
-from crypto_downloader.core.models import DataValidationError
+from veldra.core.datasets import DatasetSpec
+from veldra.core.models import DataValidationError
 
 ARCHIVE_DAY_OFFSET = timedelta(hours=8)
 

@@ -4,7 +4,7 @@ from collections.abc import Mapping
 from dataclasses import replace
 import logging
 from types import MappingProxyType
-from crypto_downloader.core.datasets import DatasetSpec, Columns
+from veldra.core.datasets import DatasetSpec, Columns
 
 LOGGER = logging.getLogger(__name__)
 

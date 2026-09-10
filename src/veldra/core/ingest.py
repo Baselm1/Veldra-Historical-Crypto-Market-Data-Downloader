@@ -16,9 +16,9 @@ import pyarrow as pa
 import pyarrow.compute as pc
 import pyarrow.parquet as pq
 
-from crypto_downloader.core.datasets import CsvSchema, DatasetSpec
-from crypto_downloader.core.download import download
-from crypto_downloader.core.models import (
+from veldra.core.datasets import CsvSchema, DatasetSpec
+from veldra.core.download import download
+from veldra.core.models import (
     DataValidationError,
     IngestedResource,
     Resource,
@@ -371,7 +371,7 @@ def ingest_archive(
     )
 
     try:
-        with TemporaryDirectory(prefix="crypto-downloader-") as directory:
+        with TemporaryDirectory(prefix="veldra-market-data-") as directory:
             archive_path = Path(directory) / "source.zip"
             archive_sha256 = download(
                 client,

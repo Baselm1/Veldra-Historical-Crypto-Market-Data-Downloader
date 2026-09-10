@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from crypto_downloader.binance.datasets import SPOT_KLINES
+from veldra.binance.datasets import SPOT_KLINES
 from arrow_helpers import (
     DataValidationError,
     normalize_chunk,

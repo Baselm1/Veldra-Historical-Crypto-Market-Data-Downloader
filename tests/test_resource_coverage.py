@@ -5,12 +5,12 @@ from datetime import UTC, date, datetime, timedelta
 import duckdb
 import httpx
 
-from crypto_downloader.core.catalog import Catalog
-from crypto_downloader.core.discovery import discover_resources, requested_days
-from crypto_downloader.core.models import Resource, ResourceKey
-from crypto_downloader.core.planner import plan_archives, select_archives
-from crypto_downloader.core.pair import _missing_resources
-from crypto_downloader.binance.datasets import SPOT_KLINES
+from veldra.core.catalog import Catalog
+from veldra.core.discovery import discover_resources, requested_days
+from veldra.core.models import Resource, ResourceKey
+from veldra.core.planner import plan_archives, select_archives
+from veldra.core.pair import _missing_resources
+from veldra.binance.datasets import SPOT_KLINES
 
 KEY = ResourceKey("shifted", "spot", "klines", "BTCUSDT", "1m")
 

@@ -8,24 +8,24 @@ from typing import Protocol, cast
 
 import httpx
 
-from crypto_downloader.core.catalog import Catalog, catalog_lock, open_catalog
-from crypto_downloader.core.datasets import DatasetSpec
-from crypto_downloader.core.discovery import (
+from veldra.core.catalog import Catalog, catalog_lock, open_catalog
+from veldra.core.datasets import DatasetSpec
+from veldra.core.discovery import (
     _merge_ranges,
     discover_resources,
     requested_days,
 )
-from crypto_downloader.core.reporting import Reporter
-from crypto_downloader.core.engine import (
+from veldra.core.reporting import Reporter
+from veldra.core.engine import (
     RetrievalEngine,
     _load_markets,
     _source_limit,
     utc_now,
     utc_today,
 )
-from crypto_downloader.core.models import Availability, Market, Resource, ResourceKey
-from crypto_downloader.core.matching import rank_markets
-from crypto_downloader.core.request import (
+from veldra.core.models import Availability, Market, Resource, ResourceKey
+from veldra.core.matching import rank_markets
+from veldra.core.request import (
     Request,
     normalize_pair,
     parse_identifier,

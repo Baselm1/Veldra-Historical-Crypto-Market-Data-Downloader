@@ -4,9 +4,9 @@ from datetime import date, datetime
 import pandas as pd
 import pyarrow as pa
 
-from crypto_downloader.core.datasets import DatasetSpec
-from crypto_downloader.binance.processing import DataValidationError
-from crypto_downloader.binance import processing
+from veldra.core.datasets import DatasetSpec
+from veldra.binance.processing import DataValidationError
+from veldra.binance import processing
 
 
 def normalize_chunk(

@@ -6,17 +6,17 @@ from typing import Literal, overload
 
 import pandas as pd
 
-from crypto_downloader.core.download import _validate_settings
-from crypto_downloader.core.engine import RetrievalEngine
-from crypto_downloader.core.inspection import (
+from veldra.core.download import _validate_settings
+from veldra.core.engine import RetrievalEngine
+from veldra.core.inspection import (
     discover_availability as _discover_availability,
     find_markets as _find_markets,
     get_availability as _get_availability,
     get_markets as _get_markets,
 )
-from crypto_downloader.core.models import Availability, Market
-from crypto_downloader.htx.connector import HTXConnector
-from crypto_downloader.htx.datasets import HTXDataset, get_dataset
+from veldra.core.models import Availability, Market
+from veldra.htx.connector import HTXConnector
+from veldra.htx.datasets import HTXDataset, get_dataset
 
 type DateInput = str | date | datetime
 type ColumnSelection = list[str] | dict[str, str] | None

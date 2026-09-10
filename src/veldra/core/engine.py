@@ -14,14 +14,14 @@ from time import perf_counter
 import httpx
 import pandas as pd
 
-from crypto_downloader.core.catalog import Catalog, catalog_lock, open_catalog
-from crypto_downloader.core.config import Settings, load_settings
-from crypto_downloader.core.datasets import DatasetSpec, DatasetResolver
-from crypto_downloader.core.reporting import Reporter
-from crypto_downloader.core.models import Market, Result
-from crypto_downloader.core.pair import process_pair
-from crypto_downloader.core.request import Request, normalize_pair, parse_timestamp
-from crypto_downloader.core.connector import Connector
+from veldra.core.catalog import Catalog, catalog_lock, open_catalog
+from veldra.core.config import Settings, load_settings
+from veldra.core.datasets import DatasetSpec, DatasetResolver
+from veldra.core.reporting import Reporter
+from veldra.core.models import Market, Result
+from veldra.core.pair import process_pair
+from veldra.core.request import Request, normalize_pair, parse_timestamp
+from veldra.core.connector import Connector
 
 LOGGER = logging.getLogger(__name__)
 

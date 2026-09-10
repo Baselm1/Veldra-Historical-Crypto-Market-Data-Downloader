@@ -9,11 +9,11 @@ from typing import cast
 import httpx
 import pytest
 
-from crypto_downloader.core.datasets import DatasetSpec
-from crypto_downloader.binance.datasets import SPOT_KLINES, get_dataset
-from crypto_downloader.core.models import Market, Resource, ResourceKey
-from crypto_downloader.core.connector import Connector
-from crypto_downloader.binance.connector import (
+from veldra.core.datasets import DatasetSpec
+from veldra.binance.datasets import SPOT_KLINES, get_dataset
+from veldra.core.models import Market, Resource, ResourceKey
+from veldra.core.connector import Connector
+from veldra.binance.connector import (
     ARCHIVE_URL,
     BUCKET_URL,
     EXCHANGE_INFO_URLS,

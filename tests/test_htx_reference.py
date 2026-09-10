@@ -8,8 +8,8 @@ import pandas as pd
 import pyarrow as pa
 import pytest
 
-from crypto_downloader.core.models import DataValidationError
-from crypto_downloader.htx.datasets import (
+from veldra.core.models import DataValidationError
+from veldra.htx.datasets import (
     COIN_INDEX_PRICE_KLINES,
     COIN_MARK_PRICE_KLINES,
     LINEAR_FUNDING_RATES,
@@ -19,8 +19,8 @@ from crypto_downloader.htx.datasets import (
     NEW_REFERENCE_KLINE_COLUMNS,
     get_dataset,
 )
-from crypto_downloader.htx.facade import HTX
-from crypto_downloader.htx.processing import normalize_chunk, validate_chunk
+from veldra.htx.facade import HTX
+from veldra.htx.processing import normalize_chunk, validate_chunk
 
 
 def raw_table(columns: tuple[str, ...], rows: list[tuple[object, ...]]) -> Any:

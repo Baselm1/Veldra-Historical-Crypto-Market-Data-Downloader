@@ -13,17 +13,17 @@ import pandas as pd
 import pyarrow as pa
 import pytest
 
-from crypto_downloader.core.models import DataValidationError, Resource
-from crypto_downloader.core.query import query_parquet
-from crypto_downloader.htx.connector import HTXConnector
-from crypto_downloader.htx.datasets import (
+from veldra.core.models import DataValidationError, Resource
+from veldra.core.query import query_parquet
+from veldra.htx.connector import HTXConnector
+from veldra.htx.datasets import (
     NEW_KLINE_COLUMNS,
     OLD_KLINE_COLUMNS,
     SPOT_KLINES,
     get_dataset,
 )
-from crypto_downloader.htx.facade import HTX
-from crypto_downloader.htx.processing import normalize_chunk, validate_chunk
+from veldra.htx.facade import HTX
+from veldra.htx.processing import normalize_chunk, validate_chunk
 
 
 def raw_table(columns: tuple[str, ...], rows: Sequence[tuple[object, ...]]) -> pa.Table:

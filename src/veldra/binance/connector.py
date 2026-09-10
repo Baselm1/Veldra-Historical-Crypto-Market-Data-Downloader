@@ -9,22 +9,22 @@ import math
 from pathlib import Path
 import re
 from urllib.parse import quote
-from crypto_downloader.core.portal import pages
+from veldra.core.portal import pages
 
-from crypto_downloader.binance.processing import normalize_chunk, validate_chunk
+from veldra.binance.processing import normalize_chunk, validate_chunk
 import httpx
 
-from crypto_downloader.core.download import archive_checksum, get
-from crypto_downloader.core.datasets import DatasetSpec
-from crypto_downloader.binance.datasets import get_dataset
-from crypto_downloader.core.ingest import ingest_archive
-from crypto_downloader.core.models import (
+from veldra.core.download import archive_checksum, get
+from veldra.core.datasets import DatasetSpec
+from veldra.binance.datasets import get_dataset
+from veldra.core.ingest import ingest_archive
+from veldra.core.models import (
     IngestedResource,
     Market,
     Resource,
     ResourceKey,
 )
-from crypto_downloader.core.request import normalize_pair
+from veldra.core.request import normalize_pair
 
 EXCHANGE_INFO_URLS: Mapping[str, str] = {
     "spot": "https://api.binance.com/api/v3/exchangeInfo",

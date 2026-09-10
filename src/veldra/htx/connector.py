@@ -12,26 +12,26 @@ from urllib.parse import quote
 
 import httpx
 
-from crypto_downloader.core.datasets import DatasetSpec
-from crypto_downloader.core.download import archive_checksum, get
-from crypto_downloader.core.ingest import ingest_archive
-from crypto_downloader.core.models import (
+from veldra.core.datasets import DatasetSpec
+from veldra.core.download import archive_checksum, get
+from veldra.core.ingest import ingest_archive
+from veldra.core.models import (
     IngestedResource,
     Market,
     Resource,
     ResourceKey,
 )
-from crypto_downloader.core.portal import pages
-from crypto_downloader.core.request import normalize_pair
-from crypto_downloader.htx.datasets import (
+from veldra.core.portal import pages
+from veldra.core.request import normalize_pair
+from veldra.htx.datasets import (
     ArchiveRoute,
     NEW_INTERVALS,
     OLD_INTERVALS,
     PRODUCTS,
     supports,
 )
-from crypto_downloader.htx.processing import normalize_chunk, validate_chunk
-from crypto_downloader.htx.orderbook import ingest_order_book
+from veldra.htx.processing import normalize_chunk, validate_chunk
+from veldra.htx.orderbook import ingest_order_book
 
 LISTING_URL = "https://www.htx.com/data/"
 ARCHIVE_URL = "https://www.htx.com/data"

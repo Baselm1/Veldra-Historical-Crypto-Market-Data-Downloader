@@ -2,8 +2,8 @@
 
 import pytest
 
-from crypto_downloader.core.datasets import CsvSchema, DatasetSpec
-from crypto_downloader.binance.datasets import (
+from veldra.core.datasets import CsvSchema, DatasetSpec
+from veldra.binance.datasets import (
     CM_BOOK_DEPTH,
     CM_INDEX_PRICE_KLINES,
     CM_METRICS,
@@ -22,7 +22,7 @@ from crypto_downloader.binance.datasets import (
     UM_TRADES,
     get_dataset,
 )
-from crypto_downloader.core.request import Request
+from veldra.core.request import Request
 
 SOURCE_COLUMNS = (
     "open_time",

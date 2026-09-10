@@ -7,14 +7,14 @@ from io import BytesIO
 from pathlib import Path
 import zipfile
 
-from crypto_downloader.binance.processing import normalize_chunk, validate_chunk
+from veldra.binance.processing import normalize_chunk, validate_chunk
 import httpx
 import pandas as pd
 import pyarrow as pa
 import pytest
 
-from crypto_downloader.core.datasets import CsvSchema, DatasetSpec
-from crypto_downloader.binance.datasets import (
+from veldra.core.datasets import CsvSchema, DatasetSpec
+from veldra.binance.datasets import (
     CM_BOOK_DEPTH,
     CM_INDEX_PRICE_KLINES,
     CM_MARK_PRICE_KLINES,
@@ -31,11 +31,11 @@ from crypto_downloader.binance.datasets import (
     SPOT_TRADES,
     UM_TRADES,
 )
-from crypto_downloader.core.download import ChecksumError
-from crypto_downloader.core.ingest import ArchiveError, _member, ingest_archive
-from crypto_downloader.core.models import Resource
-from crypto_downloader.binance.processing import DataValidationError
-from crypto_downloader.binance.connector import BinanceConnector
+from veldra.core.download import ChecksumError
+from veldra.core.ingest import ArchiveError, _member, ingest_archive
+from veldra.core.models import Resource
+from veldra.binance.processing import DataValidationError
+from veldra.binance.connector import BinanceConnector
 
 FIXTURES = Path(__file__).parent / "fixtures"
 DAY = date(2024, 1, 1)

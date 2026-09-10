@@ -3,9 +3,9 @@
 from importlib import import_module
 import logging
 
-from crypto_downloader.binance.facade import Binance
-from crypto_downloader.htx.facade import HTX
-from crypto_downloader.core.models import (
+from veldra.binance.facade import Binance
+from veldra.htx.facade import HTX
+from veldra.core.models import (
     Availability,
     Gap,
     Market,
@@ -17,7 +17,7 @@ from crypto_downloader.core.models import (
 
 def test_package_can_be_imported() -> None:
     """Confirm that Python can import the package and find its public exports."""
-    package = import_module("crypto_downloader")
+    package = import_module("veldra")
 
     assert package.__all__ == (
         "Binance",
@@ -39,13 +39,13 @@ def test_package_can_be_imported() -> None:
     assert package.Result is Result
     assert any(
         isinstance(handler, logging.NullHandler)
-        for handler in logging.getLogger("crypto_downloader").handlers
+        for handler in logging.getLogger("veldra").handlers
     )
 
 
 def test_package_root_hides_internal_services_and_helpers() -> None:
     """Confirm the package root exposes no generic or internal data service."""
-    package = import_module("crypto_downloader")
+    package = import_module("veldra")
 
     assert not hasattr(package, "RetrievalEngine")
     assert not hasattr(package, "BinanceConnector")

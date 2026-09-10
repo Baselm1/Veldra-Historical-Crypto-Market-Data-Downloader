@@ -6,8 +6,8 @@ from typing import Protocol
 
 import httpx
 
-from crypto_downloader.core.datasets import DatasetSpec
-from crypto_downloader.core.models import (
+from veldra.core.datasets import DatasetSpec
+from veldra.core.models import (
     IngestedResource,
     Market,
     Resource,

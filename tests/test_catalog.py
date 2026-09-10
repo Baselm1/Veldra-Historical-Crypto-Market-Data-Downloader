@@ -8,8 +8,8 @@ from pathlib import Path
 import duckdb
 import pytest
 
-from crypto_downloader.core.catalog import Catalog, open_catalog
-from crypto_downloader.core.models import (
+from veldra.core.catalog import Catalog, open_catalog
+from veldra.core.models import (
     IngestedResource,
     Market,
     Resource,

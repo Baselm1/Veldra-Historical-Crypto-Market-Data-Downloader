@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from crypto_downloader.core.config import Settings, load_settings
+from veldra.core.config import Settings, load_settings
 
 
 def _settings_file(tmp_path: Path, text: str) -> Path:

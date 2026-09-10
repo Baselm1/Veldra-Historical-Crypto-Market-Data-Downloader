@@ -1,6 +1,6 @@
 """Test the first imported Binance Spot kline workflow."""
 
-from crypto_downloader.binance.datasets import get_dataset
+from veldra.binance.datasets import get_dataset
 
 
 from dataclasses import replace
@@ -18,15 +18,15 @@ import httpx
 import pandas as pd
 import pytest
 
-import crypto_downloader.core.engine as downloader_module
-import crypto_downloader.core.pair as pair_module
-from crypto_downloader.core.cache import parquet_path, valid_cached_path
-from crypto_downloader.core.catalog import open_catalog
-from crypto_downloader.binance.datasets import SPOT_KLINES
-from crypto_downloader.core.discovery import _validate_resources, requested_days
-from crypto_downloader.core.engine import RetrievalEngine
-from crypto_downloader.core.models import Resource, ResourceKey, Result
-from crypto_downloader.binance.connector import BinanceConnector
+import veldra.core.engine as downloader_module
+import veldra.core.pair as pair_module
+from veldra.core.cache import parquet_path, valid_cached_path
+from veldra.core.catalog import open_catalog
+from veldra.binance.datasets import SPOT_KLINES
+from veldra.core.discovery import _validate_resources, requested_days
+from veldra.core.engine import RetrievalEngine
+from veldra.core.models import Resource, ResourceKey, Result
+from veldra.binance.connector import BinanceConnector
 
 FIXTURES = Path(__file__).parent / "fixtures"
 DAY = date(2024, 1, 1)
@@ -784,7 +784,7 @@ def test_pipeline_emits_standard_logs_without_configuring_root_logging(
     level = root.level
     server = BinanceServer()
 
-    with caplog.at_level(logging.DEBUG, logger="crypto_downloader"):
+    with caplog.at_level(logging.DEBUG, logger="veldra"):
         downloader(tmp_path, server).get_results(
             "BTCUSDT", "2024-01-01", "2024-01-01", progress=False
         )

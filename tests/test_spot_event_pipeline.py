@@ -1,6 +1,6 @@
 """Test end-to-end Binance Spot trade-family downloads."""
 
-from crypto_downloader.binance.datasets import get_dataset
+from veldra.binance.datasets import get_dataset
 
 
 from datetime import date
@@ -13,10 +13,10 @@ import httpx
 import pandas as pd
 import pytest
 
-from crypto_downloader.core.datasets import DatasetSpec
-from crypto_downloader.binance.datasets import SPOT_AGG_TRADES, SPOT_TRADES
-from crypto_downloader.core.engine import RetrievalEngine
-from crypto_downloader.binance.connector import BinanceConnector
+from veldra.core.datasets import DatasetSpec
+from veldra.binance.datasets import SPOT_AGG_TRADES, SPOT_TRADES
+from veldra.core.engine import RetrievalEngine
+from veldra.binance.connector import BinanceConnector
 
 FIXTURES = Path(__file__).parent / "fixtures"
 

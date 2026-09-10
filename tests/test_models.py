@@ -5,8 +5,8 @@ import json
 
 import pandas as pd
 
-from crypto_downloader import Gap, Message, MissingCandlesError, Result
-from crypto_downloader.core.models import Market, result_report
+from veldra import Gap, Message, MissingCandlesError, Result
+from veldra.core.models import Market, result_report
 
 UTC = timezone.utc
 START = datetime(2025, 1, 1, tzinfo=UTC)

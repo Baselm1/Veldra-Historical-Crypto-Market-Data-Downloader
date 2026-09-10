@@ -11,12 +11,12 @@ from time import perf_counter
 import duckdb
 import httpx
 
-from crypto_downloader.core.catalog import Catalog
-from crypto_downloader.core.cache import cache_resources, invalid_parquet_paths
-from crypto_downloader.core.datasets import DatasetSpec
-from crypto_downloader.core.reporting import Reporter, format_range, format_time
-from crypto_downloader.core.discovery import discover_resources, requested_days
-from crypto_downloader.core.models import (
+from veldra.core.catalog import Catalog
+from veldra.core.cache import cache_resources, invalid_parquet_paths
+from veldra.core.datasets import DatasetSpec
+from veldra.core.reporting import Reporter, format_range, format_time
+from veldra.core.discovery import discover_resources, requested_days
+from veldra.core.models import (
     Market,
     Message,
     MissingCandlesError,
@@ -24,16 +24,16 @@ from crypto_downloader.core.models import (
     ResourceKey,
     Result,
 )
-from crypto_downloader.core.matching import suggest_symbols
-from crypto_downloader.core.query import (
+from veldra.core.matching import suggest_symbols
+from veldra.core.query import (
     empty_frame,
     missing_ranges,
     query_parquet,
     suspect_gap_paths,
     empty_archive_days,
 )
-from crypto_downloader.core.request import Request, normalize_pair
-from crypto_downloader.core.connector import Connector
+from veldra.core.request import Request, normalize_pair
+from veldra.core.connector import Connector
 
 from .planner import (
     plan_archives,

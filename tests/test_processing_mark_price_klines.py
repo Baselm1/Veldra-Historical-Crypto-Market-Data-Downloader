@@ -6,8 +6,8 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from crypto_downloader.core.datasets import DatasetSpec
-from crypto_downloader.binance.datasets import (
+from veldra.core.datasets import DatasetSpec
+from veldra.binance.datasets import (
     CM_MARK_PRICE_KLINES,
     UM_MARK_PRICE_KLINES,
 )

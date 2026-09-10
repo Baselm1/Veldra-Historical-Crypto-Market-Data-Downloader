@@ -5,10 +5,10 @@ import logging
 
 import httpx
 
-from crypto_downloader.core.catalog import Catalog, DiscoveryCheckpoint
-from crypto_downloader.core.reporting import Reporter
-from crypto_downloader.core.models import Resource, ResourceKey
-from crypto_downloader.core.connector import Connector
+from veldra.core.catalog import Catalog, DiscoveryCheckpoint
+from veldra.core.reporting import Reporter
+from veldra.core.models import Resource, ResourceKey
+from veldra.core.connector import Connector
 
 LOGGER = logging.getLogger(__name__)
 DISCOVERY_TTL = timedelta(hours=24)

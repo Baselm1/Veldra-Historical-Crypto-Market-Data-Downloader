@@ -4,10 +4,10 @@ from pathlib import Path
 
 import pytest
 
-import crypto_downloader.htx.facade as facade_module
-from crypto_downloader.core.models import Availability, Market
-from crypto_downloader.core.inspection import _matches_filters
-from crypto_downloader.htx.facade import HTX
+import veldra.htx.facade as facade_module
+from veldra.core.models import Availability, Market
+from veldra.core.inspection import _matches_filters
+from veldra.htx.facade import HTX
 
 
 def availability() -> Availability:
