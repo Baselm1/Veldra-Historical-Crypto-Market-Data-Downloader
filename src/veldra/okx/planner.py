@@ -122,6 +122,7 @@ class OKXArchivePlanner:
             cached,
             use_bulk=use_bulk,
             supports_monthly=spec.supports_monthly,
+            monthly_only_specific=dataset == "funding_rates" and not use_bulk,
         )
         mode = "bulk daily" if use_bulk else "specific"
         cadences = {item.key.cadence for item in selected}
@@ -166,6 +167,7 @@ class OKXArchivePlanner:
         *,
         use_bulk: bool,
         supports_monthly: bool,
+        monthly_only_specific: bool,
     ) -> list[ArchiveObject]:
         """Discover only source dates not covered by ready physical objects."""
         selected: list[ArchiveObject] = []
@@ -174,9 +176,13 @@ class OKXArchivePlanner:
             missing = [day for day in self._days(begin, end) if day not in covered]
             if not missing:
                 continue
-            monthly, daily = self._split_monthly(
-                missing, supports_monthly and not use_bulk
-            )
+            if monthly_only_specific:
+                monthly = sorted({day.replace(day=1) for day in missing})
+                daily: list[date] = []
+            else:
+                monthly, daily = self._split_monthly(
+                    missing, supports_monthly and not use_bulk
+                )
             for first, last in self._month_segments(monthly):
                 selected.extend(
                     self._discovery.discover(

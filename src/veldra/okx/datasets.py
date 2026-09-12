@@ -58,6 +58,11 @@ TRADE_SOURCE_COLUMNS: tuple[str, ...] = (
     "size",
     "created_time",
 )
+FUNDING_SOURCE_COLUMNS: tuple[str, ...] = (
+    "instrument_name",
+    "funding_rate",
+    "funding_time",
+)
 
 SPOT_KLINES = DatasetSpec(
     product="spot",
@@ -205,6 +210,38 @@ INVERSE_SWAP_KLINES = _perpetual_klines("inverse_swap")
 LINEAR_SWAP_TRADES = _perpetual_trades("linear_swap")
 INVERSE_SWAP_TRADES = _perpetual_trades("inverse_swap")
 
+
+def _funding_rates(product: str) -> DatasetSpec:
+    """Build one perpetual funding observation declaration.
+
+    Args:
+        product: Linear- or inverse-margined swap product.
+
+    Returns:
+        Raw signed funding-rate schema.
+    """
+    return DatasetSpec(
+        product=product,
+        name="funding_rates",
+        remote_name="module_3",
+        source_columns=FUNDING_SOURCE_COLUMNS,
+        stored_columns=("funding_time", "funding_rate"),
+        time_column="funding_time",
+        base_interval=None,
+        output_intervals=(),
+        aliases=MappingProxyType({}),
+        max_concurrency=32,
+        csv_header="present",
+        ordering_columns=("funding_time",),
+        timestamp_columns=("funding_time",),
+        archive_day_offset=timedelta(hours=8),
+        publication_delay_days=2,
+    )
+
+
+LINEAR_SWAP_FUNDING = _funding_rates("linear_swap")
+INVERSE_SWAP_FUNDING = _funding_rates("inverse_swap")
+
 DATASETS: Mapping[tuple[str, str], DatasetSpec] = MappingProxyType(
     {
         ("spot", "klines"): SPOT_KLINES,
@@ -213,6 +250,8 @@ DATASETS: Mapping[tuple[str, str], DatasetSpec] = MappingProxyType(
         ("linear_swap", "trades"): LINEAR_SWAP_TRADES,
         ("inverse_swap", "klines"): INVERSE_SWAP_KLINES,
         ("inverse_swap", "trades"): INVERSE_SWAP_TRADES,
+        ("linear_swap", "funding_rates"): LINEAR_SWAP_FUNDING,
+        ("inverse_swap", "funding_rates"): INVERSE_SWAP_FUNDING,
     }
 )
 

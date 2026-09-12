@@ -77,7 +77,6 @@ class Discovery:
         Returns:
             Synthetic archives spanning requested periods.
         """
-        assert product == "spot" and dataset == "klines"
         self.calls.append((tuple(subjects), cadence, begin, end))
         values: list[ArchiveObject] = []
         cursor = begin
@@ -255,3 +254,19 @@ def test_archive_plan_reports_physical_bytes_and_counts() -> None:
     plan = OKXArchivePlan((), (sized,), "specific daily")
     assert plan.remote_files == 1
     assert plan.remote_bytes == 100
+
+
+def test_specific_funding_uses_monthly_family_archives_for_partial_months() -> None:
+    """Confirm unavailable family-specific daily funding is never requested."""
+    value, discovery = planner()
+    result = value.plan(
+        "linear_swap",
+        "funding_rates",
+        [DataSubject("instrument_family", "BTC-USDT")],
+        date(2025, 1, 10),
+        date(2025, 1, 12),
+    )
+    assert len(result.selected) == 1
+    assert [(call[1], call[2], call[3]) for call in discovery.calls] == [
+        ("monthly", date(2025, 1, 1), date(2025, 1, 1))
+    ]

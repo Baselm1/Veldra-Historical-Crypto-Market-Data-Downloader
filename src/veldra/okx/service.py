@@ -274,6 +274,7 @@ class OKXService:
             retries=self.retries,
             backoff=self.backoff,
             contract_sizes={market.symbol: market.contract_size for market in markets},
+            allowed_instruments={market.symbol for market in markets},
         )
 
         def process(resource: ArchiveObject) -> MaterializedArchive:

@@ -215,7 +215,44 @@ def normalize(
         return normalize_klines(frame, dataset)
     if dataset.name == "trades":
         return normalize_trades(frame, dataset, contract_sizes)
+    if dataset.name == "funding_rates":
+        return normalize_funding_rates(frame, dataset)
     raise ValueError(f"unsupported OKX normalizer {dataset.product}/{dataset.name}")
+
+
+def normalize_funding_rates(frame: pd.DataFrame, dataset: DatasetSpec) -> pd.DataFrame:
+    """Return canonical signed funding observations without assumed frequency.
+
+    Args:
+        frame: Source module 3 CSV rows.
+        dataset: Product-specific funding declaration.
+
+    Returns:
+        Sorted actual funding timestamps and signed rates.
+    """
+    if tuple(frame.columns) != dataset.source_columns or frame.empty:
+        raise DataValidationError("CSV does not match the OKX funding schema")
+    instruments = frame["instrument_name"].astype("string").str.strip()
+    if instruments.isna().any() or instruments.eq("").any():
+        raise DataValidationError("OKX instrument_name cannot be empty")
+    _numbers(frame, ("funding_rate",))
+    try:
+        times = pd.to_datetime(
+            pd.to_numeric(frame["funding_time"], errors="raise"), unit="ms", utc=True
+        )
+    except (TypeError, ValueError) as error:
+        raise DataValidationError("invalid OKX funding timestamp") from error
+    result = pd.DataFrame(
+        {
+            "instrument_id": instruments,
+            "funding_time": times,
+            "funding_rate": frame["funding_rate"].astype("float64"),
+        }
+    )
+    result = _deduplicate(result, ["instrument_id", "funding_time"])
+    return result.sort_values(
+        ["instrument_id", "funding_time"], kind="stable", ignore_index=True
+    )
 
 
 def _member(archive: zipfile.ZipFile, resource: ArchiveObject) -> zipfile.ZipInfo:
@@ -309,6 +346,7 @@ class OKXArchiveProvider:
         backoff: float = 0.5,
         max_archive_bytes: int = 8 * 1024 * 1024 * 1024,
         contract_sizes: Mapping[str, float | None] | None = None,
+        allowed_instruments: set[str] | None = None,
     ) -> None:
         """Retain shared network and archive safety settings.
 
@@ -319,6 +357,7 @@ class OKXArchiveProvider:
             backoff: Initial retry delay.
             max_archive_bytes: Maximum compressed object size.
             contract_sizes: Native derivatives mapped to contract face values.
+            allowed_instruments: Optional product identities retained from shared files.
         """
         self.client = client
         self.timeout = timeout
@@ -326,6 +365,7 @@ class OKXArchiveProvider:
         self.backoff = backoff
         self.max_archive_bytes = max_archive_bytes
         self.contract_sizes = dict(contract_sizes or {})
+        self.allowed_instruments = allowed_instruments
 
     def materialize(
         self, resource: ArchiveObject, destination: Path
@@ -376,6 +416,12 @@ class OKXArchiveProvider:
                     "OKX archive is not a readable ZIP/CSV"
                 ) from error
             frame = normalize(raw, dataset, self.contract_sizes)
+            if self.allowed_instruments is not None:
+                frame = frame[frame["instrument_id"].isin(self.allowed_instruments)]
+                if frame.empty:
+                    raise DataValidationError(
+                        "OKX archive contains no instruments for the requested product"
+                    )
             if (
                 frame[dataset.time_column].min() < start
                 or frame[dataset.time_column].max() >= end

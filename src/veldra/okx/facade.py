@@ -167,3 +167,47 @@ class OKX:
         if isinstance(result, Result):
             return result.frame()
         return [item.frame() for item in result]
+
+    def get_funding_rates(
+        self,
+        pairs: PairInput,
+        start: DateInput,
+        end: DateInput,
+        *,
+        product: Literal["linear_swap", "inverse_swap"],
+        columns: ColumnSelection = None,
+        transport: Transport = "auto",
+        refresh: bool = False,
+        offline: bool = False,
+    ) -> FrameOutput:
+        """Return actual OKX perpetual funding-rate observations.
+
+        Args:
+            pairs: One native swap instrument or an ordered list.
+            start: Inclusive request start.
+            end: Inclusive date or exclusive timestamp end.
+            product: Linear- or inverse-margined swap product.
+            columns: Optional selected or renamed canonical columns.
+            transport: Automatic, specific, or bulk archive selection.
+            refresh: Whether current markets must refresh.
+            offline: Whether source access is forbidden.
+
+        Returns:
+            One DataFrame or a list matching the input shape.
+        """
+        result = self._service.get_results(
+            pairs,
+            start,
+            end,
+            product=product,
+            dataset="funding_rates",
+            interval=None,
+            columns=columns,
+            gap_policy=None,
+            transport=transport,
+            refresh=refresh,
+            offline=offline,
+        )
+        if isinstance(result, Result):
+            return result.frame()
+        return [item.frame() for item in result]
