@@ -167,6 +167,45 @@ def historical_future(value: object, product: object) -> OKXInstrument:
     )
 
 
+def historical_option(value: object) -> OKXInstrument:
+    """Build a conservative archive-derived expired Option identity.
+
+    Args:
+        value: Native expired Option instrument ID.
+
+    Returns:
+        Archive-only identity with contract terms parsed from its ID.
+    """
+    if not isinstance(value, str):
+        raise TypeError("historical Option identity must be a string")
+    instrument = value.strip().upper()
+    expiry, strike, option_type = parse_option_id(instrument)
+    parts = instrument.split("-")
+    base, settlement = parts[0], parts[1]
+    family = f"{base}-{settlement}"
+    return OKXInstrument(
+        instrument,
+        "options",
+        "OPTION",
+        family,
+        base,
+        settlement,
+        settlement,
+        None,
+        None,
+        None,
+        None,
+        "normal",
+        "archive_only",
+        None,
+        None,
+        expiry,
+        strike,
+        option_type,
+        provenance="archive_identity",
+    )
+
+
 def _product(inst_type: str, contract_type: str | None) -> OKXProduct:
     """Map native instrument and contract types to one Veldra product.
 

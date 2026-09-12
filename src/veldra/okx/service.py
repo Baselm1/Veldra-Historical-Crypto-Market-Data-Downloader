@@ -23,11 +23,11 @@ from veldra.core.reporting import Reporter
 from veldra.core.request import Request, parse_timestamp
 from veldra.core.subjects import DataSubject
 from veldra.okx.client import OKXClient
-from veldra.okx.chain import query_chain
+from veldra.okx.chain import OptionChainFilter, query_chain
 from veldra.okx.connector import OKXConnector
 from veldra.okx.datasets import get_dataset, manifest_spec
 from veldra.okx.manifest import OKXManifestDiscovery
-from veldra.okx.identities import historical_future
+from veldra.okx.identities import historical_future, historical_option
 from veldra.okx.planner import OKXArchivePlanner
 from veldra.okx.processing import OKXArchiveProvider
 from veldra.okx.reports import CacheReport
@@ -229,10 +229,12 @@ class OKXService:
         Returns:
             Conservative archive-only market or ``None``.
         """
-        if product not in {"linear_futures", "inverse_futures"}:
-            return None
         try:
-            return historical_future(pair, product).market
+            if product in {"linear_futures", "inverse_futures"}:
+                return historical_future(pair, product).market
+            if product == "options":
+                return historical_option(pair).market
+            return None
         except TypeError, ValueError:
             return None
 
@@ -612,7 +614,7 @@ class OKXService:
         LOGGER.info("OKX request completed in %.3fs", perf_counter() - started)
         return results[0] if request.single else results
 
-    def get_futures_chain(
+    def get_chain(
         self,
         family: object,
         start: object,
@@ -623,20 +625,22 @@ class OKXService:
         interval: object,
         columns: object,
         contract_style: object,
+        option_filter: OptionChainFilter | None,
         refresh: object,
         offline: object,
     ) -> Result:
-        """Return one Futures-family history while retaining exact contracts.
+        """Return one derivative-family history retaining exact contracts.
 
         Args:
             family: Native OKX Futures family.
             start: Inclusive request start.
             end: Inclusive date or exclusive timestamp end.
-            product: Linear- or inverse-margined Futures product.
+            product: Futures or Options product.
             dataset: Klines or trades.
             interval: Optional Kline output interval.
             columns: Optional selected or renamed canonical columns.
             contract_style: Optional normal, X-Perp, or pre-market filter.
+            option_filter: Optional expiry, strike, and call/put constraints.
             refresh: Whether current instruments must refresh.
             offline: Whether source access is forbidden.
 
@@ -652,6 +656,7 @@ class OKXService:
             interval=interval,
             columns=columns,
             contract_style=contract_style,
+            option_filter=option_filter,
             refresh=refresh,
             offline=offline,
         )
@@ -690,6 +695,7 @@ class OKXService:
                         request.end,
                         request.columns or {},
                         interval=request.interval,
+                        option_filter=option_filter,
                     )
         self._filter_chain_style(result.data, cached.markets, contract_style)
         self._finish_chain_result(
@@ -708,32 +714,29 @@ class OKXService:
         interval: object,
         columns: object,
         contract_style: object,
+        option_filter: OptionChainFilter | None,
         refresh: object,
         offline: object,
     ) -> tuple[Request, DatasetSpec, str]:
-        """Validate and resolve one Futures-family request.
+        """Validate and resolve one derivative-family request.
 
         Args:
             family: Native Futures family.
             start: Inclusive request start.
             end: Inclusive date or exclusive timestamp end.
-            product: Linear- or inverse-margined Futures product.
+            product: Futures or Options product.
             dataset: Klines or trades.
             interval: Optional Kline output interval.
             columns: Optional selected or renamed columns.
             contract_style: Optional normal or X-Perp filter.
+            option_filter: Optional Option chain constraints.
             refresh: Whether current instruments must refresh.
             offline: Whether source access is forbidden.
 
         Returns:
             Resolved request, dataset, and normalized native family.
         """
-        if product not in {"linear_futures", "inverse_futures"}:
-            raise ValueError(
-                "Futures chain product must be linear_futures or inverse_futures"
-            )
-        if contract_style not in {None, "normal", "xperp", "pre_market_xperp"}:
-            raise ValueError("contract_style is unsupported")
+        OKXService._validate_chain_options(product, contract_style, option_filter)
         if not isinstance(refresh, bool) or not isinstance(offline, bool):
             raise TypeError("refresh and offline must be Booleans")
         if refresh and offline:
@@ -752,12 +755,48 @@ class OKXService:
         specification = get_dataset(request.product, request.dataset)
         request = request.resolve_dataset(specification)
         native_family = request.subjects[0].value.strip().upper()
-        expected_suffix = (
-            "-USD" if product == "inverse_futures" else ("-USDT", "-USDC", "-USD_UM")
-        )
+        expected_suffix = OKXService._chain_suffix(product)
         if not native_family.endswith(expected_suffix):
-            raise ValueError("Futures family does not match the requested product")
+            raise ValueError("chain family does not match the requested product")
         return request, specification, native_family
+
+    @staticmethod
+    def _validate_chain_options(
+        product: object,
+        contract_style: object,
+        option_filter: OptionChainFilter | None,
+    ) -> None:
+        """Reject incompatible derivative-family options.
+
+        Args:
+            product: Requested Futures or Options product.
+            contract_style: Optional Futures contract style.
+            option_filter: Optional Option chain constraints.
+        """
+        if product not in {"linear_futures", "inverse_futures", "options"}:
+            raise ValueError("chain product must be Futures or Options")
+        if contract_style not in {None, "normal", "xperp", "pre_market_xperp"}:
+            raise ValueError("contract_style is unsupported")
+        if product == "options" and contract_style is not None:
+            raise ValueError("contract_style does not apply to Options")
+        if product != "options" and option_filter is not None:
+            raise ValueError("Option filters require the options product")
+
+    @staticmethod
+    def _chain_suffix(product: object) -> str | tuple[str, ...]:
+        """Return valid native family suffixes for one derivative product.
+
+        Args:
+            product: Validated Futures or Options product.
+
+        Returns:
+            Accepted family suffix or suffixes.
+        """
+        if product == "inverse_futures":
+            return "-USD"
+        if product == "linear_futures":
+            return "-USDT", "-USDC", "-USD_UM"
+        return "-USD", "-USDT"
 
     def _prepare_chain(
         self,

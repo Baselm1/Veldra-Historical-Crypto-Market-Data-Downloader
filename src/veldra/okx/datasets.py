@@ -257,6 +257,8 @@ LINEAR_FUTURES_KLINES = _perpetual_klines("linear_futures")
 INVERSE_FUTURES_KLINES = _perpetual_klines("inverse_futures")
 LINEAR_FUTURES_TRADES = _chain_trades("linear_futures")
 INVERSE_FUTURES_TRADES = _chain_trades("inverse_futures")
+OPTIONS_KLINES = _perpetual_klines("options")
+OPTIONS_TRADES = _chain_trades("options")
 
 
 def _funding_rates(product: str) -> DatasetSpec:
@@ -328,6 +330,8 @@ LINEAR_SWAP_ORDER_BOOK_400 = _order_book("linear_swap", 400)
 LINEAR_SWAP_ORDER_BOOK_5000 = _order_book("linear_swap", 5000)
 INVERSE_SWAP_ORDER_BOOK_400 = _order_book("inverse_swap", 400)
 INVERSE_SWAP_ORDER_BOOK_5000 = _order_book("inverse_swap", 5000)
+OPTIONS_ORDER_BOOK_400 = _order_book("options", 400)
+OPTIONS_ORDER_BOOK_5000 = _order_book("options", 5000)
 
 DATASETS: Mapping[tuple[str, str], DatasetSpec] = MappingProxyType(
     {
@@ -343,12 +347,16 @@ DATASETS: Mapping[tuple[str, str], DatasetSpec] = MappingProxyType(
         ("linear_futures", "trades"): LINEAR_FUTURES_TRADES,
         ("inverse_futures", "klines"): INVERSE_FUTURES_KLINES,
         ("inverse_futures", "trades"): INVERSE_FUTURES_TRADES,
+        ("options", "klines"): OPTIONS_KLINES,
+        ("options", "trades"): OPTIONS_TRADES,
         ("spot", "order_book_400"): SPOT_ORDER_BOOK_400,
         ("spot", "order_book_5000"): SPOT_ORDER_BOOK_5000,
         ("linear_swap", "order_book_400"): LINEAR_SWAP_ORDER_BOOK_400,
         ("linear_swap", "order_book_5000"): LINEAR_SWAP_ORDER_BOOK_5000,
         ("inverse_swap", "order_book_400"): INVERSE_SWAP_ORDER_BOOK_400,
         ("inverse_swap", "order_book_5000"): INVERSE_SWAP_ORDER_BOOK_5000,
+        ("options", "order_book_400"): OPTIONS_ORDER_BOOK_400,
+        ("options", "order_book_5000"): OPTIONS_ORDER_BOOK_5000,
     }
 )
 

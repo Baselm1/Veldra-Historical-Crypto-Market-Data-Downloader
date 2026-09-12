@@ -1,6 +1,8 @@
 """Query OKX family archives while retaining their exact contract identities."""
 
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from datetime import date
 from datetime import datetime
 from pathlib import Path
 
@@ -8,6 +10,70 @@ import duckdb
 import pandas as pd
 
 from veldra.core.datasets import DatasetSpec
+
+
+@dataclass(frozen=True)
+class OptionChainFilter:
+    """Limit an Options family query without loading its entire chain.
+
+    Args:
+        expiry: Optional exact contract expiry.
+        strike_min: Optional inclusive minimum strike.
+        strike_max: Optional inclusive maximum strike.
+        option_type: Optional native call or put code.
+    """
+
+    expiry: date | None = None
+    strike_min: float | None = None
+    strike_max: float | None = None
+    option_type: str | None = None
+
+    def __post_init__(self) -> None:
+        """Reject contradictory or unsupported Option filters."""
+        if self.strike_min is not None and self.strike_min < 0:
+            raise ValueError("strike_min cannot be negative")
+        if self.strike_max is not None and self.strike_max < 0:
+            raise ValueError("strike_max cannot be negative")
+        if (
+            self.strike_min is not None
+            and self.strike_max is not None
+            and self.strike_min > self.strike_max
+        ):
+            raise ValueError("strike_min cannot exceed strike_max")
+        if self.option_type not in {None, "C", "P"}:
+            raise ValueError("option_type must be C or P")
+
+
+def _option_predicate(value: OptionChainFilter | None) -> tuple[str, list[object]]:
+    """Return SQL and parameters for server-side Option contract filtering.
+
+    Args:
+        value: Optional validated Option chain filter.
+
+    Returns:
+        SQL clauses and their bound parameters.
+    """
+    if value is None:
+        return "", []
+    clauses: list[str] = []
+    parameters: list[object] = []
+    if value.expiry is not None:
+        clauses.append("regexp_extract(instrument_id, '-([0-9]{6})-', 1) = ?")
+        parameters.append(value.expiry.strftime("%y%m%d"))
+    strike = (
+        "CAST(regexp_extract(instrument_id, "
+        "'-([0-9]+(?:\\.[0-9]+)?)-[CP]$', 1) AS DOUBLE)"
+    )
+    if value.strike_min is not None:
+        clauses.append(f"{strike} >= ?")
+        parameters.append(value.strike_min)
+    if value.strike_max is not None:
+        clauses.append(f"{strike} <= ?")
+        parameters.append(value.strike_max)
+    if value.option_type is not None:
+        clauses.append("right(instrument_id, 1) = ?")
+        parameters.append(value.option_type)
+    return (" AND " + " AND ".join(clauses) if clauses else ""), parameters
 
 
 def _identifier(value: str) -> str:
@@ -74,6 +140,7 @@ def query_chain(
     columns: Mapping[str, str],
     *,
     interval: str | None,
+    option_filter: OptionChainFilter | None = None,
 ) -> pd.DataFrame:
     """Return exact contracts from shared family Parquet materializations.
 
@@ -85,6 +152,7 @@ def query_chain(
         end: Exclusive UTC timestamp.
         columns: Canonical columns mapped to output labels.
         interval: Resolved Kline output interval or ``None`` for trades.
+        option_filter: Optional server-side Option contract constraints.
 
     Returns:
         Contract-identified rows in deterministic time order.
@@ -103,7 +171,11 @@ def query_chain(
     unique = sorted({str(path) for path in paths})
     relation = "read_parquet(?)"
     time_column = _identifier(dataset.time_column)
-    base = f"SELECT * FROM {relation} WHERE {time_column} >= ? AND {time_column} < ?"
+    predicate, filter_parameters = _option_predicate(option_filter)
+    base = (
+        f"SELECT * FROM {relation} WHERE {time_column} >= ? "
+        f"AND {time_column} < ?{predicate}"
+    )
     resolved = dataset.resolve_interval(interval)
     if resolved is not None and resolved != dataset.base_interval:
         fields = ", ".join(_resampled_fields(dataset, resolved))
@@ -119,7 +191,7 @@ def query_chain(
     frame = connection.execute(
         f"SELECT {projection} FROM ({source}) "
         f"ORDER BY instrument_id, {_identifier(dataset.time_column)}{secondary}",
-        [unique, start, end],
+        [unique, start, end, *filter_parameters],
     ).df()
     for source_name, label in columns.items():
         if source_name in dataset.timestamp_columns:

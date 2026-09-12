@@ -8,6 +8,8 @@ import httpx
 import pandas as pd
 
 from veldra.core.models import Result
+from veldra.core.request import parse_timestamp
+from veldra.okx.chain import OptionChainFilter
 from veldra.okx.service import OKXService
 from veldra.okx.reports import CacheReport
 
@@ -420,7 +422,7 @@ class OKX:
         Returns:
             Contract-identified Kline rows for the family.
         """
-        return self._service.get_futures_chain(
+        return self._service.get_chain(
             instrument_family,
             start,
             end,
@@ -429,6 +431,7 @@ class OKX:
             interval=interval,
             columns=columns,
             contract_style=contract_style,
+            option_filter=None,
             refresh=refresh,
             offline=offline,
         ).frame()
@@ -460,7 +463,7 @@ class OKX:
         Returns:
             Contract-identified trade rows for the family.
         """
-        return self._service.get_futures_chain(
+        return self._service.get_chain(
             instrument_family,
             start,
             end,
@@ -469,6 +472,132 @@ class OKX:
             interval=None,
             columns=columns,
             contract_style=contract_style,
+            option_filter=None,
             refresh=refresh,
             offline=offline,
         ).frame()
+
+    def get_option_chain_klines(
+        self,
+        instrument_family: str,
+        start: DateInput,
+        end: DateInput,
+        *,
+        interval: str | None = None,
+        columns: ColumnSelection = None,
+        expiry: DateInput | None = None,
+        strike_min: float | None = None,
+        strike_max: float | None = None,
+        option_type: Literal["call", "put"] | None = None,
+        refresh: bool = False,
+        offline: bool = False,
+    ) -> pd.DataFrame:
+        """Return filtered Klines for every Option in one family.
+
+        Args:
+            instrument_family: Native Option family such as ``BTC-USD``.
+            start: Inclusive request start.
+            end: Inclusive date or exclusive timestamp end.
+            interval: Optional output Kline interval.
+            columns: Optional selected or renamed canonical columns.
+            expiry: Optional exact Option expiry.
+            strike_min: Optional inclusive minimum strike.
+            strike_max: Optional inclusive maximum strike.
+            option_type: Optional call or put constraint.
+            refresh: Whether current instruments must refresh.
+            offline: Whether source access is forbidden.
+
+        Returns:
+            Contract-identified Option Kline rows matching every filter.
+        """
+        return self._service.get_chain(
+            instrument_family,
+            start,
+            end,
+            product="options",
+            dataset="klines",
+            interval=interval,
+            columns=columns,
+            contract_style=None,
+            option_filter=self._option_filter(
+                expiry, strike_min, strike_max, option_type
+            ),
+            refresh=refresh,
+            offline=offline,
+        ).frame()
+
+    def get_option_chain_trades(
+        self,
+        instrument_family: str,
+        start: DateInput,
+        end: DateInput,
+        *,
+        columns: ColumnSelection = None,
+        expiry: DateInput | None = None,
+        strike_min: float | None = None,
+        strike_max: float | None = None,
+        option_type: Literal["call", "put"] | None = None,
+        refresh: bool = False,
+        offline: bool = False,
+    ) -> pd.DataFrame:
+        """Return filtered trades for every Option in one family.
+
+        Args:
+            instrument_family: Native Option family such as ``BTC-USD``.
+            start: Inclusive request start.
+            end: Inclusive date or exclusive timestamp end.
+            columns: Optional selected or renamed canonical columns.
+            expiry: Optional exact Option expiry.
+            strike_min: Optional inclusive minimum strike.
+            strike_max: Optional inclusive maximum strike.
+            option_type: Optional call or put constraint.
+            refresh: Whether current instruments must refresh.
+            offline: Whether source access is forbidden.
+
+        Returns:
+            Contract-identified Option trade rows matching every filter.
+        """
+        return self._service.get_chain(
+            instrument_family,
+            start,
+            end,
+            product="options",
+            dataset="trades",
+            interval=None,
+            columns=columns,
+            contract_style=None,
+            option_filter=self._option_filter(
+                expiry, strike_min, strike_max, option_type
+            ),
+            refresh=refresh,
+            offline=offline,
+        ).frame()
+
+    @staticmethod
+    def _option_filter(
+        expiry: DateInput | None,
+        strike_min: float | None,
+        strike_max: float | None,
+        option_type: Literal["call", "put"] | None,
+    ) -> OptionChainFilter:
+        """Normalize public Option constraints for the chain query.
+
+        Args:
+            expiry: Optional exact contract expiry.
+            strike_min: Optional inclusive minimum strike.
+            strike_max: Optional inclusive maximum strike.
+            option_type: Optional call or put label.
+
+        Returns:
+            Validated internal Option chain filter.
+        """
+        native_type = {None: None, "call": "C", "put": "P"}.get(option_type)
+        if option_type is not None and native_type is None:
+            raise ValueError("option_type must be call or put")
+        for name, value in (("strike_min", strike_min), ("strike_max", strike_max)):
+            if value is not None and (
+                isinstance(value, bool) or not isinstance(value, (int, float))
+            ):
+                raise TypeError(f"{name} must be numeric")
+        parsed_expiry = parse_timestamp(expiry).date() if expiry is not None else None
+        return OptionChainFilter(parsed_expiry, strike_min, strike_max, native_type)
