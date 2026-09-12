@@ -2,7 +2,7 @@
 
 Veldra is a high-throughput Python API for downloading and using historical
 cryptocurrency market data. Ask for a market and time range; Veldra discovers
-the archives, verifies their SHA-256 checksums, caches normalized Parquet files,
+the archives, verifies their source checksums, caches normalized Parquet files,
 queries the exact rows with DuckDB, and returns ready-to-use pandas DataFrames.
 
 It is designed for research, backtesting, and machine-learning datasets—not
@@ -14,14 +14,14 @@ live market streaming.
 | --- | --- | --- |
 | Binance | ✅ Supported | Spot, USD-M perpetuals, COIN-M perpetuals |
 | HTX | ✅ Supported | Spot, USDT-margined swaps, coin-margined swaps |
-| KuCoin | ⏳ Planned | — |
+| KuCoin | ✅ Supported | Spot, linear perpetuals, inverse perpetuals |
 | OKX | ⏳ Planned | — |
 | Upbit | ⏳ Planned | — |
 | Bybit | ⏳ Planned | — |
 | Gate.io | ⏳ Planned | — |
 
-See [Binance support](docs/binance.md) and [HTX support](docs/htx.md) for the
-implemented datasets and methods.
+See the [Binance](docs/binance.md), [HTX](docs/htx.md), and
+[KuCoin](docs/kucoin.md) guides for implemented datasets and methods.
 
 ## Why Veldra?
 
@@ -29,7 +29,7 @@ implemented datasets and methods.
 | --- | :---: | :---: |
 | Returns exact requested ranges as DataFrames | ✅ | ❌ |
 | Concurrent multi-pair retrieval | ✅ | Limited |
-| Automatic SHA-256 verification | ✅ | ❌ |
+| Automatic checksum verification | ✅ | ❌ |
 | Normalized Parquet cache | ✅ | ❌ |
 | DuckDB filtering and Kline resampling | ✅ | ❌ |
 | Structured warnings, gaps, and pair suggestions | ✅ | ❌ |
@@ -90,10 +90,11 @@ frames = binance.get_trades(
 ```
 
 Progress output is enabled by default. Use `Binance(progress=False)` or
-`HTX(progress=False)` for a silent library call.
+`HTX(progress=False)`, or `KuCoin(progress=False)` for a silent library call.
 
 ## Documentation
 
 - [Getting started](docs/getting-started.md)
 - [Binance API and datasets](docs/binance.md)
 - [HTX API and datasets](docs/htx.md)
+- [KuCoin API and datasets](docs/kucoin.md)

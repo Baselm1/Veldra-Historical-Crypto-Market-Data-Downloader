@@ -27,13 +27,14 @@ boundary, and discovers useful archives for the requested range. It does not
 crawl every dataset file for every market.
 
 ```python
-from veldra import Binance, HTX
+from veldra import Binance, HTX, KuCoin
 
 binance = Binance(data_dir="data/binance")
 htx = HTX(data_dir="data/htx", progress=False)
+kucoin = KuCoin(data_dir="data/kucoin")
 ```
 
-Both constructors accept the same options:
+All three constructors accept the same options:
 
 | Argument | Default | Meaning |
 | --- | --- | --- |
