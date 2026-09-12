@@ -23,6 +23,7 @@ def test_package_can_be_imported() -> None:
         "Binance",
         "HTX",
         "KuCoin",
+        "OKX",
         "Availability",
         "Gap",
         "Market",

@@ -8,7 +8,7 @@ from typing import Protocol, Sequence
 
 from veldra.core.models import ArchiveObject
 from veldra.core.subjects import DataSubject
-from veldra.okx.datasets import manifest_spec
+from veldra.okx.datasets import Cadence, manifest_spec
 
 
 class ManifestDiscovery(Protocol):
@@ -18,8 +18,8 @@ class ManifestDiscovery(Protocol):
         self,
         product: str,
         dataset: str,
-        subjects: list[DataSubject],
-        cadence: str,
+        subjects: Sequence[DataSubject],
+        cadence: Cadence,
         begin: date,
         end: date,
     ) -> list[ArchiveObject]:

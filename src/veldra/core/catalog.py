@@ -682,6 +682,41 @@ class Catalog:
         ).fetchone()
         return self._archive(row) if row is not None else None
 
+    def ready_archives_between(
+        self,
+        source: str,
+        product: str,
+        dataset: str,
+        start_day: date,
+        end_day: date,
+    ) -> list[ArchiveObject]:
+        """Return materialized physical archives overlapping source dates.
+
+        Args:
+            source: Historical source identifier.
+            product: Source product identifier.
+            dataset: Historical dataset identifier.
+            start_day: First inclusive source date.
+            end_day: Last inclusive source date.
+
+        Returns:
+            Ready physical objects in deterministic source-period order.
+        """
+        _validate_range(start_day, end_day)
+        rows = self.connection.execute(
+            """
+            SELECT DISTINCT a.*
+            FROM archive_objects AS a
+            JOIN materializations AS m USING (archive_id)
+            WHERE a.source = ? AND a.product = ? AND a.dataset = ?
+              AND a.status = 'ready' AND m.superseded_at IS NULL
+              AND a.period_start <= ? AND a.period_end >= ?
+            ORDER BY a.period_start, a.period_end, a.remote_name
+            """,
+            [source, product, dataset, end_day, start_day],
+        ).fetchall()
+        return [self._archive(row) for row in rows]
+
     def mark_archive_failed(self, key: ArchiveKey, error: str) -> None:
         """Record a failed attempt against a known physical archive.
 
