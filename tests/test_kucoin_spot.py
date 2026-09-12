@@ -13,7 +13,7 @@ import pytest
 
 from veldra.core.models import DataValidationError, Resource
 from veldra.kucoin.connector import KuCoinConnector
-from veldra.kucoin.datasets import SPOT_KLINES
+from veldra.kucoin.datasets import SPOT_KLINES, SPOT_TRADES
 from veldra.kucoin.processing import normalize_chunk, validate_chunk
 
 
@@ -27,6 +27,19 @@ def raw_klines(**changes: list[str]) -> pa.Table:
         "low": ["93500", "93600"],
         "volume": ["8.2", "9.3"],
         "turnover": ["767000", "870000"],
+    }
+    columns.update(changes)
+    return pa.table(columns)
+
+
+def raw_trades(**changes: list[str]) -> pa.Table:
+    """Build a small raw KuCoin Spot trade table."""
+    columns = {
+        "trade_id": ["65a001", "65a002"],
+        "trade_time": ["1735689600051", "1735689600051"],
+        "price": ["93548.8", "93548.7"],
+        "size": ["0.036", "0.002"],
+        "side": ["BUY", " sell "],
     }
     columns.update(changes)
     return pa.table(columns)
@@ -130,3 +143,55 @@ def test_verified_spot_kline_archive_is_written_as_atomic_parquet(
     assert metadata.row_count == 2
     assert table["open_time"].to_pylist()[0] == datetime(2025, 1, 1, tzinfo=UTC)
     assert not destination.with_name("day.parquet.part").exists()
+
+
+def test_spot_trades_normalize_ids_times_sides_and_quote_quantity() -> None:
+    """Confirm Spot trades retain string IDs and derive exact quote quantities."""
+    table = normalize_chunk(raw_trades(), SPOT_TRADES)
+
+    assert table.column_names == list(SPOT_TRADES.stored_columns)
+    assert table["trade_id"].type == pa.string()
+    assert table["trade_id"].to_pylist() == ["65a001", "65a002"]
+    assert table["event_time"].to_pylist() == [
+        datetime(2025, 1, 1, 0, 0, 0, 51000, tzinfo=UTC),
+        datetime(2025, 1, 1, 0, 0, 0, 51000, tzinfo=UTC),
+    ]
+    assert table["side"].to_pylist() == ["buy", "sell"]
+    assert table["quote_quantity"].to_pylist() == pytest.approx([3367.7568, 187.0974])
+    assert validate_chunk(table, SPOT_TRADES, date(2025, 1, 1)) == datetime(
+        2025, 1, 1, 0, 0, 0, 51000, tzinfo=UTC
+    )
+
+
+@pytest.mark.parametrize(
+    ("changes", "message"),
+    [
+        ({"trade_time": ["1735689600", "1735689600"]}, "timestamp unit"),
+        ({"trade_id": ["", "2"]}, "trade_id"),
+        ({"price": ["0", "1"]}, "price must be positive"),
+        ({"size": ["-1", "1"]}, "quantities must be nonnegative"),
+        ({"side": ["hold", "buy"]}, "side must be buy or sell"),
+    ],
+)
+def test_spot_trades_reject_malformed_values(
+    changes: dict[str, list[str]], message: str
+) -> None:
+    """Confirm malformed Spot event data cannot enter the Parquet cache."""
+    with pytest.raises(DataValidationError, match=message):
+        table = normalize_chunk(raw_trades(**changes), SPOT_TRADES)
+        validate_chunk(table, SPOT_TRADES, date(2025, 1, 1))
+
+
+def test_spot_trades_allow_duplicate_times_and_reject_decreasing_chunks() -> None:
+    """Confirm equal event times are valid while cross-chunk reversal is not."""
+    table = normalize_chunk(raw_trades(), SPOT_TRADES)
+    last = validate_chunk(table, SPOT_TRADES, date(2025, 1, 1))
+
+    assert last == table["event_time"][-1].as_py()
+    with pytest.raises(DataValidationError, match="preceding chunk"):
+        validate_chunk(
+            table,
+            SPOT_TRADES,
+            date(2025, 1, 1),
+            datetime(2025, 1, 1, 0, 1, tzinfo=UTC),
+        )

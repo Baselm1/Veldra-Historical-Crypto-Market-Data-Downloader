@@ -58,6 +58,15 @@ def _epoch(values: Any, column: str, unit: str) -> Any:
     return pc.cast(numbers, pa.timestamp("us", "UTC"))
 
 
+def _text(values: Any, column: str) -> Any:
+    """Normalize one required source text column to lowercase."""
+    result = pc.utf8_lower(pc.utf8_trim_whitespace(pc.cast(values, pa.string())))
+    if result.null_count:
+        raise DataValidationError(f"invalid {column} value")
+    _reject(pc.equal(result, ""), f"invalid {column} value")
+    return result
+
+
 def _normalize_spot_klines(table: Any, dataset: DatasetSpec) -> Any:
     """Convert KuCoin Spot Klines into canonical OHLCV columns."""
     if tuple(table.column_names) != dataset.source_columns:
@@ -82,6 +91,26 @@ def _normalize_spot_klines(table: Any, dataset: DatasetSpec) -> Any:
     return pa.table({column: values[column] for column in dataset.stored_columns})
 
 
+def _normalize_spot_trades(table: Any, dataset: DatasetSpec) -> Any:
+    """Convert KuCoin Spot trades into canonical event columns."""
+    if tuple(table.column_names) != dataset.source_columns:
+        raise DataValidationError("CSV does not match a KuCoin Spot trade schema")
+    price = _number(table["price"], "price")
+    base_quantity = _number(table["size"], "base_quantity")
+    values = {
+        "event_time": _epoch(table["trade_time"], "event_time", "ms"),
+        "trade_id": pc.utf8_trim_whitespace(pc.cast(table["trade_id"], pa.string())),
+        "price": price,
+        "base_quantity": base_quantity,
+        "quote_quantity": pc.multiply(price, base_quantity),
+        "side": _text(table["side"], "side"),
+    }
+    if values["trade_id"].null_count:
+        raise DataValidationError("invalid trade_id value")
+    _reject(pc.equal(values["trade_id"], ""), "invalid trade_id value")
+    return pa.table({column: values[column] for column in dataset.stored_columns})
+
+
 def normalize_chunk(
     table: Any, dataset: DatasetSpec, contract_size: float | None = None
 ) -> Any:
@@ -97,6 +126,8 @@ def normalize_chunk(
     """
     if dataset.product == "spot" and dataset.name == "klines":
         return _normalize_spot_klines(table, dataset)
+    if dataset.product == "spot" and dataset.name == "trades":
+        return _normalize_spot_trades(table, dataset)
     raise ValueError(f"unsupported normalizer: {dataset.product}/{dataset.name}")
 
 
@@ -127,9 +158,13 @@ def _validate_values(table: Any, dataset: DatasetSpec) -> None:
         if column in dataset.timestamp_columns:
             continue
         values = table[column]
-        if values.null_count:
-            raise DataValidationError("numeric values must be finite")
-        _reject(pc.invert(pc.is_finite(values)), "numeric values must be finite")
+        if column in dataset.string_columns:
+            if values.null_count or not pa.types.is_string(values.type):
+                raise DataValidationError("text values must be nonnull strings")
+        else:
+            if values.null_count:
+                raise DataValidationError("numeric values must be finite")
+            _reject(pc.invert(pc.is_finite(values)), "numeric values must be finite")
 
 
 def _validate_times(
@@ -145,16 +180,20 @@ def _validate_times(
         raise DataValidationError(f"{dataset.time_column} must be increasing")
     first = cast(datetime, values[0].as_py())
     last = cast(datetime, values[-1].as_py())
-    if previous_timestamp is not None and first <= previous_timestamp:
+    if previous_timestamp is not None and (
+        first < previous_timestamp
+        or (dataset.supports_resampling and first == previous_timestamp)
+    ):
         raise DataValidationError("chunk does not follow the preceding chunk")
     start = datetime.combine(day, time.min, UTC)
     end = datetime.combine((end_day or day) + timedelta(days=1), time.min, UTC)
     if first < start or last >= end:
         raise DataValidationError("timestamps fall outside the KuCoin resource day")
-    _reject(
-        pc.not_equal(values, pc.floor_temporal(values, unit="minute")),
-        "open_time is not aligned to one minute",
-    )
+    if dataset.supports_resampling:
+        _reject(
+            pc.not_equal(values, pc.floor_temporal(values, unit="minute")),
+            "open_time is not aligned to one minute",
+        )
     return last
 
 
@@ -168,6 +207,17 @@ def _validate_ohlc(table: Any, dataset: DatasetSpec) -> None:
         _reject(pc.greater(table["low"], table[column]), "low is above an OHLC price")
     for column in dataset.resample_sum_columns:
         _reject(pc.less(table[column], 0), "volume values must be nonnegative")
+
+
+def _validate_trades(table: Any) -> None:
+    """Validate KuCoin trade prices, quantities, identifiers, and sides."""
+    _reject(pc.less_equal(table["price"], 0), "trade price must be positive")
+    for column in ("base_quantity", "quote_quantity"):
+        _reject(pc.less(table[column], 0), "trade quantities must be nonnegative")
+    _reject(
+        pc.invert(pc.is_in(table["side"], value_set=pa.array(["buy", "sell"]))),
+        "trade side must be buy or sell",
+    )
 
 
 def validate_chunk(
@@ -189,10 +239,13 @@ def validate_chunk(
     Returns:
         The final UTC timestamp in the table.
     """
-    if dataset.product != "spot" or dataset.name != "klines":
+    if dataset.product != "spot" or dataset.name not in {"klines", "trades"}:
         raise ValueError(f"unsupported validator: {dataset.product}/{dataset.name}")
     _validate_schema(table, dataset)
     _validate_values(table, dataset)
     last = _validate_times(table, dataset, day, previous_timestamp, end_day)
-    _validate_ohlc(table, dataset)
+    if dataset.name == "klines":
+        _validate_ohlc(table, dataset)
+    else:
+        _validate_trades(table)
     return last
