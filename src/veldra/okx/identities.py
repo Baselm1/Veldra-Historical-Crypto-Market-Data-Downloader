@@ -22,6 +22,7 @@ type ContractStyle = Literal["normal", "xperp", "pre_market_xperp"]
 _SAFE = re.compile(r"[A-Z0-9_-]+")
 _TEXT = re.compile(r"[A-Za-z0-9_-]+")
 _OPTION = re.compile(r"^[A-Z0-9]+-[A-Z0-9_]+-(\d{6})-([0-9]+(?:\.[0-9]+)?)-([CP])$")
+_FUTURE = re.compile(r"^([A-Z0-9]+)-(USD(?:T|C)?(?:_UM)?)-(\d{6})$")
 _STATES = frozenset({"live", "suspend", "rebase", "post_only", "preopen", "test"})
 
 
@@ -116,6 +117,54 @@ def parse_option_id(value: str) -> tuple[date, float, Literal["C", "P"]]:
     expiry = datetime.strptime(match.group(1), "%y%m%d").date()
     option_type = "C" if match.group(3) == "C" else "P"
     return expiry, float(match.group(2)), cast(Literal["C", "P"], option_type)
+
+
+def historical_future(value: object, product: object) -> OKXInstrument:
+    """Build a conservative archive-derived dated Futures identity.
+
+    Args:
+        value: Native expired contract ID.
+        product: Expected linear or inverse Futures product.
+
+    Returns:
+        Archive-only identity without invented contract-size metadata.
+    """
+    if not isinstance(value, str) or not isinstance(product, str):
+        raise TypeError("historical Futures identity and product must be strings")
+    instrument = value.strip().upper()
+    match = _FUTURE.fullmatch(instrument)
+    if match is None:
+        raise ValueError("OKX historical Futures instrument ID is malformed")
+    base, settlement, expiry_text = match.groups()
+    expected = "inverse_futures" if settlement == "USD" else "linear_futures"
+    if product != expected:
+        raise ValueError("OKX historical Futures instrument does not match product")
+    try:
+        expiry = datetime.strptime(expiry_text, "%y%m%d").date()
+    except ValueError as error:
+        raise ValueError("OKX historical Futures expiry is invalid") from error
+    family = f"{base}-{settlement}"
+    return OKXInstrument(
+        instrument,
+        cast(OKXProduct, product),
+        "FUTURES",
+        family,
+        base,
+        settlement,
+        settlement,
+        "inverse" if expected == "inverse_futures" else "linear",
+        None,
+        None,
+        None,
+        "normal",
+        "archive_only",
+        None,
+        None,
+        expiry,
+        None,
+        None,
+        provenance="archive_identity",
+    )
 
 
 def _product(inst_type: str, contract_type: str | None) -> OKXProduct:

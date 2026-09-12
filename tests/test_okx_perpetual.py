@@ -105,7 +105,18 @@ def test_perpetual_trades_require_proven_contract_size() -> None:
         )
 
 
-def test_dated_futures_are_not_accepted_by_perpetual_specs() -> None:
-    """Confirm expiry products do not enter the swap API accidentally."""
-    with pytest.raises(ValueError, match="unsupported"):
-        get_dataset("linear_futures", "klines")
+def test_dated_futures_use_distinct_chain_schemas() -> None:
+    """Confirm expiry products retain chain volumes and native trade contracts."""
+    klines = get_dataset("linear_futures", "klines")
+    trades = get_dataset("inverse_futures", "trades")
+    assert klines.product == "linear_futures"
+    assert trades.stored_columns == (
+        "event_time",
+        "trade_id",
+        "price",
+        "contract_quantity",
+        "side",
+    )
+    frame = normalize_trades(trade("BTC-USD-250103"), trades)
+    assert frame.loc[0, "contract_quantity"] == 2
+    assert "base_quantity" not in frame

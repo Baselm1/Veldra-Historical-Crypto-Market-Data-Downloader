@@ -178,13 +178,16 @@ def normalize_trades(
         result["quote_quantity"] = prices * quantities
     else:
         sizes = instruments.map(contract_sizes or {})
-        if sizes.isna().any() or sizes.le(0).any():
+        if dataset.product in {"linear_futures", "inverse_futures", "options"}:
+            result["contract_quantity"] = quantities
+        elif sizes.isna().any() or sizes.le(0).any():
             raise DataValidationError("OKX derivative contract size is unavailable")
-        result["contract_quantity"] = quantities
-        if dataset.product == "linear_swap":
+        elif dataset.product == "linear_swap":
+            result["contract_quantity"] = quantities
             result["base_quantity"] = quantities * sizes
             result["quote_quantity"] = result["base_quantity"] * prices
         else:
+            result["contract_quantity"] = quantities
             result["quote_notional"] = quantities * sizes
             result["base_quantity"] = result["quote_notional"] / prices
     result = result[["instrument_id", *dataset.stored_columns]]
@@ -328,6 +331,23 @@ def _partitions(
                 "instrument_id",
                 str(instrument),
                 len(rows),
+                source_day=resource.key.period_start,
+            )
+        )
+    if resource.key.remote_scope_kind == "instrument_family":
+        values.append(
+            LogicalPartition(
+                "okx",
+                resource.key.product,
+                resource.key.dataset,
+                resource.key.subject,
+                dataset.base_interval,
+                coverage_start,
+                coverage_end,
+                destination,
+                None,
+                None,
+                len(frame),
                 source_day=resource.key.period_start,
             )
         )

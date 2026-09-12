@@ -212,10 +212,51 @@ def _perpetual_trades(product: str) -> DatasetSpec:
     )
 
 
+def _chain_trades(product: str) -> DatasetSpec:
+    """Build one Futures or Options trade declaration without guessed units.
+
+    Args:
+        product: Dated Futures or Options product.
+
+    Returns:
+        Native contract-quantity trade schema.
+    """
+    return DatasetSpec(
+        product=product,
+        name="trades",
+        remote_name="module_1",
+        source_columns=TRADE_SOURCE_COLUMNS,
+        stored_columns=(
+            "event_time",
+            "trade_id",
+            "price",
+            "contract_quantity",
+            "side",
+        ),
+        time_column="event_time",
+        base_interval=None,
+        output_intervals=(),
+        aliases=MappingProxyType({}),
+        max_concurrency=8,
+        csv_header="present",
+        ordering_columns=("event_time", "trade_id"),
+        timestamp_columns=("event_time",),
+        integer_columns=("trade_id",),
+        string_columns=("side",),
+        sort_source_rows=True,
+        archive_day_offset=timedelta(hours=8),
+        publication_delay_days=2,
+    )
+
+
 LINEAR_SWAP_KLINES = _perpetual_klines("linear_swap")
 INVERSE_SWAP_KLINES = _perpetual_klines("inverse_swap")
 LINEAR_SWAP_TRADES = _perpetual_trades("linear_swap")
 INVERSE_SWAP_TRADES = _perpetual_trades("inverse_swap")
+LINEAR_FUTURES_KLINES = _perpetual_klines("linear_futures")
+INVERSE_FUTURES_KLINES = _perpetual_klines("inverse_futures")
+LINEAR_FUTURES_TRADES = _chain_trades("linear_futures")
+INVERSE_FUTURES_TRADES = _chain_trades("inverse_futures")
 
 
 def _funding_rates(product: str) -> DatasetSpec:
@@ -298,6 +339,10 @@ DATASETS: Mapping[tuple[str, str], DatasetSpec] = MappingProxyType(
         ("inverse_swap", "trades"): INVERSE_SWAP_TRADES,
         ("linear_swap", "funding_rates"): LINEAR_SWAP_FUNDING,
         ("inverse_swap", "funding_rates"): INVERSE_SWAP_FUNDING,
+        ("linear_futures", "klines"): LINEAR_FUTURES_KLINES,
+        ("linear_futures", "trades"): LINEAR_FUTURES_TRADES,
+        ("inverse_futures", "klines"): INVERSE_FUTURES_KLINES,
+        ("inverse_futures", "trades"): INVERSE_FUTURES_TRADES,
         ("spot", "order_book_400"): SPOT_ORDER_BOOK_400,
         ("spot", "order_book_5000"): SPOT_ORDER_BOOK_5000,
         ("linear_swap", "order_book_400"): LINEAR_SWAP_ORDER_BOOK_400,

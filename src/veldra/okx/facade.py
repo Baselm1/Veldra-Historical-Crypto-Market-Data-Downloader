@@ -390,3 +390,85 @@ class OKX:
             refresh=refresh,
             offline=offline,
         )
+
+    def get_futures_chain_klines(
+        self,
+        instrument_family: str,
+        start: DateInput,
+        end: DateInput,
+        *,
+        product: Literal["linear_futures", "inverse_futures"],
+        interval: str | None = None,
+        columns: ColumnSelection = None,
+        contract_style: Literal["normal", "xperp", "pre_market_xperp"] | None = None,
+        refresh: bool = False,
+        offline: bool = False,
+    ) -> pd.DataFrame:
+        """Return Klines for every contract in one OKX Futures family.
+
+        Args:
+            instrument_family: Native family such as ``BTC-USD``.
+            start: Inclusive request start.
+            end: Inclusive date or exclusive timestamp end.
+            product: Linear- or inverse-margined Futures product.
+            interval: Optional output Kline interval.
+            columns: Optional selected or renamed canonical columns.
+            contract_style: Optional normal or X-Perp filter.
+            refresh: Whether current instruments must refresh.
+            offline: Whether source access is forbidden.
+
+        Returns:
+            Contract-identified Kline rows for the family.
+        """
+        return self._service.get_futures_chain(
+            instrument_family,
+            start,
+            end,
+            product=product,
+            dataset="klines",
+            interval=interval,
+            columns=columns,
+            contract_style=contract_style,
+            refresh=refresh,
+            offline=offline,
+        ).frame()
+
+    def get_futures_chain_trades(
+        self,
+        instrument_family: str,
+        start: DateInput,
+        end: DateInput,
+        *,
+        product: Literal["linear_futures", "inverse_futures"],
+        columns: ColumnSelection = None,
+        contract_style: Literal["normal", "xperp", "pre_market_xperp"] | None = None,
+        refresh: bool = False,
+        offline: bool = False,
+    ) -> pd.DataFrame:
+        """Return trades for every contract in one OKX Futures family.
+
+        Args:
+            instrument_family: Native family such as ``BTC-USD``.
+            start: Inclusive request start.
+            end: Inclusive date or exclusive timestamp end.
+            product: Linear- or inverse-margined Futures product.
+            columns: Optional selected or renamed canonical columns.
+            contract_style: Optional normal or X-Perp filter.
+            refresh: Whether current instruments must refresh.
+            offline: Whether source access is forbidden.
+
+        Returns:
+            Contract-identified trade rows for the family.
+        """
+        return self._service.get_futures_chain(
+            instrument_family,
+            start,
+            end,
+            product=product,
+            dataset="trades",
+            interval=None,
+            columns=columns,
+            contract_style=contract_style,
+            refresh=refresh,
+            offline=offline,
+        ).frame()

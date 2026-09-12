@@ -258,7 +258,7 @@ def _partitions(
 ) -> tuple[LogicalPartition, ...]:
     """Map every streamed instrument to its shared physical Parquet file."""
     start, end = _source_coverage(resource)
-    return tuple(
+    values = [
         LogicalPartition(
             "okx",
             resource.key.product,
@@ -274,7 +274,25 @@ def _partitions(
             source_day=resource.key.period_start,
         )
         for instrument, rows in sorted(counts.items())
-    )
+    ]
+    if resource.key.remote_scope_kind == "instrument_family":
+        values.append(
+            LogicalPartition(
+                "okx",
+                resource.key.product,
+                resource.key.dataset,
+                resource.key.subject,
+                dataset.base_interval,
+                start,
+                end,
+                destination,
+                None,
+                None,
+                sum(counts.values()),
+                source_day=resource.key.period_start,
+            )
+        )
+    return tuple(values)
 
 
 def materialize_order_book(

@@ -8,6 +8,7 @@ import pytest
 from veldra.okx.connector import OKXConnector
 from veldra.okx.identities import (
     OKXInstrument,
+    historical_future,
     parse_currency,
     parse_instrument,
     parse_option_id,
@@ -150,6 +151,53 @@ def test_option_identity_preserves_strike_expiry_and_type() -> None:
     assert expiry == datetime(2026, 12, 25, tzinfo=UTC).date()
     assert strike == 100_000
     assert option_type == "P"
+
+
+@pytest.mark.parametrize(
+    ("instrument", "product", "family"),
+    [
+        ("BTC-USDT-250103", "linear_futures", "BTC-USDT"),
+        ("BTC-USD-250103", "inverse_futures", "BTC-USD"),
+    ],
+)
+def test_expired_futures_gain_conservative_archive_identities(
+    instrument: str, product: str, family: str
+) -> None:
+    """Confirm expired IDs retain dates without invented contract size.
+
+    Args:
+        instrument: Native historical contract ID.
+        product: Expected Futures product.
+        family: Expected manifest family.
+    """
+    identity = historical_future(instrument.lower(), product)
+    assert identity.instrument_id == instrument
+    assert identity.family == family
+    assert identity.expiry == datetime(2025, 1, 3).date()
+    assert identity.contract_value is None
+    assert identity.provenance == "archive_identity"
+    assert not identity.market.active
+
+
+@pytest.mark.parametrize(
+    ("instrument", "product"),
+    [
+        ("BTC-USDT-SWAP", "linear_futures"),
+        ("BTC-USD-250103", "linear_futures"),
+        ("BTC-USDT-991332", "linear_futures"),
+    ],
+)
+def test_historical_futures_reject_malformed_or_mismatched_ids(
+    instrument: str, product: str
+) -> None:
+    """Confirm archive-derived identities remain product-safe.
+
+    Args:
+        instrument: Invalid or mismatched native ID.
+        product: Proposed Futures product.
+    """
+    with pytest.raises(ValueError):
+        historical_future(instrument, product)
 
 
 @pytest.mark.parametrize("value", ["", "../BTC-USDT", "BTC/USDT", 1])

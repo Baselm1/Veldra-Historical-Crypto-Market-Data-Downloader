@@ -10,6 +10,7 @@ from time import perf_counter
 import logging
 
 import httpx
+import pandas as pd
 
 from veldra.core.catalog import Catalog, catalog_lock, open_catalog
 from veldra.core.config import load_settings
@@ -22,9 +23,11 @@ from veldra.core.reporting import Reporter
 from veldra.core.request import Request, parse_timestamp
 from veldra.core.subjects import DataSubject
 from veldra.okx.client import OKXClient
+from veldra.okx.chain import query_chain
 from veldra.okx.connector import OKXConnector
 from veldra.okx.datasets import get_dataset, manifest_spec
 from veldra.okx.manifest import OKXManifestDiscovery
+from veldra.okx.identities import historical_future
 from veldra.okx.planner import OKXArchivePlanner
 from veldra.okx.processing import OKXArchiveProvider
 from veldra.okx.reports import CacheReport
@@ -37,6 +40,15 @@ class _MaterializeOutcome:
     """Collect physical successes and isolated archive problems."""
 
     completed: tuple[MaterializedArchive, ...]
+    problems: tuple[Message, ...]
+
+
+@dataclass(frozen=True)
+class _ChainCache:
+    """Collect markets, family partitions, and retrieval problems."""
+
+    markets: tuple[Market, ...]
+    partitions: tuple[LogicalPartition, ...]
     problems: tuple[Message, ...]
 
 
@@ -206,6 +218,24 @@ class OKXService:
         )
         return None, Message(code, message, suggestions=suggestions)
 
+    @staticmethod
+    def _historical_market(pair: str, product: str) -> Market | None:
+        """Return an archive-derived expired Futures market when valid.
+
+        Args:
+            pair: Caller-provided native contract ID.
+            product: Requested product.
+
+        Returns:
+            Conservative archive-only market or ``None``.
+        """
+        if product not in {"linear_futures", "inverse_futures"}:
+            return None
+        try:
+            return historical_future(pair, product).market
+        except TypeError, ValueError:
+            return None
+
     def _effective_start(self, request: Request) -> datetime:
         """Apply the optional configured history boundary.
 
@@ -284,7 +314,11 @@ class OKXService:
             retries=self.retries,
             backoff=self.backoff,
             contract_sizes={market.symbol: market.contract_size for market in markets},
-            allowed_instruments={market.symbol for market in markets},
+            allowed_instruments=(
+                {market.symbol for market in markets}
+                if dataset.product in {"spot", "linear_swap", "inverse_swap"}
+                else None
+            ),
         )
 
         def process(resource: ArchiveObject) -> MaterializedArchive:
@@ -548,6 +582,8 @@ class OKXService:
                     for pair in request.pairs:
                         market, error = self._resolve(pair, markets)
                         if market is None:
+                            market = self._historical_market(pair, request.product)
+                        if market is None:
                             result = Result(
                                 pair,
                                 empty_frame(specification, request.columns or {}),
@@ -575,6 +611,281 @@ class OKXService:
                         results.append(result)
         LOGGER.info("OKX request completed in %.3fs", perf_counter() - started)
         return results[0] if request.single else results
+
+    def get_futures_chain(
+        self,
+        family: object,
+        start: object,
+        end: object,
+        *,
+        product: object,
+        dataset: object,
+        interval: object,
+        columns: object,
+        contract_style: object,
+        refresh: object,
+        offline: object,
+    ) -> Result:
+        """Return one Futures-family history while retaining exact contracts.
+
+        Args:
+            family: Native OKX Futures family.
+            start: Inclusive request start.
+            end: Inclusive date or exclusive timestamp end.
+            product: Linear- or inverse-margined Futures product.
+            dataset: Klines or trades.
+            interval: Optional Kline output interval.
+            columns: Optional selected or renamed canonical columns.
+            contract_style: Optional normal, X-Perp, or pre-market filter.
+            refresh: Whether current instruments must refresh.
+            offline: Whether source access is forbidden.
+
+        Returns:
+            Structured family result whose frame retains ``instrument_id``.
+        """
+        request, specification, native_family = self._chain_request(
+            family,
+            start,
+            end,
+            product=product,
+            dataset=dataset,
+            interval=interval,
+            columns=columns,
+            contract_style=contract_style,
+            refresh=refresh,
+            offline=offline,
+        )
+        start_time = self._effective_start(request)
+        result = Result(
+            native_family,
+            pd.DataFrame(),
+            (request.start, request.end),
+            source="okx",
+            product=request.product,
+            dataset=request.dataset,
+            gap_policy=request.gap_policy,
+        )
+        catalog_path = self.data_dir / "catalog.duckdb"
+        reporter = Reporter(self.progress)
+        with catalog_lock(catalog_path):
+            with self._client(offline=bool(offline)) as client:
+                with open_catalog(catalog_path) as catalog:
+                    cached = self._prepare_chain(
+                        catalog,
+                        client,
+                        request,
+                        specification,
+                        native_family,
+                        start_time,
+                        reporter,
+                        refresh=bool(refresh),
+                        offline=bool(offline),
+                    )
+                    result.problems.extend(cached.problems)
+                    result.data = query_chain(
+                        catalog.connection,
+                        [item.materialization_path for item in cached.partitions],
+                        specification,
+                        start_time,
+                        request.end,
+                        request.columns or {},
+                        interval=request.interval,
+                    )
+        self._filter_chain_style(result.data, cached.markets, contract_style)
+        self._finish_chain_result(
+            result, cached.partitions, native_family, start_time, request.end
+        )
+        return result
+
+    @staticmethod
+    def _chain_request(
+        family: object,
+        start: object,
+        end: object,
+        *,
+        product: object,
+        dataset: object,
+        interval: object,
+        columns: object,
+        contract_style: object,
+        refresh: object,
+        offline: object,
+    ) -> tuple[Request, DatasetSpec, str]:
+        """Validate and resolve one Futures-family request.
+
+        Args:
+            family: Native Futures family.
+            start: Inclusive request start.
+            end: Inclusive date or exclusive timestamp end.
+            product: Linear- or inverse-margined Futures product.
+            dataset: Klines or trades.
+            interval: Optional Kline output interval.
+            columns: Optional selected or renamed columns.
+            contract_style: Optional normal or X-Perp filter.
+            refresh: Whether current instruments must refresh.
+            offline: Whether source access is forbidden.
+
+        Returns:
+            Resolved request, dataset, and normalized native family.
+        """
+        if product not in {"linear_futures", "inverse_futures"}:
+            raise ValueError(
+                "Futures chain product must be linear_futures or inverse_futures"
+            )
+        if contract_style not in {None, "normal", "xperp", "pre_market_xperp"}:
+            raise ValueError("contract_style is unsupported")
+        if not isinstance(refresh, bool) or not isinstance(offline, bool):
+            raise TypeError("refresh and offline must be Booleans")
+        if refresh and offline:
+            raise ValueError("refresh and offline cannot both be enabled")
+        request = Request.parse(
+            family,
+            start,
+            end,
+            product=product,
+            dataset=dataset,
+            interval=interval,
+            desired_columns=columns,
+            gap_policy="keep" if dataset == "klines" else None,
+            subject_kind="instrument_family",
+        )
+        specification = get_dataset(request.product, request.dataset)
+        request = request.resolve_dataset(specification)
+        native_family = request.subjects[0].value.strip().upper()
+        expected_suffix = (
+            "-USD" if product == "inverse_futures" else ("-USDT", "-USDC", "-USD_UM")
+        )
+        if not native_family.endswith(expected_suffix):
+            raise ValueError("Futures family does not match the requested product")
+        return request, specification, native_family
+
+    def _prepare_chain(
+        self,
+        catalog: Catalog,
+        client: httpx.Client,
+        request: Request,
+        specification: DatasetSpec,
+        native_family: str,
+        start_time: datetime,
+        reporter: Reporter,
+        *,
+        refresh: bool,
+        offline: bool,
+    ) -> _ChainCache:
+        """Materialize missing family archives and return query partitions.
+
+        Args:
+            catalog: Open source catalog.
+            client: Shared request-scoped HTTP client.
+            request: Resolved chain request.
+            specification: Product-specific schema.
+            native_family: Normalized manifest family.
+            start_time: Configured inclusive request start.
+            reporter: Optional Rich reporter.
+            refresh: Whether current instruments must refresh.
+            offline: Whether source access is forbidden.
+
+        Returns:
+            Current metadata, family partitions, and materialization problems.
+        """
+        first_day, last_day = self._source_days(start_time, request.end, specification)
+        markets = self._markets(
+            catalog,
+            client,
+            request.product,
+            reporter,
+            refresh=refresh,
+            offline=offline,
+        )
+        subject = DataSubject("instrument_family", native_family)
+        problems: tuple[Message, ...] = ()
+        if not offline:
+            cached = catalog.ready_archives_between(
+                "okx", request.product, request.dataset, first_day, last_day
+            )
+            api = OKXClient(
+                client=client,
+                limiter=self.connector.limiter,
+                timeout=self.timeout,
+                retries=self.retries,
+                backoff=self.backoff,
+            )
+            plan = OKXArchivePlanner(OKXManifestDiscovery(api), cached=cached).plan(
+                request.product,
+                request.dataset,
+                [subject],
+                first_day,
+                last_day,
+                transport="specific",
+            )
+            problems = self._materialize(
+                catalog,
+                client,
+                list(plan.selected),
+                specification,
+                markets,
+                reporter,
+            ).problems
+        partitions = catalog.partitions_between(
+            "okx",
+            request.product,
+            request.dataset,
+            subject,
+            specification.base_interval,
+            start_time,
+            request.end,
+        )
+        return _ChainCache(tuple(markets), tuple(partitions), problems)
+
+    @staticmethod
+    def _filter_chain_style(
+        frame: pd.DataFrame, markets: tuple[Market, ...], contract_style: object
+    ) -> None:
+        """Filter a family frame in place to one current contract style.
+
+        Args:
+            frame: Queried family rows.
+            markets: Current contracts with native rule types.
+            contract_style: Optional requested style.
+        """
+        if contract_style is None or frame.empty:
+            return
+        known = {
+            market.symbol: (market.contract_type or "NORMAL").lower()
+            for market in markets
+        }
+        styles = frame["instrument_id"].map(known).fillna("normal")
+        frame.drop(frame.index[~styles.eq(contract_style)], inplace=True)
+        frame.reset_index(drop=True, inplace=True)
+
+    @staticmethod
+    def _finish_chain_result(
+        result: Result,
+        partitions: tuple[LogicalPartition, ...],
+        family: str,
+        start: datetime,
+        end: datetime,
+    ) -> None:
+        """Attach availability and empty-data information to a chain result.
+
+        Args:
+            result: Mutable structured result.
+            partitions: Family partitions used by the query.
+            family: Native family used in user-facing errors.
+            start: Effective inclusive query start.
+            end: Exclusive query end.
+        """
+        if not result.data.empty:
+            result.used_range = (start, end)
+        elif not result.problems:
+            result.problems.append(
+                Message("no_data", f"No OKX data was found for '{family}'.")
+            )
+        if partitions:
+            result.available_range = (
+                min(item.coverage_start for item in partitions),
+                max(item.coverage_end for item in partitions),
+            )
 
     def cache_all(
         self,
