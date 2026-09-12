@@ -35,7 +35,6 @@ class KuCoinConnector:
 
     code = "kucoin"
     products = PRODUCTS
-    archive_day_offset = timedelta(0)
     max_concurrency = 64
     monthly_datasets: frozenset[str] = frozenset()
 

@@ -2,6 +2,7 @@
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import timedelta
 import logging
 from typing import Literal, Protocol
 
@@ -223,6 +224,29 @@ def _validate_discovery_lookahead(value: object) -> None:
         raise ValueError("dataset discovery lookahead must be a nonnegative integer")
 
 
+def _validate_source_calendar(offset: object, publication_delay_days: object) -> None:
+    """Reject invalid source-day offsets and publication delays.
+
+    Args:
+        offset: The fixed offset used to label archive days.
+        publication_delay_days: Complete source days withheld from discovery.
+
+    Raises:
+        TypeError: If either calendar value has the wrong type.
+        ValueError: If the offset or delay is outside its valid range.
+    """
+    if not isinstance(offset, timedelta):
+        raise TypeError("dataset archive_day_offset must be a timedelta")
+    if not -timedelta(days=1) < offset < timedelta(days=1):
+        raise ValueError("dataset archive_day_offset must be shorter than one day")
+    if isinstance(publication_delay_days, bool) or not isinstance(
+        publication_delay_days, int
+    ):
+        raise TypeError("dataset publication_delay_days must be an integer")
+    if publication_delay_days < 0:
+        raise ValueError("dataset publication_delay_days cannot be negative")
+
+
 @dataclass(frozen=True)
 class CsvSchema:
     """Describe one accepted source CSV layout."""
@@ -269,6 +293,8 @@ class DatasetSpec:
     source_schemas: tuple[CsvSchema, ...] = ()
     sort_source_rows: bool = False
     discovery_lookahead_days: int = 0
+    archive_day_offset: timedelta = timedelta(0)
+    publication_delay_days: int = 1
 
     def __post_init__(self) -> None:
         """Validate the immutable capability declaration.
@@ -307,6 +333,10 @@ class DatasetSpec:
         _validate_schema_version(self.schema_version)
         _validate_archive_symbol_attribute(self.archive_symbol_attribute)
         _validate_discovery_lookahead(self.discovery_lookahead_days)
+        _validate_source_calendar(
+            self.archive_day_offset,
+            self.publication_delay_days,
+        )
         schemas = self.csv_schemas
         identities = [(schema.columns, schema.header) for schema in schemas]
         if len(identities) != len(set(identities)):

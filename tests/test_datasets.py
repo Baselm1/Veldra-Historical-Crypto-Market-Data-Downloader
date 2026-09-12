@@ -1,5 +1,7 @@
 """Test the declarative Binance Spot kline dataset contract."""
 
+from datetime import timedelta
+
 import pytest
 
 from veldra.core.datasets import CsvSchema, DatasetSpec
@@ -188,6 +190,41 @@ def test_dataset_declares_multiple_structural_csv_schemas() -> None:
         variant,
     )
     assert snapshot.sort_source_rows is True
+
+
+def test_dataset_declares_a_source_calendar() -> None:
+    """Confirm archive labels and publication lag belong to each dataset."""
+    snapshot = minimal_snapshot(
+        archive_day_offset=timedelta(hours=8),
+        publication_delay_days=3,
+    )
+
+    assert snapshot.archive_day_offset == timedelta(hours=8)
+    assert snapshot.publication_delay_days == 3
+
+
+@pytest.mark.parametrize(
+    ("changes", "message"),
+    [
+        ({"archive_day_offset": 8}, "archive_day_offset"),
+        ({"archive_day_offset": timedelta(days=1)}, "archive_day_offset"),
+        ({"archive_day_offset": timedelta(days=-1)}, "archive_day_offset"),
+        ({"publication_delay_days": -1}, "publication_delay_days"),
+        ({"publication_delay_days": 1.5}, "publication_delay_days"),
+        ({"publication_delay_days": True}, "publication_delay_days"),
+    ],
+)
+def test_dataset_rejects_an_invalid_source_calendar(
+    changes: dict[str, object], message: str
+) -> None:
+    """Confirm archive calendars use a fixed sub-day offset and whole-day lag.
+
+    Args:
+        changes: The invalid calendar declaration.
+        message: The field expected in the validation error.
+    """
+    with pytest.raises((TypeError, ValueError), match=message):
+        minimal_snapshot(**changes)
 
 
 @pytest.mark.parametrize("columns", [(), ("time", "time")])

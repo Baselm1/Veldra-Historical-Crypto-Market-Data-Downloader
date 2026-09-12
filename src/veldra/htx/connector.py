@@ -52,7 +52,6 @@ class HTXConnector:
 
     code = "htx"
     products = PRODUCTS
-    archive_day_offset = ARCHIVE_DAY_OFFSET
     max_concurrency = 32
     monthly_datasets: frozenset[str] = frozenset()
 

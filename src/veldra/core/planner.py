@@ -171,7 +171,7 @@ def plan_archives(
     Returns:
         A non-overlapping set of physical archives for the request.
     """
-    offset = getattr(source, "archive_day_offset", timedelta(0))
+    offset = dataset.archive_day_offset
     first, last = requested_days(start, end, offset)
 
     def scan(
@@ -189,6 +189,7 @@ def plan_archives(
             scan_key,
             datetime.combine(scan_start, time.min, UTC) - offset,
             datetime.combine(scan_end + timedelta(days=1), time.min, UTC) - offset,
+            dataset=dataset,
             active=True if monthly else active,
             refresh=refresh,
             offline=offline,

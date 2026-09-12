@@ -2,6 +2,7 @@
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import timedelta
 from types import MappingProxyType
 from typing import Literal
 
@@ -91,6 +92,7 @@ OLD_TRADE_COLUMNS = ("id", "ts", "price", "amount", "direction")
 NEW_TRADE_COLUMNS = ("instId", "tradeId", "px", "side", "size", "ts")
 NEW_REFERENCE_KLINE_COLUMNS = ("instId", "open", "high", "low", "close", "ts")
 NEW_FUNDING_COLUMNS = ("instId", "fundingRate", "fundingTime")
+ARCHIVE_DAY_OFFSET = timedelta(hours=8)
 OLD_LINEAR_TRADE_COLUMNS = (
     "id",
     "ts",
@@ -139,6 +141,7 @@ SPOT_KLINES = DatasetSpec(
         CsvSchema(NEW_KLINE_COLUMNS, "present"),
     ),
     sort_source_rows=True,
+    archive_day_offset=ARCHIVE_DAY_OFFSET,
 )
 SPOT_TRADES = DatasetSpec(
     product="spot",
@@ -168,6 +171,7 @@ SPOT_TRADES = DatasetSpec(
         CsvSchema(NEW_TRADE_COLUMNS, "present"),
     ),
     sort_source_rows=True,
+    archive_day_offset=ARCHIVE_DAY_OFFSET,
 )
 
 
@@ -210,6 +214,7 @@ def _perpetual_klines(product: str) -> DatasetSpec:
             CsvSchema(NEW_KLINE_COLUMNS, "present"),
         ),
         sort_source_rows=True,
+        archive_day_offset=ARCHIVE_DAY_OFFSET,
     )
 
 
@@ -255,6 +260,7 @@ def _perpetual_trades(product: str) -> DatasetSpec:
             CsvSchema(NEW_TRADE_COLUMNS, "present"),
         ),
         sort_source_rows=True,
+        archive_day_offset=ARCHIVE_DAY_OFFSET,
     )
 
 
@@ -295,6 +301,7 @@ def _reference_klines(product: str, name: str) -> DatasetSpec:
         integer_columns=("sample_count",),
         archive_symbol_attribute="pair",
         sort_source_rows=True,
+        archive_day_offset=ARCHIVE_DAY_OFFSET,
     )
 
 
@@ -320,6 +327,7 @@ def _funding_rates() -> DatasetSpec:
         timestamp_columns=("funding_time",),
         archive_symbol_attribute="pair",
         sort_source_rows=True,
+        archive_day_offset=ARCHIVE_DAY_OFFSET,
     )
 
 
@@ -357,6 +365,7 @@ def _order_book_updates(product: str) -> DatasetSpec:
         integer_columns=("event_number", "level_number"),
         string_columns=("action", "side"),
         archive_symbol_attribute="pair",
+        archive_day_offset=ARCHIVE_DAY_OFFSET,
     )
 
 

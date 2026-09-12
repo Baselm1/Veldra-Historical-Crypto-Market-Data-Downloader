@@ -15,7 +15,11 @@ from veldra.core.catalog import Catalog
 from veldra.core.cache import cache_resources, invalid_parquet_paths
 from veldra.core.datasets import DatasetSpec
 from veldra.core.reporting import Reporter, format_range, format_time
-from veldra.core.discovery import discover_resources, requested_days
+from veldra.core.discovery import (
+    latest_published_day,
+    latest_published_end,
+    requested_days,
+)
 from veldra.core.models import (
     Market,
     Message,
@@ -189,7 +193,7 @@ def _missing_resources(
     resources: list[Resource],
     start: datetime,
     end: datetime,
-    offset: timedelta = timedelta(0),
+    dataset: DatasetSpec,
 ) -> list[Message]:
     """Describe requested days absent from a valid source listing.
 
@@ -197,12 +201,12 @@ def _missing_resources(
         resources: The resources found for the request.
         start: The inclusive first requested timestamp.
         end: The exclusive final requested timestamp.
-        offset: The source-local offset used for archive date labels.
+        dataset: The dataset declaring its source-local archive calendar.
 
     Returns:
         One problem for each unavailable daily archive.
     """
-    first, last = requested_days(start, end, offset)
+    first, last = requested_days(start, end, dataset.archive_day_offset)
     available = covered_days(resources)
     return [
         Message(
@@ -219,6 +223,7 @@ def _availability(
     bounds: TimeRange | None,
     active: bool,
     today: date,
+    dataset: DatasetSpec,
 ) -> TimeRange | None:
     """Return timestamp bounds around known daily resource days.
 
@@ -226,6 +231,7 @@ def _availability(
         bounds: The exact first and exclusive last known resource timestamps.
         active: Whether today's date is the dynamic exclusive end.
         today: The current UTC date used as the active exclusive end.
+        dataset: The dataset declaring its publication calendar.
 
     Returns:
         The inclusive start and exclusive end, or ``None`` when empty.
@@ -233,7 +239,7 @@ def _availability(
     if bounds is None:
         return None
     first, last_resource = bounds
-    last = datetime.combine(today, time.min, UTC) if active else last_resource
+    last = latest_published_end(today, dataset) if active else last_resource
     return first, last
 
 
@@ -242,6 +248,7 @@ def _first_resource(
     catalog: Catalog,
     client: httpx.Client,
     key: ResourceKey,
+    dataset: DatasetSpec,
     today: date,
     result: Result,
     reporter: Reporter,
@@ -256,6 +263,7 @@ def _first_resource(
         catalog: The metadata catalog receiving the first resource.
         client: The HTTPX client used for source requests.
         key: The requested source dataset identity.
+        dataset: The requested dataset and its publication calendar.
         today: The current UTC date and exclusive active boundary.
         result: The result receiving discovery failures.
         reporter: The optional Rich activity reporter.
@@ -285,7 +293,7 @@ def _first_resource(
                 client,
                 key,
                 None,
-                today - timedelta(days=1),
+                latest_published_day(today, dataset),
             )
     except Exception as error:
         LOGGER.exception("Earliest resource discovery failed: key=%s", key)
@@ -302,6 +310,7 @@ def _availability_range(
     catalog: Catalog,
     client: httpx.Client,
     key: ResourceKey,
+    dataset: DatasetSpec,
     earliest_date: date | None,
     today: date,
     result: Result,
@@ -319,6 +328,7 @@ def _availability_range(
         catalog: The metadata catalog containing known resources.
         client: The HTTPX client used for source requests.
         key: The requested source dataset identity.
+        dataset: The requested dataset and its publication calendar.
         earliest_date: The optional first configured archive date.
         today: The current UTC day and exclusive active boundary.
         result: The result receiving discovery failures.
@@ -336,6 +346,7 @@ def _availability_range(
         catalog,
         client,
         key,
+        dataset,
         today,
         result,
         reporter,
@@ -345,8 +356,8 @@ def _availability_range(
     if result.errors or first is None:
         return None
     if not active:
-        broad_start = datetime.combine(first.day, time.min, UTC)
-        broad_end = datetime.combine(today, time.min, UTC)
+        broad_start = first.coverage[0]
+        broad_end = latest_published_end(today, dataset)
         resources = _discover(
             source,
             catalog,
@@ -360,13 +371,16 @@ def _availability_range(
             refresh=refresh,
             offline=offline,
             tail_days=tail_days,
+            dataset=dataset,
         )
         if resources is None:
             return None
         bounds = catalog.resource_bounds(key)
         if bounds is not None:
             catalog.save_source_bounds(key, first.day, bounds[1])
-    source_range = _availability(catalog.resource_coverage_bounds(key), active, today)
+    source_range = _availability(
+        catalog.resource_coverage_bounds(key), active, today, dataset
+    )
     if source_range is None:
         return None
     configured_start = (
@@ -387,6 +401,7 @@ def _recent_active_range(
     used_range: tuple[datetime, datetime],
     today: date,
     tail_days: int,
+    dataset: DatasetSpec,
 ) -> bool:
     """Return whether a request overlaps mutable active-market days.
 
@@ -395,14 +410,19 @@ def _recent_active_range(
         used_range: The cleaned timestamp range.
         today: The current UTC day.
         tail_days: The number of recent days that may change.
+        dataset: The dataset declaring its source archive calendar.
 
     Returns:
         True only when recent active resources should be relisted.
     """
     if not active:
         return False
-    _first, last = requested_days(*used_range)
-    return last >= today - timedelta(days=tail_days)
+    _first, last = requested_days(
+        *used_range,
+        dataset.archive_day_offset,
+    )
+    final = latest_published_day(today, dataset)
+    return last >= final - timedelta(days=tail_days - 1)
 
 
 def _clean_range(
@@ -748,7 +768,7 @@ def _discover(
     refresh: bool,
     offline: bool,
     tail_days: int,
-    dataset: DatasetSpec | None = None,
+    dataset: DatasetSpec,
 ) -> list[Resource] | None:
     """Discover one pair's resources while isolating source failures.
 
@@ -765,33 +785,20 @@ def _discover(
         refresh: Whether to repeat complete discovery.
         offline: Whether source access must be skipped.
         tail_days: The recent active-market days to revisit.
+        dataset: The requested dataset and its archive calendar.
 
     Returns:
         The known resources, or ``None`` after an isolated failure.
     """
     try:
-        if dataset is not None:
-            return plan_archives(
-                source,
-                catalog,
-                client,
-                key,
-                start,
-                end,
-                dataset=dataset,
-                active=active,
-                refresh=refresh,
-                offline=offline,
-                tail_days=tail_days,
-                reporter=reporter,
-            )
-        return discover_resources(
+        return plan_archives(
             source,
             catalog,
             client,
             key,
             start,
             end,
+            dataset=dataset,
             active=active,
             refresh=refresh,
             offline=offline,
@@ -893,7 +900,10 @@ def _populate_cached_query(
     Returns:
         ``None`` after a successful query, otherwise the isolated exception.
     """
-    first_day, last_day = requested_days(*used_range)
+    first_day, last_day = requested_days(
+        *used_range,
+        dataset.archive_day_offset,
+    )
     current_resources = catalog_archives_between(catalog, key, *used_range)
     gap_paths = suspect_gap_paths(current_resources, paths, dataset)
     LOGGER.debug(
@@ -1028,7 +1038,10 @@ def _query_with_recovery(
         max_workers=max_workers,
         reporter=reporter,
         executor=ingestion_executor,
-        requested_range=requested_days(*used_range),
+        requested_range=requested_days(
+            *used_range,
+            dataset.archive_day_offset,
+        ),
     )
     result.warnings.extend(recovered.warnings)
     result.problems.extend(recovered.problems)
@@ -1118,6 +1131,7 @@ def process_pair(
         catalog,
         client,
         key,
+        dataset,
         earliest_date,
         today,
         result,
@@ -1142,7 +1156,13 @@ def process_pair(
         used_range[1],
         result,
         display,
-        active=_recent_active_range(active, used_range, today, discovery_tail_days),
+        active=_recent_active_range(
+            active,
+            used_range,
+            today,
+            discovery_tail_days,
+            dataset,
+        ),
         refresh=refresh,
         offline=offline,
         tail_days=discovery_tail_days,
@@ -1166,7 +1186,7 @@ def process_pair(
         _missing_resources(
             requested_resources,
             *used_range,
-            getattr(source, "archive_day_offset", timedelta(0)),
+            dataset,
         )
     )
     coverage = cache_resources(
@@ -1182,7 +1202,10 @@ def process_pair(
         max_workers=max_workers,
         reporter=display,
         executor=ingestion_executor,
-        requested_range=requested_days(*used_range),
+        requested_range=requested_days(
+            *used_range,
+            dataset.archive_day_offset,
+        ),
     )
     result.warnings.extend(coverage.warnings)
     result.problems.extend(coverage.problems)

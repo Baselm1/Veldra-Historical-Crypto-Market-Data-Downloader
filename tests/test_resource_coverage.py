@@ -7,13 +7,23 @@ import duckdb
 import httpx
 
 from veldra.core.catalog import Catalog
-from veldra.core.discovery import discover_resources, requested_days
+from veldra.core.discovery import (
+    discover_resources,
+    latest_published_day,
+    latest_published_end,
+    requested_days,
+)
 from veldra.core.models import Resource, ResourceKey
 from veldra.core.planner import plan_archives, select_archives
-from veldra.core.pair import _missing_resources
+from veldra.core.pair import _availability, _missing_resources
 from veldra.binance.datasets import SPOT_KLINES
 
 KEY = ResourceKey("shifted", "spot", "klines", "BTCUSDT", "1m")
+SHIFTED_KLINES = replace(
+    SPOT_KLINES,
+    archive_day_offset=timedelta(hours=8),
+    publication_delay_days=1,
+)
 
 
 def shifted_resource(day: date) -> Resource:
@@ -40,7 +50,8 @@ class ShiftedSource:
 
     code = "shifted"
     products = ("spot",)
-    archive_day_offset = timedelta(hours=8)
+    # This intentionally disagrees with the dataset. Core planning must ignore it.
+    archive_day_offset = timedelta(hours=-5)
 
     def __init__(self) -> None:
         """Create an empty source-call record."""
@@ -92,6 +103,47 @@ def test_requested_days_can_use_a_source_day_offset() -> None:
     )
 
 
+def test_latest_published_day_uses_dataset_delay() -> None:
+    """Confirm a three-day publication lag excludes unpublished source days."""
+    dataset = replace(SHIFTED_KLINES, publication_delay_days=3)
+
+    assert latest_published_day(date(2025, 1, 10), dataset) == date(2025, 1, 7)
+    assert latest_published_end(date(2025, 1, 10), dataset) == datetime(
+        2025, 1, 7, 16, tzinfo=UTC
+    )
+
+
+def test_active_availability_ends_at_the_published_source_boundary() -> None:
+    """Confirm an active UTC+8 dataset does not claim unpublished UTC hours."""
+    bounds = (
+        datetime(2025, 1, 1, 16, tzinfo=UTC),
+        datetime(2025, 1, 2, 16, tzinfo=UTC),
+    )
+
+    assert _availability(
+        bounds,
+        True,
+        date(2025, 1, 10),
+        SHIFTED_KLINES,
+    ) == (
+        bounds[0],
+        datetime(2025, 1, 9, 16, tzinfo=UTC),
+    )
+
+
+def test_fixed_source_offset_does_not_change_with_daylight_saving() -> None:
+    """Confirm archive labels use a fixed offset in winter and summer."""
+    winter = datetime(2025, 1, 1, 16, tzinfo=UTC)
+    summer = datetime(2025, 7, 1, 16, tzinfo=UTC)
+
+    assert requested_days(winter, winter + timedelta(minutes=1), timedelta(hours=8))[
+        0
+    ] == date(2025, 1, 2)
+    assert requested_days(summer, summer + timedelta(minutes=1), timedelta(hours=8))[
+        0
+    ] == date(2025, 7, 2)
+
+
 def test_catalog_round_trips_and_queries_exact_coverage() -> None:
     """Confirm timestamp overlap selects both shifted files for one UTC day."""
     connection = duckdb.connect()
@@ -123,7 +175,9 @@ def test_discovery_scans_shifted_labels_but_returns_exact_overlap() -> None:
     end = datetime(2025, 1, 2, tzinfo=UTC)
 
     with httpx.Client() as client:
-        found = discover_resources(source, catalog, client, KEY, start, end)
+        found = discover_resources(
+            source, catalog, client, KEY, start, end, dataset=SHIFTED_KLINES
+        )
 
     assert [resource.day for resource in found] == [date(2025, 1, 1), date(2025, 1, 2)]
     connection.close()
@@ -151,7 +205,7 @@ def test_missing_resource_reports_use_source_day_labels() -> None:
     start = datetime(2025, 1, 1, 16, 0, 1, tzinfo=UTC)
     end = datetime(2025, 1, 1, 16, 0, 2, tzinfo=UTC)
 
-    problems = _missing_resources([resource], start, end, timedelta(hours=8))
+    problems = _missing_resources([resource], start, end, SHIFTED_KLINES)
 
     assert problems == []
 
@@ -166,7 +220,7 @@ def test_archive_planner_does_not_apply_source_offset_twice() -> None:
 
     with httpx.Client() as client:
         found = plan_archives(
-            source, catalog, client, KEY, start, end, dataset=SPOT_KLINES
+            source, catalog, client, KEY, start, end, dataset=SHIFTED_KLINES
         )
 
     assert source.calls == [(date(2025, 1, 1), date(2025, 1, 1))]
@@ -181,7 +235,7 @@ def test_archive_planner_applies_dataset_discovery_lookahead() -> None:
     source = ShiftedSource()
     start = datetime(2025, 1, 1, tzinfo=UTC)
     end = datetime(2025, 1, 2, tzinfo=UTC)
-    dataset = replace(SPOT_KLINES, discovery_lookahead_days=1)
+    dataset = replace(SHIFTED_KLINES, discovery_lookahead_days=1)
 
     with httpx.Client() as client:
         found = plan_archives(

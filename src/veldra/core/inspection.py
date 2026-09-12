@@ -13,6 +13,7 @@ from veldra.core.datasets import DatasetSpec
 from veldra.core.discovery import (
     _merge_ranges,
     discover_resources,
+    latest_published_day,
     requested_days,
 )
 from veldra.core.reporting import Reporter
@@ -668,6 +669,7 @@ def _configured_end(
     remote_range: tuple[date, date] | None,
     market: Market,
     today: date,
+    dataset: DatasetSpec,
 ) -> date | None:
     """Return the active policy end or known inactive source end.
 
@@ -675,12 +677,13 @@ def _configured_end(
         remote_range: The inclusive verified or active source bounds.
         market: The market whose activity controls the policy end.
         today: The current UTC day.
+        dataset: The dataset declaring its publication delay.
 
     Returns:
         The configured final day, or ``None`` when it cannot be known.
     """
     if market.active:
-        return today - timedelta(days=1)
+        return latest_published_day(today, dataset)
     return remote_range[1] if remote_range is not None else None
 
 
@@ -689,6 +692,7 @@ def _configured_range(
     earliest_date: date | None,
     market: Market,
     today: date,
+    dataset: DatasetSpec,
 ) -> tuple[date, date] | None:
     """Return the configured policy window beside source availability.
 
@@ -697,12 +701,13 @@ def _configured_range(
         earliest_date: The optional configured first usable day.
         market: The market whose activity controls the policy end.
         today: The current UTC day.
+        dataset: The dataset declaring its publication delay.
 
     Returns:
         Inclusive configured bounds, or ``None`` without a usable policy window.
     """
     start = _configured_start(remote_range, earliest_date)
-    end = _configured_end(remote_range, market, today)
+    end = _configured_end(remote_range, market, today, dataset)
     if start is None or end is None or start > end:
         return None
     return start, end
@@ -738,6 +743,7 @@ def _remote_range(
     key: ResourceKey,
     market: Market,
     today: date,
+    dataset: DatasetSpec,
 ) -> tuple[date, date] | None:
     """Return source bounds without confusing them with bounded discoveries.
 
@@ -746,6 +752,7 @@ def _remote_range(
         key: The exact stored dataset identity.
         market: The market whose current activity controls the final day.
         today: The current UTC day.
+        dataset: The dataset declaring its publication delay.
 
     Returns:
         Inclusive source archive bounds, or ``None`` when no boundary is known.
@@ -755,7 +762,7 @@ def _remote_range(
         return None
     first, final = bounds
     if market.active:
-        final = today - timedelta(days=1)
+        final = latest_published_day(today, dataset)
     elif final is None:
         known = catalog.resource_bounds(key)
         final = known[1] if known is not None else None
@@ -826,12 +833,13 @@ def _availability(
         Immutable known coverage counts and bounds.
     """
     today = utc_today()
-    remote_range = _remote_range(catalog, key, market, today)
+    remote_range = _remote_range(catalog, key, market, today, dataset)
     configured_range = _configured_range(
         remote_range,
         downloader.earliest_date,
         market,
         today,
+        dataset,
     )
     usable_range = None
     if remote_range is not None and configured_range is not None:
@@ -937,6 +945,7 @@ def _source_boundary(
     catalog: Catalog,
     client: httpx.Client,
     key: ResourceKey,
+    dataset: DatasetSpec,
     *,
     refresh: bool,
     progress: bool,
@@ -948,6 +957,7 @@ def _source_boundary(
         catalog: The catalog receiving source boundary metadata.
         client: The HTTPX client used for source requests.
         key: The exact stored dataset identity.
+        dataset: The dataset declaring its publication calendar.
         refresh: Whether to repeat source-boundary discovery.
         progress: Whether to show Rich activity.
     """
@@ -958,7 +968,7 @@ def _source_boundary(
             client,
             key,
             None,
-            utc_today() - timedelta(days=1),
+            latest_published_day(utc_today(), dataset),
         )
     if first is None:
         return
@@ -1042,13 +1052,18 @@ def discover_availability(
                     catalog,
                     client,
                     key,
+                    specification,
                     refresh=selected_refresh,
                     progress=progress,
                 )
-                _first, last = requested_days(request.start, request.end)
-                recent = last >= utc_today() - timedelta(
-                    days=downloader.discovery_tail_days
+                _first, last = requested_days(
+                    request.start,
+                    request.end,
+                    specification.archive_day_offset,
                 )
+                recent = last >= latest_published_day(
+                    utc_today(), specification
+                ) - timedelta(days=downloader.discovery_tail_days - 1)
                 plan_archives(
                     downloader.source,
                     catalog,

@@ -71,7 +71,6 @@ class BinanceConnector:
 
     code: str = "binance"
     products: tuple[str, ...] = ("spot", "um", "cm")
-    archive_day_offset = timedelta(0)
     max_concurrency: int = 64
     monthly_datasets = frozenset(
         {

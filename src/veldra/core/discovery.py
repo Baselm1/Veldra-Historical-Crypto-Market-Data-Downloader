@@ -6,6 +6,7 @@ import logging
 import httpx
 
 from veldra.core.catalog import Catalog, DiscoveryCheckpoint
+from veldra.core.datasets import DatasetSpec
 from veldra.core.reporting import Reporter
 from veldra.core.models import Resource, ResourceKey
 from veldra.core.connector import Connector
@@ -30,6 +31,36 @@ def requested_days(
     if start >= end:
         raise ValueError("resource range must end after it starts")
     return (start + offset).date(), (end - timedelta(microseconds=1) + offset).date()
+
+
+def latest_published_day(today: date, dataset: DatasetSpec) -> date:
+    """Return the latest source-day label expected to be published.
+
+    Args:
+        today: The current UTC calendar date.
+        dataset: The dataset declaring its publication delay.
+
+    Returns:
+        The newest complete source day eligible for discovery.
+    """
+    return today - timedelta(days=dataset.publication_delay_days)
+
+
+def latest_published_end(today: date, dataset: DatasetSpec) -> datetime:
+    """Return the exclusive UTC end of the latest published source day.
+
+    Args:
+        today: The current UTC calendar date.
+        dataset: The dataset declaring its source-day offset and delay.
+
+    Returns:
+        The exact UTC timestamp after the newest publishable archive day.
+    """
+    final_day = latest_published_day(today, dataset)
+    return (
+        datetime.combine(final_day + timedelta(days=1), datetime.min.time(), UTC)
+        - dataset.archive_day_offset
+    )
 
 
 def _validate_resources(
@@ -57,6 +88,7 @@ def discover_resources(
     start: datetime,
     end: datetime,
     *,
+    dataset: DatasetSpec | None = None,
     active: bool = True,
     refresh: bool = False,
     offline: bool = False,
@@ -72,6 +104,7 @@ def discover_resources(
         key: The requested source dataset identity.
         start: The inclusive first requested timestamp.
         end: The exclusive final requested timestamp.
+        dataset: The optional dataset-specific source calendar.
         active: Whether recent source listings may still change.
         refresh: Whether to rescan the complete range explicitly.
         offline: Whether all source access must be skipped.
@@ -81,7 +114,7 @@ def discover_resources(
     Returns:
         All cataloged resources in the requested daily range.
     """
-    offset = getattr(source, "archive_day_offset", timedelta(0))
+    offset = dataset.archive_day_offset if dataset is not None else timedelta(0)
     start_day, end_day = requested_days(start, end, offset)
     if tail_days < 1:
         raise ValueError("tail_days must be positive")
