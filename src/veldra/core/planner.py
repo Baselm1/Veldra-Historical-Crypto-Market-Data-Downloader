@@ -197,7 +197,11 @@ def plan_archives(
         )
 
     if key.dataset not in getattr(source, "monthly_datasets", ()):
-        return scan(key, first, last)
+        return scan(
+            key,
+            first,
+            last + timedelta(days=dataset.discovery_lookahead_days),
+        )
     existing = catalog_archives_between(catalog, key, start, end)
     cached = [r for r in existing if valid_cached_path(r, dataset) is not None]
     month_key = replace(key, cadence="monthly")

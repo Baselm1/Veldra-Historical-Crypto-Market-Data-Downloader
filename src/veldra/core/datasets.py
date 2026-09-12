@@ -201,6 +201,19 @@ def _validate_archive_symbol_attribute(value: str) -> None:
         raise ValueError("dataset archive symbol attribute is unsupported")
 
 
+def _validate_discovery_lookahead(value: object) -> None:
+    """Reject invalid archive discovery lookahead values.
+
+    Args:
+        value: The declared number of following archive days to inspect.
+
+    Raises:
+        ValueError: If the value is not a nonnegative integer.
+    """
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError("dataset discovery lookahead must be a nonnegative integer")
+
+
 @dataclass(frozen=True)
 class CsvSchema:
     """Describe one accepted source CSV layout."""
@@ -245,6 +258,7 @@ class DatasetSpec:
     archive_symbol_attribute: ArchiveSymbolAttribute = "symbol"
     source_schemas: tuple[CsvSchema, ...] = ()
     sort_source_rows: bool = False
+    discovery_lookahead_days: int = 0
 
     def __post_init__(self) -> None:
         """Validate the immutable capability declaration.
@@ -281,6 +295,7 @@ class DatasetSpec:
         )
         _validate_schema_version(self.schema_version)
         _validate_archive_symbol_attribute(self.archive_symbol_attribute)
+        _validate_discovery_lookahead(self.discovery_lookahead_days)
         schemas = self.csv_schemas
         identities = [(schema.columns, schema.header) for schema in schemas]
         if len(identities) != len(set(identities)):

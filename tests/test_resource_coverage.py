@@ -1,5 +1,6 @@
 """Test exact UTC coverage for source-labeled archive days."""
 
+from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 
 import duckdb
@@ -170,4 +171,33 @@ def test_archive_planner_does_not_apply_source_offset_twice() -> None:
 
     assert source.calls == [(date(2025, 1, 1), date(2025, 1, 1))]
     assert [item.day for item in found] == [date(2025, 1, 1)]
+    connection.close()
+
+
+def test_archive_planner_applies_dataset_discovery_lookahead() -> None:
+    """Confirm boundary-sensitive datasets inspect a following archive day."""
+    connection = duckdb.connect()
+    catalog = Catalog(connection)
+    source = ShiftedSource()
+    start = datetime(2025, 1, 1, tzinfo=UTC)
+    end = datetime(2025, 1, 2, tzinfo=UTC)
+    dataset = replace(SPOT_KLINES, discovery_lookahead_days=1)
+
+    with httpx.Client() as client:
+        found = plan_archives(
+            source,
+            catalog,
+            client,
+            KEY,
+            start,
+            end,
+            dataset=dataset,
+        )
+
+    assert source.calls == [(date(2025, 1, 1), date(2025, 1, 3))]
+    assert [item.day for item in found] == [
+        date(2025, 1, 1),
+        date(2025, 1, 2),
+        date(2025, 1, 3),
+    ]
     connection.close()

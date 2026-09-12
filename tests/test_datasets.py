@@ -154,6 +154,18 @@ def test_interval_less_snapshot_capabilities_are_declared_without_a_subclass() -
     assert snapshot.supports_gap_policy is False
     assert snapshot.output_columns == ("event_time", "value")
     assert snapshot.timestamp_columns == ("event_time",)
+    assert snapshot.discovery_lookahead_days == 0
+
+
+@pytest.mark.parametrize("value", [-1, 1.5, True])
+def test_dataset_rejects_an_invalid_discovery_lookahead(value: object) -> None:
+    """Confirm discovery lookahead is a nonnegative whole number.
+
+    Args:
+        value: The invalid capability value.
+    """
+    with pytest.raises(ValueError, match="lookahead"):
+        minimal_snapshot(discovery_lookahead_days=value)
 
 
 def test_dataset_declares_multiple_structural_csv_schemas() -> None:
