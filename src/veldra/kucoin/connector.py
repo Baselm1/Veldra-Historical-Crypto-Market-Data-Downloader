@@ -5,16 +5,20 @@ from dataclasses import replace
 from datetime import UTC, date, datetime, time, timedelta
 import logging
 import math
+from pathlib import Path
 import re
 from urllib.parse import quote
 
 import httpx
 
+from veldra.core.datasets import DatasetSpec
 from veldra.core.download import archive_checksum, get
-from veldra.core.models import Market, Resource, ResourceKey
+from veldra.core.ingest import ingest_archive
+from veldra.core.models import IngestedResource, Market, Resource, ResourceKey
 from veldra.core.portal import pages
 from veldra.core.request import normalize_pair
 from veldra.kucoin.datasets import ArchiveRoute, PRODUCTS, supports
+from veldra.kucoin.processing import normalize_chunk, validate_chunk
 
 LISTING_URL = "https://historical-data.kucoin.com/"
 ARCHIVE_URL = "https://historical-data.kucoin.com"
@@ -158,6 +162,26 @@ class KuCoinConnector:
                     continue
                 return None if day > end_day else self._resource(day, object_key, key)
         return None
+
+    def ingest(
+        self,
+        client: httpx.Client,
+        resource: Resource,
+        dataset: DatasetSpec,
+        destination: Path,
+    ) -> IngestedResource:
+        """Convert one verified KuCoin CSV archive into Parquet."""
+        return ingest_archive(
+            client,
+            resource,
+            dataset,
+            destination,
+            normalizer=normalize_chunk,
+            validator=validate_chunk,
+            timeout=self.timeout,
+            retries=self.retries,
+            backoff=self.backoff,
+        )
 
     def _current_markets(self, client: httpx.Client, product: str) -> dict[str, Market]:
         """Parse one complete current market snapshot."""
