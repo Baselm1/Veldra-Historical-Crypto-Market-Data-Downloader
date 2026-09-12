@@ -380,6 +380,20 @@ class OKXArchiveProvider:
             Materialization and all logical instrument partitions.
         """
         dataset = get_dataset(resource.key.product, resource.key.dataset)
+        if dataset.name in {"order_book_400", "order_book_5000"}:
+            from veldra.okx.orderbook import materialize_order_book
+
+            return materialize_order_book(
+                self.client,
+                resource,
+                dataset,
+                destination,
+                timeout=self.timeout,
+                retries=self.retries,
+                backoff=self.backoff,
+                max_archive_bytes=self.max_archive_bytes,
+                chunk_events=16 if dataset.name == "order_book_400" else 4,
+            )
         if resource.integrity is None:
             raise DataValidationError("OKX archive has no integrity policy")
         start, end = _source_coverage(resource, dataset)

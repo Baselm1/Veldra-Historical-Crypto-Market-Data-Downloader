@@ -211,3 +211,49 @@ class OKX:
         if isinstance(result, Result):
             return result.frame()
         return [item.frame() for item in result]
+
+    def get_order_book_updates(
+        self,
+        pairs: PairInput,
+        start: DateInput,
+        end: DateInput,
+        *,
+        product: Literal["spot", "linear_swap", "inverse_swap"] = "spot",
+        depth: Literal[400, 5000] = 400,
+        columns: ColumnSelection = None,
+        refresh: bool = False,
+        offline: bool = False,
+    ) -> FrameOutput:
+        """Return native historical OKX order-book snapshots and updates.
+
+        Args:
+            pairs: One native instrument or an ordered list.
+            start: Inclusive request start.
+            end: Inclusive date or exclusive timestamp end.
+            product: Spot, linear-swap, or inverse-swap product.
+            depth: Maximum native source depth, 400 or 5000.
+            columns: Optional selected or renamed canonical columns.
+            refresh: Whether current markets must refresh.
+            offline: Whether source access is forbidden.
+
+        Returns:
+            One nested DataFrame or a list matching the input shape.
+        """
+        if isinstance(depth, bool) or depth not in {400, 5000}:
+            raise ValueError("depth must be 400 or 5000")
+        result = self._service.get_results(
+            pairs,
+            start,
+            end,
+            product=product,
+            dataset=f"order_book_{depth}",
+            interval=None,
+            columns=columns,
+            gap_policy=None,
+            transport="specific",
+            refresh=refresh,
+            offline=offline,
+        )
+        if isinstance(result, Result):
+            return result.frame()
+        return [item.frame() for item in result]

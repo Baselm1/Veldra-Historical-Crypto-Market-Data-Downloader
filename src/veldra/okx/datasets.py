@@ -63,6 +63,13 @@ FUNDING_SOURCE_COLUMNS: tuple[str, ...] = (
     "funding_rate",
     "funding_time",
 )
+ORDER_BOOK_SOURCE_COLUMNS: tuple[str, ...] = (
+    "instId",
+    "action",
+    "ts",
+    "bids",
+    "asks",
+)
 
 SPOT_KLINES = DatasetSpec(
     product="spot",
@@ -242,6 +249,45 @@ def _funding_rates(product: str) -> DatasetSpec:
 LINEAR_SWAP_FUNDING = _funding_rates("linear_swap")
 INVERSE_SWAP_FUNDING = _funding_rates("inverse_swap")
 
+
+def _order_book(product: str, depth: int) -> DatasetSpec:
+    """Build one native OKX order-book update declaration.
+
+    Args:
+        product: Spot or perpetual product.
+        depth: Maximum source-book depth.
+
+    Returns:
+        Nested event schema with native level quantities.
+    """
+    return DatasetSpec(
+        product=product,
+        name=f"order_book_{depth}",
+        remote_name=f"module_{4 if depth == 400 else 5}",
+        source_columns=ORDER_BOOK_SOURCE_COLUMNS,
+        stored_columns=("event_time", "event_number", "action", "bids", "asks"),
+        time_column="event_time",
+        base_interval=None,
+        output_intervals=(),
+        aliases=MappingProxyType({}),
+        max_concurrency=4 if depth == 400 else 2,
+        ordering_columns=("event_time", "event_number"),
+        timestamp_columns=("event_time",),
+        integer_columns=("event_number",),
+        string_columns=("action",),
+        object_columns=("bids", "asks"),
+        archive_day_offset=timedelta(0),
+        publication_delay_days=3,
+    )
+
+
+SPOT_ORDER_BOOK_400 = _order_book("spot", 400)
+SPOT_ORDER_BOOK_5000 = _order_book("spot", 5000)
+LINEAR_SWAP_ORDER_BOOK_400 = _order_book("linear_swap", 400)
+LINEAR_SWAP_ORDER_BOOK_5000 = _order_book("linear_swap", 5000)
+INVERSE_SWAP_ORDER_BOOK_400 = _order_book("inverse_swap", 400)
+INVERSE_SWAP_ORDER_BOOK_5000 = _order_book("inverse_swap", 5000)
+
 DATASETS: Mapping[tuple[str, str], DatasetSpec] = MappingProxyType(
     {
         ("spot", "klines"): SPOT_KLINES,
@@ -252,6 +298,12 @@ DATASETS: Mapping[tuple[str, str], DatasetSpec] = MappingProxyType(
         ("inverse_swap", "trades"): INVERSE_SWAP_TRADES,
         ("linear_swap", "funding_rates"): LINEAR_SWAP_FUNDING,
         ("inverse_swap", "funding_rates"): INVERSE_SWAP_FUNDING,
+        ("spot", "order_book_400"): SPOT_ORDER_BOOK_400,
+        ("spot", "order_book_5000"): SPOT_ORDER_BOOK_5000,
+        ("linear_swap", "order_book_400"): LINEAR_SWAP_ORDER_BOOK_400,
+        ("linear_swap", "order_book_5000"): LINEAR_SWAP_ORDER_BOOK_5000,
+        ("inverse_swap", "order_book_400"): INVERSE_SWAP_ORDER_BOOK_400,
+        ("inverse_swap", "order_book_5000"): INVERSE_SWAP_ORDER_BOOK_5000,
     }
 )
 
