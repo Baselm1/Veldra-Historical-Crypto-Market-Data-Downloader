@@ -27,14 +27,15 @@ boundary, and discovers useful archives for the requested range. It does not
 crawl every dataset file for every market.
 
 ```python
-from veldra import Binance, HTX, KuCoin
+from veldra import Binance, HTX, KuCoin, OKX
 
 binance = Binance(data_dir="data/binance")
 htx = HTX(data_dir="data/htx", progress=False)
 kucoin = KuCoin(data_dir="data/kucoin")
+okx = OKX(data_dir="data/okx")
 ```
 
-All three constructors accept the same options:
+All four constructors accept these common options:
 
 | Argument | Default | Meaning |
 | --- | --- | --- |
@@ -42,12 +43,14 @@ All three constructors accept the same options:
 | `config_path` | `None` | Optional TOML settings file |
 | `earliest_date` | `None` | Override the configured history boundary; use `"all"` for full source history |
 | `max_workers` | `32` | Exchange-wide archive worker ceiling |
-| `discovery_tail_days` | `7` | Recent active-market days eligible for repeated discovery |
 | `market_refresh_hours` | `24.0` | Market metadata cache lifetime |
 | `timeout` | `30.0` | Timeout for each HTTP attempt, in seconds |
 | `retries` | `3` | Retries after the first HTTP attempt |
 | `backoff` | `0.5` | Initial exponential retry delay, in seconds |
 | `progress` | `True` | Show Rich status and download progress |
+
+Binance, HTX, and KuCoin also accept `discovery_tail_days`. OKX instead uses
+bounded historical manifests and endpoint-specific rate limiters.
 
 Each facade also exposes four read-only properties:
 

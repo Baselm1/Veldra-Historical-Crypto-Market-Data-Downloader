@@ -717,6 +717,38 @@ class Catalog:
         ).fetchall()
         return [self._archive(row) for row in rows]
 
+    def archives_between(
+        self,
+        source: str,
+        product: str,
+        dataset: str,
+        start_day: date,
+        end_day: date,
+    ) -> list[ArchiveObject]:
+        """Return every known physical archive overlapping source dates.
+
+        Args:
+            source: Historical source identifier.
+            product: Source product identifier.
+            dataset: Historical dataset identifier.
+            start_day: First inclusive source date.
+            end_day: Last inclusive source date.
+
+        Returns:
+            Discovered, ready, failed, and missing objects in source order.
+        """
+        _validate_range(start_day, end_day)
+        rows = self.connection.execute(
+            """
+            SELECT * FROM archive_objects
+            WHERE source = ? AND product = ? AND dataset = ?
+              AND period_start <= ? AND period_end >= ?
+            ORDER BY period_start, period_end, remote_name
+            """,
+            [source, product, dataset, end_day, start_day],
+        ).fetchall()
+        return [self._archive(row) for row in rows]
+
     def mark_archive_failed(self, key: ArchiveKey, error: str) -> None:
         """Record a failed attempt against a known physical archive.
 

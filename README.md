@@ -15,13 +15,14 @@ live market streaming.
 | Binance | ✅ Supported | Spot, USD-M perpetuals, COIN-M perpetuals |
 | HTX | ✅ Supported | Spot, USDT-margined swaps, coin-margined swaps |
 | KuCoin | ✅ Supported | Spot, linear perpetuals, inverse perpetuals |
-| OKX | ⏳ Planned | — |
+| OKX | ✅ Supported | Spot, swaps, Futures, Options, margin history |
 | Upbit | ⏳ Planned | — |
 | Bybit | ⏳ Planned | — |
 | Gate.io | ⏳ Planned | — |
 
-See the [Binance](docs/binance.md), [HTX](docs/htx.md), and
-[KuCoin](docs/kucoin.md) guides for implemented datasets and methods.
+See the [Binance](docs/binance.md), [HTX](docs/htx.md),
+[KuCoin](docs/kucoin.md), and [OKX](docs/okx.md) guides for implemented
+datasets and methods.
 
 ## Why Veldra?
 
@@ -89,8 +90,8 @@ frames = binance.get_trades(
 )
 ```
 
-Progress output is enabled by default. Use `Binance(progress=False)` or
-`HTX(progress=False)`, or `KuCoin(progress=False)` for a silent library call.
+Progress output is enabled by default. Pass `progress=False` to any exchange
+facade for a silent library call.
 
 ## Documentation
 
@@ -98,3 +99,4 @@ Progress output is enabled by default. Use `Binance(progress=False)` or
 - [Binance API and datasets](docs/binance.md)
 - [HTX API and datasets](docs/htx.md)
 - [KuCoin API and datasets](docs/kucoin.md)
+- [OKX API and datasets](docs/okx.md)

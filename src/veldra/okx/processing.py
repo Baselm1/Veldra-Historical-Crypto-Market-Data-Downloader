@@ -453,6 +453,19 @@ class OKXArchiveProvider:
                 max_archive_bytes=self.max_archive_bytes,
                 chunk_events=16 if dataset.name == "order_book_400" else 4,
             )
+        if dataset.name == "legacy_order_book_50":
+            from veldra.okx.legacy_orderbook import materialize_legacy_order_book
+
+            return materialize_legacy_order_book(
+                self.client,
+                resource,
+                dataset,
+                destination,
+                timeout=self.timeout,
+                retries=self.retries,
+                backoff=self.backoff,
+                max_archive_bytes=self.max_archive_bytes,
+            )
         if resource.integrity is None:
             raise DataValidationError("OKX archive has no integrity policy")
         start, end = _source_coverage(resource, dataset)

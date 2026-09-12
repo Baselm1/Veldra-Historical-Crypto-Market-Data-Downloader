@@ -86,6 +86,11 @@ def test_order_book_declarations_keep_nested_native_units() -> None:
     assert spot.max_concurrency == 4
     assert swap.max_concurrency == 2
     assert spot.archive_day_offset.total_seconds() == 0
+    assert get_dataset("linear_futures", "order_book_400").product == ("linear_futures")
+    assert get_dataset("inverse_futures", "order_book_5000").product == (
+        "inverse_futures"
+    )
+    assert get_dataset("options", "order_book_400").product == "options"
 
 
 def test_verified_order_book_streams_to_shared_nested_parquet(tmp_path: Path) -> None:

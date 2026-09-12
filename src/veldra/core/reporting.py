@@ -25,6 +25,18 @@ ProgressCallback = Callable[[date, bool], None]
 LOGGER = logging.getLogger(__name__)
 
 
+def format_source(value: str) -> str:
+    """Format an exchange code while preserving common acronym names.
+
+    Args:
+        value: Internal lowercase exchange code.
+
+    Returns:
+        Human-readable exchange name.
+    """
+    return value.upper() if value.lower() in {"htx", "okx"} else value.title()
+
+
 def format_time(value: datetime | None) -> str:
     """Format one UTC timestamp for a person.
 
@@ -183,7 +195,7 @@ class Reporter:
         """
         noun = "pair" if pair_count == 1 else "pairs"
         self.info(
-            f"{source.title()} {product} {dataset}: {pair_count:,} {noun}, "
+            f"{format_source(source)} {product} {dataset}: {pair_count:,} {noun}, "
             f"{format_range((start, end))}"
         )
 

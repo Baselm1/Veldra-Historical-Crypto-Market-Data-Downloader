@@ -17,7 +17,7 @@ import pandas as pd
 from veldra.core.catalog import Catalog, catalog_lock, open_catalog
 from veldra.core.config import Settings, load_settings
 from veldra.core.datasets import DatasetSpec, DatasetResolver
-from veldra.core.reporting import Reporter
+from veldra.core.reporting import Reporter, format_source
 from veldra.core.models import Market, Result
 from veldra.core.pair import process_pair
 from veldra.core.request import Request, normalize_pair, parse_timestamp
@@ -173,7 +173,9 @@ def _load_markets(
     fresh = bool(markets) and snapshot is not None and snapshot >= cutoff
     should_refresh = not offline and (refresh or not fresh)
     if should_refresh:
-        with reporter.status(f"Refreshing {source.code.title()} {product} markets"):
+        with reporter.status(
+            f"Refreshing {format_source(source.code)} {product} markets"
+        ):
             markets = source.markets(client, product)
         catalog.save_markets(source.code, product, markets)
         LOGGER.info(

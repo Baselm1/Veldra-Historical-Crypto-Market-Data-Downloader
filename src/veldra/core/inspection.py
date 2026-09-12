@@ -16,7 +16,7 @@ from veldra.core.discovery import (
     latest_published_day,
     requested_days,
 )
-from veldra.core.reporting import Reporter
+from veldra.core.reporting import Reporter, format_source
 from veldra.core.engine import (
     RetrievalEngine,
     _load_markets,
@@ -174,7 +174,7 @@ def _load_quote_volumes(
     if not offline and (refresh or not fresh):
         source = cast(_QuoteVolumeSource, downloader.source)
         with reporter.status(
-            f"Refreshing {downloader.source.code.title()} {product} 24-hour volume"
+            f"Refreshing {format_source(downloader.source.code)} {product} 24-hour volume"
         ):
             volumes = source.quote_volumes(client, product)
         catalog.save_quote_volumes(downloader.source.code, product, volumes)

@@ -7,9 +7,17 @@ from typing import Literal
 import httpx
 import pandas as pd
 
-from veldra.core.models import Result
+from veldra.core.models import Availability, Market, Result
 from veldra.core.request import parse_timestamp
 from veldra.okx.chain import OptionChainFilter
+from veldra.okx.inspection import (
+    discover_availability as _discover_availability,
+    find_markets as _find_markets,
+    get_availability as _get_availability,
+    get_contracts as _get_contracts,
+    get_markets as _get_markets,
+    get_option_contracts as _get_option_contracts,
+)
 from veldra.okx.service import OKXService
 from veldra.okx.reports import CacheReport
 
@@ -78,6 +86,234 @@ class OKX:
     def data_dir(self) -> Path:
         """Return the resolved catalog and Parquet root."""
         return self._service.data_dir
+
+    @property
+    def earliest_date(self) -> date | None:
+        """Return the configured earliest usable history date."""
+        return self._service.earliest_date
+
+    @property
+    def max_workers(self) -> int:
+        """Return the maximum number of concurrent archive workers."""
+        return self._service.max_workers
+
+    @property
+    def kline_base_interval(self) -> str:
+        """Return the canonical Kline storage interval."""
+        return "1m"
+
+    def get_markets(
+        self,
+        *,
+        product: Product = "spot",
+        status: str | None = None,
+        active: bool | None = None,
+        quote_asset: str | None = None,
+        sort_by: Literal["symbol", "quote_volume"] = "symbol",
+        limit: int | None = None,
+        refresh: bool = False,
+        offline: bool = False,
+    ) -> list[Market]:
+        """Return OKX instruments matching optional exact filters.
+
+        Args:
+            product: OKX product.
+            status: Optional exact native state.
+            active: Optional active-state filter.
+            quote_asset: Optional exact quote or settlement currency.
+            sort_by: Native symbol or rolling volume ordering.
+            limit: Optional positive maximum result count.
+            refresh: Whether current metadata must refresh.
+            offline: Whether source access is forbidden.
+
+        Returns:
+            Matching immutable product-scoped markets.
+        """
+        return _get_markets(
+            self._service,
+            product=product,
+            status=status,
+            active=active,
+            quote_asset=quote_asset,
+            sort_by=sort_by,
+            limit=limit,
+            refresh=refresh,
+            offline=offline,
+        )
+
+    def find_markets(
+        self,
+        query: str,
+        *,
+        product: Product | None = None,
+        status: str | None = None,
+        active: bool | None = None,
+        quote_asset: str | None = None,
+        limit: int = 10,
+        refresh: bool = False,
+        offline: bool = False,
+    ) -> list[Market]:
+        """Return exact, prefix, and fuzzy OKX instrument matches.
+
+        Args:
+            query: Native or human-formatted instrument text.
+            product: Optional product restriction.
+            status: Optional exact native state.
+            active: Optional active-state filter.
+            quote_asset: Optional exact quote or settlement currency.
+            limit: Positive maximum match count.
+            refresh: Whether current metadata must refresh.
+            offline: Whether source access is forbidden.
+
+        Returns:
+            Ranked matches without automatic substitution.
+        """
+        return _find_markets(
+            self._service,
+            query,
+            product=product,
+            status=status,
+            active=active,
+            quote_asset=quote_asset,
+            limit=limit,
+            refresh=refresh,
+            offline=offline,
+        )
+
+    def get_contracts(
+        self,
+        *,
+        product: Literal["linear_futures", "inverse_futures"],
+        family: str,
+        active: bool | None = None,
+        contract_style: Literal["normal", "xperp", "pre_market_xperp"] | None = None,
+        refresh: bool = False,
+        offline: bool = False,
+    ) -> list[Market]:
+        """Return current dated Futures contracts for one family.
+
+        Args:
+            product: Linear- or inverse-margined Futures product.
+            family: Exact native instrument family.
+            active: Optional active-state filter.
+            contract_style: Optional normal or X-Perp style.
+            refresh: Whether current metadata must refresh.
+            offline: Whether source access is forbidden.
+
+        Returns:
+            Matching current Futures contracts.
+        """
+        return _get_contracts(
+            self._service,
+            product=product,
+            family=family,
+            active=active,
+            contract_style=contract_style,
+            refresh=refresh,
+            offline=offline,
+        )
+
+    def get_option_contracts(
+        self,
+        *,
+        family: str,
+        expiry: DateInput | None = None,
+        option_type: Literal["call", "put"] | None = None,
+        strike_min: float | None = None,
+        strike_max: float | None = None,
+        active: bool | None = None,
+        refresh: bool = False,
+        offline: bool = False,
+    ) -> list[Market]:
+        """Return current Option contracts matching contract terms.
+
+        Args:
+            family: Exact native Option family.
+            expiry: Optional exact expiry date.
+            option_type: Optional call or put filter.
+            strike_min: Optional inclusive minimum strike.
+            strike_max: Optional inclusive maximum strike.
+            active: Optional active-state filter.
+            refresh: Whether current metadata must refresh.
+            offline: Whether source access is forbidden.
+
+        Returns:
+            Matching current Option contracts.
+        """
+        return _get_option_contracts(
+            self._service,
+            family=family,
+            expiry=expiry,
+            option_type=option_type,
+            strike_min=strike_min,
+            strike_max=strike_max,
+            active=active,
+            refresh=refresh,
+            offline=offline,
+        )
+
+    def get_availability(
+        self,
+        pair: str,
+        *,
+        product: Product,
+        dataset: str,
+        interval: str | None = None,
+    ) -> Availability:
+        """Return already-cataloged archive and local coverage.
+
+        Args:
+            pair: Native instrument or margin currency.
+            product: OKX product.
+            dataset: Archive-backed dataset.
+            interval: Optional Kline output interval.
+
+        Returns:
+            Known coverage without a network request.
+        """
+        return _get_availability(
+            self._service,
+            pair,
+            product=product,
+            dataset=dataset,
+            interval=interval,
+        )
+
+    def discover_availability(
+        self,
+        pair: str,
+        start: DateInput,
+        end: DateInput,
+        *,
+        product: Product,
+        dataset: str,
+        interval: str | None = None,
+        refresh: bool = False,
+    ) -> Availability:
+        """Discover bounded archive coverage without downloading files.
+
+        Args:
+            pair: Native instrument or margin currency.
+            start: Inclusive UTC request start.
+            end: Inclusive date or exclusive timestamp end.
+            product: OKX product.
+            dataset: Archive-backed dataset.
+            interval: Optional Kline output interval.
+            refresh: Whether current market metadata must refresh.
+
+        Returns:
+            Updated known archive and local coverage.
+        """
+        return _discover_availability(
+            self._service,
+            pair,
+            start,
+            end,
+            product=product,
+            dataset=dataset,
+            interval=interval,
+            refresh=refresh,
+        )
 
     def get_klines(
         self,
@@ -177,7 +413,9 @@ class OKX:
         start: DateInput,
         end: DateInput,
         *,
-        product: Literal["linear_swap", "inverse_swap"],
+        product: Literal[
+            "linear_swap", "inverse_swap", "linear_futures", "inverse_futures"
+        ],
         columns: ColumnSelection = None,
         transport: Transport = "auto",
         refresh: bool = False,
@@ -186,10 +424,10 @@ class OKX:
         """Return actual OKX perpetual funding-rate observations.
 
         Args:
-            pairs: One native swap instrument or an ordered list.
+            pairs: One native swap or X-Perp instrument, or an ordered list.
             start: Inclusive request start.
             end: Inclusive date or exclusive timestamp end.
-            product: Linear- or inverse-margined swap product.
+            product: Linear- or inverse-margined swap or Futures product.
             columns: Optional selected or renamed canonical columns.
             transport: Automatic, specific, or bulk archive selection.
             refresh: Whether current markets must refresh.
@@ -253,7 +491,14 @@ class OKX:
         start: DateInput,
         end: DateInput,
         *,
-        product: Literal["spot", "linear_swap", "inverse_swap"] = "spot",
+        product: Literal[
+            "spot",
+            "linear_swap",
+            "inverse_swap",
+            "linear_futures",
+            "inverse_futures",
+            "options",
+        ] = "spot",
         depth: Literal[400, 5000] = 400,
         columns: ColumnSelection = None,
         refresh: bool = False,
@@ -265,7 +510,7 @@ class OKX:
             pairs: One native instrument or an ordered list.
             start: Inclusive request start.
             end: Inclusive date or exclusive timestamp end.
-            product: Spot, linear-swap, or inverse-swap product.
+            product: Spot, swap, dated Futures, or Options product.
             depth: Maximum native source depth, 400 or 5000.
             columns: Optional selected or renamed canonical columns.
             refresh: Whether current markets must refresh.
@@ -282,6 +527,55 @@ class OKX:
             end,
             product=product,
             dataset=f"order_book_{depth}",
+            interval=None,
+            columns=columns,
+            gap_policy=None,
+            transport="specific",
+            refresh=refresh,
+            offline=offline,
+        )
+        if isinstance(result, Result):
+            return result.frame()
+        return [item.frame() for item in result]
+
+    def get_legacy_order_book_50(
+        self,
+        pairs: PairInput,
+        start: DateInput,
+        end: DateInput,
+        *,
+        product: Literal[
+            "spot",
+            "linear_swap",
+            "inverse_swap",
+            "linear_futures",
+            "inverse_futures",
+            "options",
+        ] = "spot",
+        columns: ColumnSelection = None,
+        refresh: bool = False,
+        offline: bool = False,
+    ) -> FrameOutput:
+        """Return deprecated module 6 level-50 snapshots explicitly.
+
+        Args:
+            pairs: One native instrument or an ordered instrument list.
+            start: Inclusive request start.
+            end: Inclusive date or exclusive timestamp end.
+            product: Spot, swap, Futures, or Options product.
+            columns: Optional selected or renamed canonical columns.
+            refresh: Whether current instruments must refresh.
+            offline: Whether source access is forbidden.
+
+        Returns:
+            One nested snapshot frame or a list matching the input shape.
+        """
+        result = self._service.get_results(
+            pairs,
+            start,
+            end,
+            product=product,
+            dataset="legacy_order_book_50",
             interval=None,
             columns=columns,
             gap_policy=None,
@@ -356,7 +650,9 @@ class OKX:
         start: DateInput,
         end: DateInput,
         *,
-        product: Literal["linear_swap", "inverse_swap"],
+        product: Literal[
+            "linear_swap", "inverse_swap", "linear_futures", "inverse_futures"
+        ],
         instruments: Literal["all"] = "all",
         dry_run: bool = False,
         refresh: bool = False,
@@ -367,7 +663,7 @@ class OKX:
         Args:
             start: Inclusive request start.
             end: Inclusive date or exclusive timestamp end.
-            product: Linear- or inverse-margined swap product.
+            product: Linear- or inverse-margined swap or Futures product.
             instruments: The required all-market selection.
             dry_run: Whether to return the physical plan without downloading.
             refresh: Whether current markets must refresh.
@@ -381,6 +677,44 @@ class OKX:
             end,
             product,
             "funding_rates",
+            instruments,
+            dry_run,
+            refresh,
+            offline,
+        )
+
+    def cache_dataset(
+        self,
+        start: DateInput,
+        end: DateInput,
+        *,
+        product: Product,
+        dataset: str,
+        instruments: Literal["all"] = "all",
+        dry_run: bool = False,
+        refresh: bool = False,
+        offline: bool = False,
+    ) -> CacheReport:
+        """Cache one bulk-capable archive dataset without returning its rows.
+
+        Args:
+            start: Inclusive request start.
+            end: Inclusive date or exclusive timestamp end.
+            product: OKX product.
+            dataset: Bulk-capable archive dataset.
+            instruments: The required all-market selection.
+            dry_run: Whether to plan without downloading.
+            refresh: Whether current markets must refresh.
+            offline: Whether source access is forbidden.
+
+        Returns:
+            Physical plan and local cache totals.
+        """
+        return self._cache_all(
+            start,
+            end,
+            product,
+            dataset,
             instruments,
             dry_run,
             refresh,

@@ -13,6 +13,7 @@ from rich.console import Console
 from veldra.core.reporting import (
     Reporter,
     format_range,
+    format_source,
     format_time,
 )
 from veldra.core.models import Market, Message, Result
@@ -120,6 +121,20 @@ def test_format_range_explains_its_exclusive_end() -> None:
         "2025-01-01 UTC to 2025-01-02 UTC (end exclusive)"
     )
     assert format_range(None) == "Not available"
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [("binance", "Binance"), ("htx", "HTX"), ("okx", "OKX")],
+)
+def test_format_source_preserves_exchange_acronyms(source: str, expected: str) -> None:
+    """Confirm acronym exchange names are not rendered as ordinary words.
+
+    Args:
+        source: Internal source code.
+        expected: Human-readable exchange name.
+    """
+    assert format_source(source) == expected
 
 
 def test_reporter_lines_are_colored_and_market_counts_are_sorted() -> None:

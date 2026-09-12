@@ -157,6 +157,40 @@ def test_archive_failures_require_discovery_and_clear_ready_state(
         )
 
 
+def test_catalog_returns_every_known_archive_state_in_a_range(
+    catalog: Catalog,
+) -> None:
+    """Confirm coverage inspection can see discovered and failed objects."""
+    discovered = archive()
+    later_key = ArchiveKey(
+        "okx",
+        "spot",
+        "klines",
+        "archive",
+        "instrument",
+        "BTC-USDT",
+        "daily",
+        date(2025, 1, 2),
+        date(2025, 1, 2),
+        "BTC-USDT-2025-01-02.zip",
+    )
+    failed = ArchiveObject(later_key, "https://signed.example/two")
+    catalog.save_archives([discovered, failed])
+    catalog.mark_archive_failed(later_key, "source failure")
+
+    found = catalog.archives_between(
+        "okx", "spot", "klines", date(2025, 1, 1), date(2025, 1, 2)
+    )
+
+    assert [item.status for item in found] == ["discovered", "failed"]
+    assert (
+        catalog.archives_between(
+            "okx", "spot", "klines", date(2025, 1, 3), date(2025, 1, 4)
+        )
+        == []
+    )
+
+
 def test_one_materialization_publishes_many_queryable_partitions(
     catalog: Catalog, tmp_path: Path
 ) -> None:

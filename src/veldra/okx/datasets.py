@@ -296,6 +296,8 @@ def _funding_rates(product: str) -> DatasetSpec:
 
 LINEAR_SWAP_FUNDING = _funding_rates("linear_swap")
 INVERSE_SWAP_FUNDING = _funding_rates("inverse_swap")
+LINEAR_FUTURES_FUNDING = _funding_rates("linear_futures")
+INVERSE_FUTURES_FUNDING = _funding_rates("inverse_futures")
 
 MARGIN_BORROW_RATES = DatasetSpec(
     product="margin",
@@ -353,8 +355,57 @@ LINEAR_SWAP_ORDER_BOOK_400 = _order_book("linear_swap", 400)
 LINEAR_SWAP_ORDER_BOOK_5000 = _order_book("linear_swap", 5000)
 INVERSE_SWAP_ORDER_BOOK_400 = _order_book("inverse_swap", 400)
 INVERSE_SWAP_ORDER_BOOK_5000 = _order_book("inverse_swap", 5000)
+LINEAR_FUTURES_ORDER_BOOK_400 = _order_book("linear_futures", 400)
+LINEAR_FUTURES_ORDER_BOOK_5000 = _order_book("linear_futures", 5000)
+INVERSE_FUTURES_ORDER_BOOK_400 = _order_book("inverse_futures", 400)
+INVERSE_FUTURES_ORDER_BOOK_5000 = _order_book("inverse_futures", 5000)
 OPTIONS_ORDER_BOOK_400 = _order_book("options", 400)
 OPTIONS_ORDER_BOOK_5000 = _order_book("options", 5000)
+
+
+def _legacy_order_book(product: str) -> DatasetSpec:
+    """Build one explicit legacy level-50 snapshot declaration.
+
+    Args:
+        product: Spot or derivative product.
+
+    Returns:
+        Versioned nested snapshot schema for OKX module 6.
+    """
+    return DatasetSpec(
+        product=product,
+        name="legacy_order_book_50",
+        remote_name="module_6",
+        source_columns=("timeMs", "exchTimeMs", "symbol"),
+        stored_columns=(
+            "event_time",
+            "exchange_time",
+            "event_number",
+            "bids",
+            "asks",
+        ),
+        time_column="event_time",
+        base_interval=None,
+        output_intervals=(),
+        aliases=MappingProxyType({}),
+        max_concurrency=1,
+        csv_header="present",
+        ordering_columns=("event_time", "event_number"),
+        timestamp_columns=("event_time", "exchange_time"),
+        integer_columns=("event_number",),
+        object_columns=("bids", "asks"),
+        archive_day_offset=timedelta(0),
+        publication_delay_days=3,
+        schema_version=1,
+    )
+
+
+SPOT_LEGACY_ORDER_BOOK_50 = _legacy_order_book("spot")
+LINEAR_SWAP_LEGACY_ORDER_BOOK_50 = _legacy_order_book("linear_swap")
+INVERSE_SWAP_LEGACY_ORDER_BOOK_50 = _legacy_order_book("inverse_swap")
+LINEAR_FUTURES_LEGACY_ORDER_BOOK_50 = _legacy_order_book("linear_futures")
+INVERSE_FUTURES_LEGACY_ORDER_BOOK_50 = _legacy_order_book("inverse_futures")
+OPTIONS_LEGACY_ORDER_BOOK_50 = _legacy_order_book("options")
 
 DATASETS: Mapping[tuple[str, str], DatasetSpec] = MappingProxyType(
     {
@@ -366,6 +417,8 @@ DATASETS: Mapping[tuple[str, str], DatasetSpec] = MappingProxyType(
         ("inverse_swap", "trades"): INVERSE_SWAP_TRADES,
         ("linear_swap", "funding_rates"): LINEAR_SWAP_FUNDING,
         ("inverse_swap", "funding_rates"): INVERSE_SWAP_FUNDING,
+        ("linear_futures", "funding_rates"): LINEAR_FUTURES_FUNDING,
+        ("inverse_futures", "funding_rates"): INVERSE_FUTURES_FUNDING,
         ("margin", "borrow_rates"): MARGIN_BORROW_RATES,
         ("linear_futures", "klines"): LINEAR_FUTURES_KLINES,
         ("linear_futures", "trades"): LINEAR_FUTURES_TRADES,
@@ -379,8 +432,42 @@ DATASETS: Mapping[tuple[str, str], DatasetSpec] = MappingProxyType(
         ("linear_swap", "order_book_5000"): LINEAR_SWAP_ORDER_BOOK_5000,
         ("inverse_swap", "order_book_400"): INVERSE_SWAP_ORDER_BOOK_400,
         ("inverse_swap", "order_book_5000"): INVERSE_SWAP_ORDER_BOOK_5000,
+        (
+            "linear_futures",
+            "order_book_400",
+        ): LINEAR_FUTURES_ORDER_BOOK_400,
+        (
+            "linear_futures",
+            "order_book_5000",
+        ): LINEAR_FUTURES_ORDER_BOOK_5000,
+        (
+            "inverse_futures",
+            "order_book_400",
+        ): INVERSE_FUTURES_ORDER_BOOK_400,
+        (
+            "inverse_futures",
+            "order_book_5000",
+        ): INVERSE_FUTURES_ORDER_BOOK_5000,
         ("options", "order_book_400"): OPTIONS_ORDER_BOOK_400,
         ("options", "order_book_5000"): OPTIONS_ORDER_BOOK_5000,
+        ("spot", "legacy_order_book_50"): SPOT_LEGACY_ORDER_BOOK_50,
+        (
+            "linear_swap",
+            "legacy_order_book_50",
+        ): LINEAR_SWAP_LEGACY_ORDER_BOOK_50,
+        (
+            "inverse_swap",
+            "legacy_order_book_50",
+        ): INVERSE_SWAP_LEGACY_ORDER_BOOK_50,
+        (
+            "linear_futures",
+            "legacy_order_book_50",
+        ): LINEAR_FUTURES_LEGACY_ORDER_BOOK_50,
+        (
+            "inverse_futures",
+            "legacy_order_book_50",
+        ): INVERSE_FUTURES_LEGACY_ORDER_BOOK_50,
+        ("options", "legacy_order_book_50"): OPTIONS_LEGACY_ORDER_BOOK_50,
     }
 )
 

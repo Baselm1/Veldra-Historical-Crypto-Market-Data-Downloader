@@ -26,12 +26,15 @@ def funding_frame(**changes: object) -> pd.DataFrame:
     return pd.DataFrame(values, columns=FUNDING_SOURCE_COLUMNS)
 
 
-@pytest.mark.parametrize("product", ["linear_swap", "inverse_swap"])
+@pytest.mark.parametrize(
+    "product",
+    ["linear_swap", "inverse_swap", "linear_futures", "inverse_futures"],
+)
 def test_funding_preserves_actual_irregular_timestamps(product: str) -> None:
     """Confirm no fixed funding interval is synthesized.
 
     Args:
-        product: Linear or inverse perpetual product.
+        product: Linear or inverse swap or X-Perp Futures product.
     """
     frame = normalize_funding_rates(
         funding_frame(), get_dataset(product, "funding_rates")
