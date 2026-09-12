@@ -1,6 +1,7 @@
 """Normalize and validate KuCoin CSV archives with Arrow."""
 
 from datetime import UTC, date, datetime, time, timedelta
+import math
 from typing import Any, cast
 
 import pyarrow as pa
@@ -129,6 +130,55 @@ def _normalize_futures_klines(table: Any, dataset: DatasetSpec) -> Any:
     return pa.table({column: values[column] for column in dataset.stored_columns})
 
 
+def _contract_size(value: float | None) -> float:
+    """Return a positive finite KuCoin contract multiplier."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise DataValidationError("KuCoin contract multiplier is unavailable")
+    size = abs(float(value))
+    if not math.isfinite(size) or size <= 0:
+        raise DataValidationError("KuCoin contract multiplier must be positive")
+    return size
+
+
+def _normalize_futures_trades(
+    table: Any, dataset: DatasetSpec, contract_size: float | None
+) -> Any:
+    """Convert KuCoin perpetual trades with explicit quantity units."""
+    if tuple(table.column_names) != dataset.source_columns:
+        raise DataValidationError("CSV does not match a KuCoin Futures trade schema")
+    multiplier = _contract_size(contract_size)
+    price = _number(table["price"], "price")
+    contracts = _number(table["size"], "contract_quantity")
+    values = {
+        "event_time": _epoch(table["trade_time"], "event_time", "ms"),
+        "trade_id": pc.utf8_trim_whitespace(pc.cast(table["trade_id"], pa.string())),
+        "price": price,
+        "contract_quantity": contracts,
+        "side": _text(table["side"], "side"),
+    }
+    if values["trade_id"].null_count:
+        raise DataValidationError("invalid trade_id value")
+    _reject(pc.equal(values["trade_id"], ""), "invalid trade_id value")
+    if dataset.product == "inverse_futures":
+        values["quote_notional"] = pc.multiply(contracts, multiplier)
+        values["base_quantity"] = pc.divide(values["quote_notional"], price)
+    else:
+        values["base_quantity"] = pc.multiply(contracts, multiplier)
+        values["quote_quantity"] = pc.multiply(values["base_quantity"], price)
+    return pa.table({column: values[column] for column in dataset.stored_columns})
+
+
+def _normalize_funding_rates(table: Any, dataset: DatasetSpec) -> Any:
+    """Convert KuCoin funding observations into point-in-time canonical rows."""
+    if tuple(table.column_names) != dataset.source_columns:
+        raise DataValidationError("CSV does not match a KuCoin funding-rate schema")
+    values = {
+        "funding_time": _epoch(table["time"], "funding_time", "ms"),
+        "funding_rate": _number(table["fundingRate"], "funding_rate"),
+    }
+    return pa.table({column: values[column] for column in dataset.stored_columns})
+
+
 def normalize_chunk(
     table: Any, dataset: DatasetSpec, contract_size: float | None = None
 ) -> Any:
@@ -152,6 +202,16 @@ def normalize_chunk(
         "mark_price_klines",
     }:
         return _normalize_futures_klines(table, dataset)
+    if (
+        dataset.product in {"linear_futures", "inverse_futures"}
+        and dataset.name == "trades"
+    ):
+        return _normalize_futures_trades(table, dataset, contract_size)
+    if (
+        dataset.product in {"linear_futures", "inverse_futures"}
+        and dataset.name == "funding_rates"
+    ):
+        return _normalize_funding_rates(table, dataset)
     raise ValueError(f"unsupported normalizer: {dataset.product}/{dataset.name}")
 
 
@@ -236,8 +296,9 @@ def _validate_ohlc(table: Any, dataset: DatasetSpec) -> None:
 def _validate_trades(table: Any) -> None:
     """Validate KuCoin trade prices, quantities, identifiers, and sides."""
     _reject(pc.less_equal(table["price"], 0), "trade price must be positive")
-    for column in ("base_quantity", "quote_quantity"):
-        _reject(pc.less(table[column], 0), "trade quantities must be nonnegative")
+    for column in table.column_names:
+        if column.endswith(("quantity", "notional")):
+            _reject(pc.less(table[column], 0), "trade quantities must be nonnegative")
     _reject(
         pc.invert(pc.is_in(table["side"], value_set=pa.array(["buy", "sell"]))),
         "trade side must be buy or sell",
@@ -267,7 +328,14 @@ def validate_chunk(
         dataset.product == "spot" and dataset.name in {"klines", "trades"}
     ) or (
         dataset.product in {"linear_futures", "inverse_futures"}
-        and dataset.name in {"klines", "index_price_klines", "mark_price_klines"}
+        and dataset.name
+        in {
+            "klines",
+            "index_price_klines",
+            "mark_price_klines",
+            "trades",
+            "funding_rates",
+        }
     )
     if not supported:
         raise ValueError(f"unsupported validator: {dataset.product}/{dataset.name}")
@@ -276,6 +344,6 @@ def validate_chunk(
     last = _validate_times(table, dataset, day, previous_timestamp, end_day)
     if dataset.name.endswith("klines"):
         _validate_ohlc(table, dataset)
-    else:
+    elif dataset.name == "trades":
         _validate_trades(table)
     return last
