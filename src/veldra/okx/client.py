@@ -439,13 +439,18 @@ class OKXClient:
         return cast(list[dict[str, object]], data)
 
     def get_instruments(
-        self, inst_type: str, *, inst_id: str | None = None
+        self,
+        inst_type: str,
+        *,
+        inst_id: str | None = None,
+        inst_family: str | None = None,
     ) -> list[dict[str, object]]:
         """Return current instruments of one native OKX type.
 
         Args:
             inst_type: Native `SPOT`, `MARGIN`, `SWAP`, `FUTURES`, or `OPTION`.
             inst_id: Optional exact native instrument ID.
+            inst_family: Required family filter for Options.
 
         Returns:
             Current public instrument records.
@@ -454,12 +459,44 @@ class OKXClient:
         params = {"instType": native}
         if inst_id:
             params["instId"] = inst_id
+        if inst_family:
+            params["uly" if native == "OPTION" else "instFamily"] = inst_family
+        if native == "OPTION" and not inst_family:
+            raise ValueError("OPTION instruments require inst_family")
         data = self.request(
             "/api/v5/public/instruments",
             policy_key=f"instruments:{native}",
             params=params,
         )
         return self._rows(data, "instrument")
+
+    def get_underlyings(self, inst_type: str) -> list[str]:
+        """Return native derivative underlyings for one instrument type.
+
+        Args:
+            inst_type: Native derivative instrument type.
+
+        Returns:
+            Flattened native underlying or family names.
+        """
+        native = _instrument_type(inst_type)
+        if native not in {"SWAP", "FUTURES", "OPTION"}:
+            raise ValueError("underlyings require SWAP, FUTURES, or OPTION")
+        data = self.request(
+            "/api/v5/public/underlying",
+            policy_key=f"instruments:{native}",
+            params={"instType": native},
+        )
+        values: list[str] = []
+        for group in data:
+            if not isinstance(group, list) or not all(
+                isinstance(item, str) and item for item in group
+            ):
+                raise OKXResponseError(
+                    "invalid_data", "underlying rows must contain strings"
+                )
+            values.extend(cast(list[str], group))
+        return values
 
     def get_tickers(self, inst_type: str) -> list[dict[str, object]]:
         """Return current tickers of one native OKX type.
