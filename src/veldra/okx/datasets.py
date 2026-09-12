@@ -50,6 +50,14 @@ KLINE_SOURCE_COLUMNS: tuple[str, ...] = (
     "open_time",
     "confirm",
 )
+TRADE_SOURCE_COLUMNS: tuple[str, ...] = (
+    "instrument_name",
+    "trade_id",
+    "side",
+    "price",
+    "size",
+    "created_time",
+)
 
 SPOT_KLINES = DatasetSpec(
     product="spot",
@@ -81,8 +89,36 @@ SPOT_KLINES = DatasetSpec(
     publication_delay_days=2,
 )
 
+SPOT_TRADES = DatasetSpec(
+    product="spot",
+    name="trades",
+    remote_name="module_1",
+    source_columns=TRADE_SOURCE_COLUMNS,
+    stored_columns=(
+        "event_time",
+        "trade_id",
+        "price",
+        "base_quantity",
+        "quote_quantity",
+        "side",
+    ),
+    time_column="event_time",
+    base_interval=None,
+    output_intervals=(),
+    aliases=MappingProxyType({}),
+    max_concurrency=16,
+    csv_header="present",
+    ordering_columns=("event_time", "trade_id"),
+    timestamp_columns=("event_time",),
+    integer_columns=("trade_id",),
+    string_columns=("side",),
+    sort_source_rows=True,
+    archive_day_offset=timedelta(hours=8),
+    publication_delay_days=2,
+)
+
 DATASETS: Mapping[tuple[str, str], DatasetSpec] = MappingProxyType(
-    {("spot", "klines"): SPOT_KLINES}
+    {("spot", "klines"): SPOT_KLINES, ("spot", "trades"): SPOT_TRADES}
 )
 
 

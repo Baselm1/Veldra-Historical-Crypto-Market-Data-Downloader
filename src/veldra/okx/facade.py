@@ -123,3 +123,47 @@ class OKX:
         if isinstance(result, Result):
             return result.frame()
         return [item.frame() for item in result]
+
+    def get_trades(
+        self,
+        pairs: PairInput,
+        start: DateInput,
+        end: DateInput,
+        *,
+        product: Product = "spot",
+        columns: ColumnSelection = None,
+        transport: Transport = "auto",
+        refresh: bool = False,
+        offline: bool = False,
+    ) -> FrameOutput:
+        """Return OKX individual trades for one or several instruments.
+
+        Args:
+            pairs: One native instrument or an ordered instrument list.
+            start: Inclusive request start.
+            end: Inclusive date or exclusive timestamp end.
+            product: OKX product.
+            columns: Optional selected or renamed canonical columns.
+            transport: Automatic, specific, or bulk archive selection.
+            refresh: Whether current markets must refresh.
+            offline: Whether source access is forbidden.
+
+        Returns:
+            One DataFrame or a list matching the input shape.
+        """
+        result = self._service.get_results(
+            pairs,
+            start,
+            end,
+            product=product,
+            dataset="trades",
+            interval=None,
+            columns=columns,
+            gap_policy=None,
+            transport=transport,
+            refresh=refresh,
+            offline=offline,
+        )
+        if isinstance(result, Result):
+            return result.frame()
+        return [item.frame() for item in result]

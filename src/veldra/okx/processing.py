@@ -120,6 +120,76 @@ def normalize_klines(frame: pd.DataFrame, dataset: DatasetSpec) -> pd.DataFrame:
     )
 
 
+def normalize_trades(frame: pd.DataFrame, dataset: DatasetSpec) -> pd.DataFrame:
+    """Return canonical individual trades from an OKX module 1 CSV.
+
+    Args:
+        frame: Source CSV rows.
+        dataset: Product-specific trade declaration.
+
+    Returns:
+        Sorted events retaining native instrument predicates and explicit units.
+    """
+    if tuple(frame.columns) != dataset.source_columns:
+        raise DataValidationError("CSV does not match the OKX trade schema")
+    if frame.empty:
+        raise DataValidationError("OKX trade CSV cannot be empty")
+    instruments = frame["instrument_name"].astype("string").str.strip()
+    sides = frame["side"].astype("string").str.strip().str.lower()
+    if instruments.isna().any() or instruments.eq("").any():
+        raise DataValidationError("OKX instrument_name cannot be empty")
+    if not sides.isin(["buy", "sell"]).all():
+        raise DataValidationError("OKX trade side must be buy or sell")
+    _numbers(frame, ("price", "size"))
+    try:
+        identifiers = pd.to_numeric(frame["trade_id"], errors="raise")
+        times = pd.to_datetime(
+            pd.to_numeric(frame["created_time"], errors="raise"), unit="ms", utc=True
+        )
+    except (TypeError, ValueError) as error:
+        raise DataValidationError("invalid OKX trade ID or timestamp") from error
+    if not identifiers.mod(1).eq(0).all() or identifiers.lt(0).any():
+        raise DataValidationError("OKX trade IDs must be nonnegative integers")
+    prices = frame["price"].astype("float64")
+    quantities = frame["size"].astype("float64")
+    if prices.le(0).any() or quantities.lt(0).any():
+        raise DataValidationError("OKX trade prices and quantities are invalid")
+    result = pd.DataFrame(
+        {
+            "instrument_id": instruments,
+            "event_time": times,
+            "trade_id": identifiers.astype("int64"),
+            "price": prices,
+            "base_quantity": quantities,
+            "quote_quantity": prices * quantities,
+            "side": sides,
+        }
+    )
+    result = _deduplicate(result, ["instrument_id", "trade_id"])
+    return result.sort_values(
+        ["instrument_id", "event_time", "trade_id"],
+        kind="stable",
+        ignore_index=True,
+    )
+
+
+def normalize(frame: pd.DataFrame, dataset: DatasetSpec) -> pd.DataFrame:
+    """Dispatch one OKX CSV to its product-specific normalizer.
+
+    Args:
+        frame: Source CSV rows.
+        dataset: Canonical dataset declaration.
+
+    Returns:
+        Canonical rows retaining the native instrument predicate.
+    """
+    if dataset.name == "klines":
+        return normalize_klines(frame, dataset)
+    if dataset.name == "trades":
+        return normalize_trades(frame, dataset)
+    raise ValueError(f"unsupported OKX normalizer {dataset.product}/{dataset.name}")
+
+
 def _member(archive: zipfile.ZipFile, resource: ArchiveObject) -> zipfile.ZipInfo:
     """Return the one safe CSV member expected for an OKX ZIP.
 
@@ -274,7 +344,7 @@ class OKXArchiveProvider:
                 raise DataValidationError(
                     "OKX archive is not a readable ZIP/CSV"
                 ) from error
-            frame = normalize_klines(raw, dataset)
+            frame = normalize(raw, dataset)
             if (
                 frame[dataset.time_column].min() < start
                 or frame[dataset.time_column].max() >= end
