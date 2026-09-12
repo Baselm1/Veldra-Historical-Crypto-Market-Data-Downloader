@@ -564,7 +564,7 @@ def test_rediscovery_invalidates_ready_metadata_after_a_schema_change(
 
     current = store.resources(KEY, item.day, item.day)[0]
     assert current.status == "discovered"
-    assert current.archive_sha256 is None
+    assert current.archive_checksum is None
     assert current.parquet_path is None
     assert current.parquet_size is None
     assert current.parquet_mtime_ns is None

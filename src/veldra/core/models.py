@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, time, timedelta
 import logging
 from pathlib import Path
+from typing import Literal
 
 import pandas as pd
 
@@ -12,6 +13,7 @@ TimeRange = tuple[datetime, datetime]
 type JsonValue = (
     str | int | float | bool | None | list[JsonValue] | dict[str, JsonValue]
 )
+type ChecksumAlgorithm = Literal["md5", "sha256"]
 LOGGER = logging.getLogger(__name__)
 
 
@@ -84,7 +86,8 @@ class Resource:
     url: str
     checksum_url: str
     status: str = "discovered"
-    archive_sha256: str | None = None
+    archive_checksum: str | None = None
+    checksum_algorithm: ChecksumAlgorithm = "sha256"
     parquet_path: Path | None = None
     parquet_size: int | None = None
     parquet_mtime_ns: int | None = None
@@ -101,6 +104,11 @@ class Resource:
     cadence: str = "daily"
     coverage_start: datetime | None = None
     coverage_end: datetime | None = None
+
+    def __post_init__(self) -> None:
+        """Reject unsupported source checksum algorithms."""
+        if self.checksum_algorithm not in {"md5", "sha256"}:
+            raise ValueError("unsupported archive checksum algorithm")
 
     @property
     def last_day(self) -> date:
@@ -131,7 +139,7 @@ class Resource:
 class IngestedResource:
     """Describe a verified Parquet file produced from one archive."""
 
-    archive_sha256: str
+    archive_checksum: str
     parquet_size: int
     parquet_mtime_ns: int
     row_count: int

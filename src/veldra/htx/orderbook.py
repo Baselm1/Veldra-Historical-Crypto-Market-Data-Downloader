@@ -322,7 +322,7 @@ def ingest_order_book(
     try:
         with TemporaryDirectory(prefix="veldra-market-data-") as directory:
             archive_path = Path(directory) / "source.tar.gz"
-            archive_sha256 = download(
+            archive_checksum = download(
                 client,
                 resource,
                 archive_path,
@@ -352,7 +352,7 @@ def ingest_order_book(
         partial.replace(destination)
         stat = destination.stat()
         metadata = IngestedResource(
-            archive_sha256=archive_sha256,
+            archive_checksum=archive_checksum,
             parquet_size=stat.st_size,
             parquet_mtime_ns=stat.st_mtime_ns,
             row_count=rows,

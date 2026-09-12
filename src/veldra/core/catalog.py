@@ -256,7 +256,8 @@ class Catalog:
                 url VARCHAR NOT NULL,
                 checksum_url VARCHAR NOT NULL,
                 status VARCHAR NOT NULL DEFAULT 'discovered',
-                archive_sha256 VARCHAR,
+                archive_checksum VARCHAR,
+                checksum_algorithm VARCHAR NOT NULL DEFAULT 'sha256',
                 parquet_path VARCHAR,
                 parquet_size BIGINT,
                 parquet_mtime_ns BIGINT,
@@ -317,8 +318,33 @@ class Catalog:
             "ALTER TABLE resources ADD COLUMN IF NOT EXISTS coverage_end TIMESTAMP",
             "ALTER TABLE resources ADD COLUMN IF NOT EXISTS timestamp_column VARCHAR",
             "ALTER TABLE resources ADD COLUMN IF NOT EXISTS schema_version INTEGER",
+            "ALTER TABLE resources ADD COLUMN IF NOT EXISTS archive_checksum VARCHAR",
+            "ALTER TABLE resources ADD COLUMN IF NOT EXISTS checksum_algorithm VARCHAR",
         ):
             self.connection.execute(statement)
+        resource_columns = {
+            row[1]
+            for row in self.connection.execute(
+                "PRAGMA table_info('resources')"
+            ).fetchall()
+        }
+        if "archive_sha256" in resource_columns:
+            self.connection.execute(
+                "UPDATE resources SET archive_checksum = archive_sha256 "
+                "WHERE archive_checksum IS NULL"
+            )
+            self.connection.execute("ALTER TABLE resources DROP COLUMN archive_sha256")
+        self.connection.execute(
+            "UPDATE resources SET checksum_algorithm = 'sha256' "
+            "WHERE checksum_algorithm IS NULL"
+        )
+        self.connection.execute(
+            "ALTER TABLE resources ALTER COLUMN checksum_algorithm "
+            "SET DEFAULT 'sha256'"
+        )
+        self.connection.execute(
+            "ALTER TABLE resources ALTER COLUMN checksum_algorithm SET NOT NULL"
+        )
         self.connection.execute(
             "UPDATE markets SET active = (status = 'TRADING') "
             "WHERE active IS NULL AND source = 'binance'"
@@ -851,6 +877,7 @@ class Catalog:
                 resource.archive_symbol,
                 resource.url,
                 resource.checksum_url,
+                resource.checksum_algorithm,
                 resource.timestamp_column,
                 resource.schema_version,
             )
@@ -872,6 +899,7 @@ class Catalog:
                 "archive_symbol",
                 "url",
                 "checksum_url",
+                "checksum_algorithm",
                 "timestamp_column",
                 "schema_version",
             ),
@@ -884,7 +912,7 @@ class Catalog:
                     self.connection.execute("""
                     UPDATE resources AS stored SET
                         status = 'discovered',
-                        archive_sha256 = NULL,
+                        archive_checksum = NULL,
                         parquet_path = NULL,
                         parquet_size = NULL,
                         parquet_mtime_ns = NULL,
@@ -904,6 +932,8 @@ class Catalog:
                       AND (
                           stored.schema_version IS DISTINCT FROM
                               incoming.schema_version
+                          OR stored.checksum_algorithm IS DISTINCT FROM
+                              incoming.checksum_algorithm
                           OR stored.timestamp_column IS DISTINCT FROM
                               incoming.timestamp_column
                       )
@@ -911,12 +941,12 @@ class Catalog:
                     self.connection.execute("""
                     INSERT INTO resources (
                         source, product, dataset, symbol, interval, cadence, day, end_day,
-                        coverage_start, coverage_end, archive_symbol, url, checksum_url, timestamp_column,
-                        schema_version
+                        coverage_start, coverage_end, archive_symbol, url, checksum_url,
+                        checksum_algorithm, timestamp_column, schema_version
                     )
                     SELECT source, product, dataset, symbol, interval, cadence, day, end_day,
-                           coverage_start, coverage_end, archive_symbol, url, checksum_url, timestamp_column,
-                           schema_version
+                           coverage_start, coverage_end, archive_symbol, url, checksum_url,
+                           checksum_algorithm, timestamp_column, schema_version
                     FROM incoming_resources
                     ON CONFLICT (
                         source, product, dataset, symbol, interval, cadence, day
@@ -926,6 +956,7 @@ class Catalog:
                         coverage_end = excluded.coverage_end,
                         url = excluded.url,
                         checksum_url = excluded.checksum_url,
+                        checksum_algorithm = excluded.checksum_algorithm,
                         archive_symbol = excluded.archive_symbol,
                         timestamp_column = excluded.timestamp_column,
                         schema_version = excluded.schema_version
@@ -970,11 +1001,11 @@ class Catalog:
         _validate_range(start_day, end_day)
         rows = self.connection.execute(
             """
-            SELECT day, url, checksum_url, status, archive_sha256,
+            SELECT day, url, checksum_url, status, archive_checksum,
                    parquet_path, parquet_size, parquet_mtime_ns, row_count,
                    first_timestamp, last_timestamp, archive_symbol, timestamp_column,
                    schema_version, error, last_attempt_at, end_day, cadence,
-                   coverage_start, coverage_end
+                   coverage_start, coverage_end, checksum_algorithm
             FROM resources
             WHERE source = ? AND product = ? AND dataset = ?
               AND symbol = ? AND interval = ? AND cadence = ?
@@ -1004,11 +1035,11 @@ class Catalog:
             raise ValueError("resource range must end after it starts")
         rows = self.connection.execute(
             """
-            SELECT day, url, checksum_url, status, archive_sha256,
+            SELECT day, url, checksum_url, status, archive_checksum,
                    parquet_path, parquet_size, parquet_mtime_ns, row_count,
                    first_timestamp, last_timestamp, archive_symbol, timestamp_column,
                    schema_version, error, last_attempt_at, end_day, cadence,
-                   coverage_start, coverage_end
+                   coverage_start, coverage_end, checksum_algorithm
             FROM resources
             WHERE source = ? AND product = ? AND dataset = ?
               AND symbol = ? AND interval = ? AND cadence = ?
@@ -1048,7 +1079,7 @@ class Catalog:
             url=row[1],
             checksum_url=row[2],
             status=row[3],
-            archive_sha256=row[4],
+            archive_checksum=row[4],
             parquet_path=Path(row[5]) if row[5] is not None else None,
             parquet_size=row[6],
             parquet_mtime_ns=row[7],
@@ -1066,6 +1097,7 @@ class Catalog:
                 None if coverage_start == default_start else coverage_start
             ),
             coverage_end=None if coverage_end == default_end else coverage_end,
+            checksum_algorithm=row[20],
         )
 
     def mark_ready(
@@ -1119,7 +1151,7 @@ class Catalog:
         columns = (
             "day",
             "status",
-            "archive_sha256",
+            "archive_checksum",
             "parquet_path",
             "parquet_size",
             "parquet_mtime_ns",
@@ -1134,7 +1166,7 @@ class Catalog:
             (
                 day,
                 "ready",
-                metadata.archive_sha256,
+                metadata.archive_checksum,
                 str(path),
                 metadata.parquet_size,
                 metadata.parquet_mtime_ns,
@@ -1159,7 +1191,7 @@ class Catalog:
                     """
                     UPDATE resources AS stored SET
                         status = incoming.status,
-                        archive_sha256 = incoming.archive_sha256,
+                        archive_checksum = incoming.archive_checksum,
                         parquet_path = incoming.parquet_path,
                         parquet_size = incoming.parquet_size,
                         parquet_mtime_ns = incoming.parquet_mtime_ns,

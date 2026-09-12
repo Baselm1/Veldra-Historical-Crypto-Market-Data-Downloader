@@ -373,7 +373,7 @@ def ingest_archive(
     try:
         with TemporaryDirectory(prefix="veldra-market-data-") as directory:
             archive_path = Path(directory) / "source.zip"
-            archive_sha256 = download(
+            archive_checksum = download(
                 client,
                 resource,
                 archive_path,
@@ -401,7 +401,7 @@ def ingest_archive(
         partial.replace(destination)
         stat = destination.stat()
         metadata = IngestedResource(
-            archive_sha256=archive_sha256,
+            archive_checksum=archive_checksum,
             parquet_size=stat.st_size,
             parquet_mtime_ns=stat.st_mtime_ns,
             row_count=rows,

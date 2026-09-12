@@ -43,7 +43,7 @@ def ingested() -> IngestedResource:
         Representative verified file metadata.
     """
     return IngestedResource(
-        archive_sha256="a" * 64,
+        archive_checksum="a" * 64,
         parquet_size=1234,
         parquet_mtime_ns=987654321,
         row_count=2,
@@ -241,6 +241,9 @@ def test_catalog_migrates_existing_spot_metadata_without_losing_rows(
         resource(name="one")
     ]
     assert "parquet_sha256" not in resource_columns
+    assert "archive_sha256" not in resource_columns
+    assert "archive_checksum" in resource_columns
+    assert "checksum_algorithm" in resource_columns
     connection.close()
 
 
@@ -420,7 +423,7 @@ def test_repeated_discovery_expands_bounds_and_preserves_cache_state(
     assert found.url.endswith("refreshed.zip")
     assert found.checksum_url.endswith("refreshed.zip.CHECKSUM")
     assert found.status == "ready"
-    assert found.archive_sha256 == "a" * 64
+    assert found.archive_checksum == "a" * 64
     assert found.parquet_path == tmp_path / "two.parquet"
     assert found.error is None
 
@@ -505,7 +508,7 @@ def test_ready_resource_retains_all_integrity_metadata(
     found = catalog.resources(KEY, date(2025, 1, 1), date(2025, 1, 1))[0]
 
     assert found.status == "ready"
-    assert found.archive_sha256 == metadata.archive_sha256
+    assert found.archive_checksum == metadata.archive_checksum
     assert found.parquet_path == path
     assert found.parquet_size == metadata.parquet_size
     assert found.parquet_mtime_ns == metadata.parquet_mtime_ns
@@ -542,7 +545,7 @@ def test_failed_resource_clears_stale_cache_metadata(
 
     assert found.status == "failed"
     assert found.error == "checksum mismatch"
-    assert found.archive_sha256 is None
+    assert found.archive_checksum is None
     assert found.parquet_path is None
     assert found.parquet_size is None
     assert found.parquet_mtime_ns is None

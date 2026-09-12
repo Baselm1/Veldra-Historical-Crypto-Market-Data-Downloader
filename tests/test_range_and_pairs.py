@@ -185,7 +185,7 @@ class RangeSource:
         frame.to_parquet(destination, index=False)
         stat = destination.stat()
         return IngestedResource(
-            archive_sha256="a" * 64,
+            archive_checksum="a" * 64,
             parquet_size=stat.st_size,
             parquet_mtime_ns=stat.st_mtime_ns,
             row_count=1,

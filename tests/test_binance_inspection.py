@@ -136,7 +136,7 @@ def seed_availability(
             DAY_1,
             parquet,
             IngestedResource(
-                archive_sha256="a" * 64,
+                archive_checksum="a" * 64,
                 parquet_size=stat.st_size,
                 parquet_mtime_ns=stat.st_mtime_ns,
                 row_count=2,
@@ -521,7 +521,7 @@ def test_get_availability_rejects_incompatible_ready_schema(tmp_path: Path) -> N
             DAY_1,
             parquet,
             IngestedResource(
-                archive_sha256="a" * 64,
+                archive_checksum="a" * 64,
                 parquet_size=stat.st_size,
                 parquet_mtime_ns=stat.st_mtime_ns,
                 row_count=2,

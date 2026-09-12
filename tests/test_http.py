@@ -81,6 +81,19 @@ def sidecar(contents: bytes, name: str = "BTCUSDT-1m-2025-01-01.zip") -> str:
     return f"{hashlib.sha256(contents).hexdigest()}  {name}\n"
 
 
+def md5_sidecar(contents: bytes, name: str = "BTCUSDT-1m-2025-01-01.zip") -> str:
+    """Create a KuCoin-style MD5 sidecar line.
+
+    Args:
+        contents: The archive bytes covered by the digest.
+        name: The archive filename written beside the digest.
+
+    Returns:
+        A complete MD5 checksum sidecar line.
+    """
+    return f"{hashlib.md5(contents).hexdigest()}  {name}\n"
+
+
 @pytest.mark.parametrize(
     ("attempt", "backoff", "expected"),
     [(0, 0.5, 0.5), (1, 0.5, 1.0), (4, 0.25, 4.0), (10_000, 1.0, 30.0)],
@@ -600,6 +613,50 @@ def test_archive_checksum_reads_a_verified_sidecar() -> None:
         "/BTCUSDT-1m-2025-01-01.zip.CHECKSUM"
     ]
     assert set(requests[0].extensions["timeout"].values()) == {7.0}
+
+
+def test_download_accepts_a_source_declared_md5_sidecar(tmp_path: Path) -> None:
+    """Confirm KuCoin archives use MD5 while retaining verified bytes."""
+    contents = b"kucoin archive"
+    item = Resource(
+        date(2025, 1, 1),
+        "https://data.example/BTCUSDT-1m-2025-01-01.zip",
+        "https://data.example/BTCUSDT-1m-2025-01-01.zip.CHECKSUM",
+        checksum_algorithm="md5",
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        """Return matching KuCoin sidecar and archive bytes."""
+        if request.url.path.endswith(".CHECKSUM"):
+            return httpx.Response(200, text=md5_sidecar(contents))
+        return httpx.Response(200, content=contents)
+
+    destination = tmp_path / "archive.zip"
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        digest = download(client, item, destination, retries=0)
+        current = archive_checksum(client, item, retries=0)
+
+    assert digest == hashlib.md5(contents).hexdigest()
+    assert current == digest
+    assert destination.read_bytes() == contents
+
+
+def test_checksum_rejects_a_digest_from_the_wrong_algorithm() -> None:
+    """Confirm MD5 resources reject a SHA-256 sidecar before download."""
+    item = Resource(
+        date(2025, 1, 1),
+        "https://data.example/BTCUSDT-1m-2025-01-01.zip",
+        "https://data.example/BTCUSDT-1m-2025-01-01.zip.CHECKSUM",
+        checksum_algorithm="md5",
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        """Return a checksum with the wrong digest length."""
+        return httpx.Response(200, text=sidecar(b"archive"))
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(ValueError, match="MD5"):
+            archive_checksum(client, item, retries=0)
 
 
 def test_archive_checksum_retries_a_temporary_sidecar_failure() -> None:

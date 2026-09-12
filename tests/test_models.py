@@ -4,9 +4,10 @@ from datetime import date, datetime, timezone
 import json
 
 import pandas as pd
+import pytest
 
 from veldra import Gap, Message, MissingCandlesError, Result
-from veldra.core.models import Market, result_report
+from veldra.core.models import Market, Resource, result_report
 
 UTC = timezone.utc
 START = datetime(2025, 1, 1, tzinfo=UTC)
@@ -20,6 +21,17 @@ def test_market_activity_is_independent_from_native_status() -> None:
 
     assert online.active is True
     assert halted.active is False
+
+
+def test_resource_rejects_an_unknown_checksum_algorithm() -> None:
+    """Confirm resources cannot select an unsupported integrity algorithm."""
+    with pytest.raises(ValueError, match="checksum algorithm"):
+        Resource(
+            date(2025, 1, 1),
+            "https://data.example/file.zip",
+            "https://data.example/file.zip.CHECKSUM",
+            checksum_algorithm="crc32",  # type: ignore[arg-type]
+        )
 
 
 def make_result() -> Result:

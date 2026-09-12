@@ -20,7 +20,19 @@ LOGGER = logging.getLogger(__name__)
 
 
 class ChecksumError(ValueError):
-    """Report that downloaded bytes do not match their SHA-256 sidecar."""
+    """Report that downloaded bytes do not match their checksum sidecar."""
+
+
+def _algorithm_name(algorithm: str) -> str:
+    """Return a checksum algorithm's conventional display name.
+
+    Args:
+        algorithm: The hashlib algorithm identifier.
+
+    Returns:
+        A human-readable algorithm name.
+    """
+    return "SHA-256" if algorithm == "sha256" else algorithm.upper()
 
 
 class DownloadSizeError(ValueError):
@@ -207,20 +219,28 @@ def get(
     return _retry(request, retries=retries, backoff=backoff)
 
 
-def _checksum(text: str, archive_url: str) -> str:
-    """Read a SHA-256 digest for the exact archive URL filename.
+def _checksum(text: str, archive_url: str, algorithm: str = "sha256") -> str:
+    """Read a source digest for the exact archive URL filename.
 
     Args:
         text: The checksum sidecar contents.
         archive_url: The archive URL whose filename must match.
+        algorithm: The source checksum algorithm.
 
     Returns:
-        The lowercase SHA-256 digest.
+        The lowercase source digest.
     """
-    match = re.fullmatch(r"([0-9a-fA-F]{64})[ \t]+\*?([^\r\n]+)", text.strip())
+    lengths = {"md5": 32, "sha256": 64}
+    try:
+        length = lengths[algorithm]
+    except KeyError as error:
+        raise ValueError("unsupported archive checksum algorithm") from error
+    match = re.fullmatch(rf"([0-9a-fA-F]{{{length}}})[ \t]+\*?([^\r\n]+)", text.strip())
     filename = unquote(Path(urlsplit(archive_url).path).name)
     if match is None or match.group(2) != filename:
-        raise ValueError("invalid SHA-256 sidecar or target filename")
+        raise ValueError(
+            f"invalid {_algorithm_name(algorithm)} sidecar or target filename"
+        )
     return match.group(1).lower()
 
 
@@ -232,7 +252,7 @@ def archive_checksum(
     retries: int = 3,
     backoff: float = 0.5,
 ) -> str:
-    """Fetch and validate one archive's SHA-256 sidecar.
+    """Fetch and validate one archive's checksum sidecar.
 
     Args:
         client: The HTTPX client used for the sidecar request.
@@ -242,7 +262,7 @@ def archive_checksum(
         backoff: The initial exponential retry delay in seconds.
 
     Returns:
-        The lowercase archive SHA-256 digest.
+        The lowercase archive digest.
     """
     _validate_settings(timeout, retries, backoff)
 
@@ -254,8 +274,17 @@ def archive_checksum(
         """
         response = client.get(resource.checksum_url, timeout=timeout)
         response.raise_for_status()
-        digest = _checksum(response.text, resource.url)
-        LOGGER.debug("Archive checksum fetched: url=%s sha256=%s", resource.url, digest)
+        digest = _checksum(
+            response.text,
+            resource.url,
+            resource.checksum_algorithm,
+        )
+        LOGGER.debug(
+            "Archive checksum fetched: url=%s algorithm=%s digest=%s",
+            resource.url,
+            resource.checksum_algorithm,
+            digest,
+        )
         return digest
 
     return _retry(request, retries=retries, backoff=backoff)
@@ -302,7 +331,7 @@ def download(
         max_bytes: The largest accepted archive size.
 
     Returns:
-        The verified lowercase SHA-256 digest.
+        The verified lowercase source digest.
     """
     _validate_settings(timeout, retries, backoff)
     if isinstance(max_bytes, bool) or not isinstance(max_bytes, int) or max_bytes <= 0:
@@ -315,14 +344,18 @@ def download(
         """Fetch and verify one fresh sidecar and archive attempt.
 
         Returns:
-            The verified lowercase SHA-256 digest.
+            The verified lowercase source digest.
         """
         partial.unlink(missing_ok=True)
         try:
             sidecar = client.get(resource.checksum_url, timeout=timeout)
             sidecar.raise_for_status()
-            expected = _checksum(sidecar.text, resource.url)
-            digest = hashlib.sha256()
+            expected = _checksum(
+                sidecar.text,
+                resource.url,
+                resource.checksum_algorithm,
+            )
+            digest = hashlib.new(resource.checksum_algorithm)
             size = 0
 
             with client.stream("GET", resource.url, timeout=timeout) as response:
@@ -342,12 +375,17 @@ def download(
 
             actual = digest.hexdigest()
             if actual != expected:
-                raise ChecksumError(f"SHA-256 mismatch for {resource.url}")
+                raise ChecksumError(
+                    f"{_algorithm_name(resource.checksum_algorithm)} mismatch "
+                    f"for {resource.url}"
+                )
             partial.replace(destination)
             LOGGER.info(
-                "Verified download complete: url=%s bytes=%d sha256=%s path=%s",
+                "Verified download complete: url=%s bytes=%d algorithm=%s "
+                "digest=%s path=%s",
                 resource.url,
                 size,
+                resource.checksum_algorithm,
                 actual,
                 destination,
             )

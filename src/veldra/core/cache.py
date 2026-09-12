@@ -263,7 +263,7 @@ def _revalidate_cached_resource(
     Returns:
         Whether the local partition remains usable and an optional warning.
     """
-    if resource.archive_sha256 is None:
+    if resource.archive_checksum is None:
         LOGGER.debug(
             "Cached archive lacks a source checksum and will be rebuilt: day=%s",
             resource.day,
@@ -283,12 +283,12 @@ def _revalidate_cached_resource(
             "Parquet file.",
             resource.day,
         )
-    unchanged = current == resource.archive_sha256
+    unchanged = current == resource.archive_checksum
     LOGGER.debug(
         "Archive checksum revalidated: day=%s unchanged=%s expected=%s actual=%s",
         resource.day,
         unchanged,
-        resource.archive_sha256,
+        resource.archive_checksum,
         current,
     )
     return unchanged, None

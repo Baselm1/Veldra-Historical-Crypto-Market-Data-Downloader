@@ -133,7 +133,7 @@ def test_ingest_archive_writes_atomic_canonical_parquet(
     frame = pd.read_parquet(destination)
     assert tuple(frame.columns) == SPOT_KLINES.stored_columns
     assert len(frame) == metadata.row_count == 2
-    assert metadata.archive_sha256 == digest
+    assert metadata.archive_checksum == digest
     assert metadata.parquet_size == destination.stat().st_size
     assert metadata.parquet_mtime_ns == destination.stat().st_mtime_ns
     assert metadata.first_timestamp == frame.iloc[0]["open_time"].to_pydatetime()
