@@ -3,13 +3,14 @@
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, time, timedelta
+import hashlib
 import logging
 from pathlib import Path
 from typing import Literal
 
 import pandas as pd
 
-from veldra.core.subjects import DataSubject
+from veldra.core.subjects import DataSubject, SubjectKind
 
 TimeRange = tuple[datetime, datetime]
 type JsonValue = (
@@ -17,6 +18,7 @@ type JsonValue = (
 )
 type ChecksumAlgorithm = Literal["md5", "sha256"]
 type IntegrityMode = Literal["sidecar", "response_header", "archive_only"]
+type ArchiveStatus = Literal["discovered", "ready", "failed", "missing"]
 LOGGER = logging.getLogger(__name__)
 
 
@@ -127,6 +129,199 @@ class ResourceKey:
     def data_subject(self) -> DataSubject:
         """Return explicit scope or adapt a legacy symbol to an instrument."""
         return self.subject or DataSubject("instrument", self.symbol)
+
+
+def _stable_id(*values: object) -> str:
+    """Return a deterministic identifier for immutable catalog key values.
+
+    Args:
+        values: Values forming one stable catalog identity.
+
+    Returns:
+        A lowercase SHA-256 hexadecimal identifier.
+    """
+    encoded = "\x1f".join("" if value is None else str(value) for value in values)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+@dataclass(frozen=True)
+class ArchiveKey:
+    """Identify one remote archive independently from its temporary URL."""
+
+    source: str
+    product: str
+    dataset: str
+    provider: str
+    remote_scope_kind: SubjectKind
+    remote_scope_value: str
+    cadence: str
+    period_start: date
+    period_end: date
+    remote_name: str
+
+    def __post_init__(self) -> None:
+        """Reject invalid remote scope and period declarations."""
+        DataSubject(self.remote_scope_kind, self.remote_scope_value)
+        if self.period_end < self.period_start:
+            raise ValueError("archive period ends before it starts")
+        if not all(
+            isinstance(value, str) and value
+            for value in (
+                self.source,
+                self.product,
+                self.dataset,
+                self.provider,
+                self.cadence,
+                self.remote_name,
+            )
+        ):
+            raise ValueError("archive identity fields must be non-empty strings")
+
+    @property
+    def archive_id(self) -> str:
+        """Return the stable ID that excludes mutable signed URLs."""
+        return _stable_id(
+            self.source,
+            self.product,
+            self.dataset,
+            self.provider,
+            self.remote_scope_kind,
+            self.remote_scope_value,
+            self.cadence,
+            self.period_start,
+            self.period_end,
+            self.remote_name,
+        )
+
+    @property
+    def subject(self) -> DataSubject:
+        """Return the native scope represented by this physical archive."""
+        return DataSubject(self.remote_scope_kind, self.remote_scope_value)
+
+
+@dataclass(frozen=True)
+class ArchiveObject:
+    """Describe a discovered remote archive and its mutable retrieval state."""
+
+    key: ArchiveKey
+    url: str
+    url_expires_at: datetime | None = None
+    remote_size: int | None = None
+    integrity: IntegritySpec | None = None
+    discovered_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    status: ArchiveStatus = "discovered"
+    revision_id: str | None = None
+    last_attempt_at: datetime | None = None
+    error: str | None = None
+
+    def __post_init__(self) -> None:
+        """Reject unsafe sizes, times, status values, and empty URLs."""
+        if not isinstance(self.url, str) or not self.url:
+            raise ValueError("archive URL must be a non-empty string")
+        if self.remote_size is not None and self.remote_size < 0:
+            raise ValueError("archive size cannot be negative")
+        if self.status not in {"discovered", "ready", "failed", "missing"}:
+            raise ValueError("archive status is unsupported")
+        for value in (self.url_expires_at, self.discovered_at, self.last_attempt_at):
+            if value is not None and value.tzinfo is None:
+                raise ValueError("archive timestamps must include a timezone")
+
+
+@dataclass(frozen=True)
+class Materialization:
+    """Describe one local Parquet file produced from a physical archive."""
+
+    archive_key: ArchiveKey
+    local_path: Path
+    schema_version: int
+    row_count: int
+    first_timestamp: datetime
+    last_timestamp: datetime
+    local_size: int
+    local_mtime_ns: int | None = None
+    file_format: str = "parquet"
+    layout_version: int = 1
+    archive_revision: str | None = None
+    ready_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    superseded_at: datetime | None = None
+
+    def __post_init__(self) -> None:
+        """Reject malformed local file metadata and timestamp bounds."""
+        if self.schema_version < 1 or self.layout_version < 1:
+            raise ValueError("materialization versions must be positive")
+        if self.row_count < 0 or self.local_size < 0:
+            raise ValueError("materialization sizes and rows cannot be negative")
+        if not self.file_format:
+            raise ValueError("materialization file format must not be empty")
+        for value in (self.first_timestamp, self.last_timestamp, self.ready_at):
+            if value.tzinfo is None:
+                raise ValueError("materialization timestamps must include a timezone")
+        if self.superseded_at is not None and self.superseded_at.tzinfo is None:
+            raise ValueError("materialization timestamps must include a timezone")
+        if self.last_timestamp < self.first_timestamp:
+            raise ValueError("materialization timestamps are reversed")
+
+    @property
+    def materialization_id(self) -> str:
+        """Return the stable archive-revision and layout identifier."""
+        return _stable_id(
+            self.archive_key.archive_id,
+            self.archive_revision,
+            self.schema_version,
+            self.layout_version,
+        )
+
+
+@dataclass(frozen=True)
+class LogicalPartition:
+    """Map one logical subject and time range to a local materialization."""
+
+    source: str
+    product: str
+    dataset: str
+    subject: DataSubject
+    interval: str | None
+    coverage_start: datetime
+    coverage_end: datetime
+    materialization_path: Path
+    predicate_column: str | None
+    predicate_value: str | None
+    row_count: int
+    source_day: date | None = None
+
+    def __post_init__(self) -> None:
+        """Reject invalid coverage, predicates, and row counts."""
+        if self.coverage_start.tzinfo is None or self.coverage_end.tzinfo is None:
+            raise ValueError("partition timestamps must include a timezone")
+        if self.coverage_start >= self.coverage_end:
+            raise ValueError("partition coverage must end after it starts")
+        if self.row_count < 0:
+            raise ValueError("partition row count cannot be negative")
+        if (self.predicate_column is None) != (self.predicate_value is None):
+            raise ValueError("partition predicates require both column and value")
+
+    def partition_id(self, materialization_id: str) -> str:
+        """Return a stable identity within one materialization.
+
+        Args:
+            materialization_id: The local materialization containing the rows.
+
+        Returns:
+            A deterministic logical partition identifier.
+        """
+        return _stable_id(
+            materialization_id,
+            self.source,
+            self.product,
+            self.dataset,
+            self.subject.kind,
+            self.subject.value,
+            self.interval,
+            self.coverage_start.isoformat(),
+            self.coverage_end.isoformat(),
+            self.predicate_column,
+            self.predicate_value,
+        )
 
 
 @dataclass(frozen=True)

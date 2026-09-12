@@ -1,11 +1,12 @@
 """Test catalog isolation and selection of physical archive ranges."""
 
 from dataclasses import replace
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 import duckdb
 from veldra.core.catalog import Catalog
 from veldra.core.models import Resource, ResourceKey, IngestedResource
+from veldra.core.subjects import DataSubject
 
 KEY = ResourceKey("binance", "spot", "klines", "BTCUSDT", "1m")
 
@@ -62,3 +63,50 @@ def test_legacy_resource_key_migrates_without_losing_cache(tmp_path: Path) -> No
         assert "discoveries" not in {
             r[0] for r in connection.execute("show tables").fetchall()
         }
+
+
+def test_ready_legacy_resources_backfill_once_without_redownload(
+    tmp_path: Path,
+) -> None:
+    """Convert a populated legacy cache into physical and logical rows once."""
+    path = tmp_path / "catalog.duckdb"
+    parquet = tmp_path / "cached.parquet"
+    with duckdb.connect(str(path)) as connection:
+        catalog = Catalog(connection)
+        resource = Resource(
+            date(2025, 1, 1),
+            "https://example/BTCUSDT.zip",
+            "https://example/BTCUSDT.zip.CHECKSUM",
+        )
+        catalog.save_discovery(KEY, resource.day, resource.day, [resource])
+        stamp = datetime(2025, 1, 1, tzinfo=UTC)
+        catalog.mark_ready(
+            KEY,
+            resource.day,
+            parquet,
+            IngestedResource("a" * 64, 10, 20, 1_440, stamp, stamp),
+        )
+
+    for _ in range(2):
+        with duckdb.connect(str(path)) as connection:
+            catalog = Catalog(connection)
+            partitions = catalog.partitions_between(
+                "binance",
+                "spot",
+                "klines",
+                DataSubject("instrument", "BTCUSDT"),
+                "1m",
+                stamp,
+                stamp + timedelta(days=1),
+            )
+            assert len(partitions) == 1
+            assert partitions[0].materialization_path == parquet
+            assert connection.execute(
+                "select count(*) from archive_objects"
+            ).fetchone() == (1,)
+            assert connection.execute(
+                "select count(*) from materializations"
+            ).fetchone() == (1,)
+            assert connection.execute(
+                "select count(*) from logical_partitions"
+            ).fetchone() == (1,)

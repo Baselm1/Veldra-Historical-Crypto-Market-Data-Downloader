@@ -7,17 +7,26 @@ import logging
 import math
 from pathlib import Path
 from threading import RLock
+from typing import Any, cast
+from urllib.parse import urlsplit
 
 import duckdb
 import pyarrow as pa
-from typing import Any
 
 from veldra.core.models import (
+    ArchiveKey,
+    ArchiveObject,
+    ArchiveStatus,
     IngestedResource,
+    IntegrityMode,
+    IntegritySpec,
+    LogicalPartition,
     Market,
+    Materialization,
     Resource,
     ResourceKey,
 )
+from veldra.core.subjects import DataSubject, SubjectKind
 
 _CATALOG_LOCKS = tuple(RLock() for _ in range(64))
 LOGGER = logging.getLogger(__name__)
@@ -299,6 +308,81 @@ class Catalog:
                 checked_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
                 PRIMARY KEY (source, product, dataset, symbol, interval, cadence)
             );
+
+            CREATE TABLE IF NOT EXISTS archive_objects (
+                archive_id VARCHAR PRIMARY KEY,
+                source VARCHAR NOT NULL,
+                product VARCHAR NOT NULL,
+                dataset VARCHAR NOT NULL,
+                provider VARCHAR NOT NULL,
+                remote_scope_kind VARCHAR NOT NULL,
+                remote_scope_value VARCHAR NOT NULL,
+                cadence VARCHAR NOT NULL,
+                period_start DATE NOT NULL,
+                period_end DATE NOT NULL,
+                remote_name VARCHAR NOT NULL,
+                url VARCHAR NOT NULL,
+                url_expires_at TIMESTAMP,
+                remote_size BIGINT,
+                integrity_mode VARCHAR,
+                integrity_algorithm VARCHAR,
+                integrity_expected VARCHAR,
+                integrity_sidecar_url VARCHAR,
+                discovered_at TIMESTAMP NOT NULL,
+                status VARCHAR NOT NULL,
+                revision_id VARCHAR,
+                last_attempt_at TIMESTAMP,
+                error VARCHAR,
+                UNIQUE (
+                    source, product, dataset, provider, remote_scope_kind,
+                    remote_scope_value, cadence, period_start, period_end, remote_name
+                )
+            );
+
+            CREATE TABLE IF NOT EXISTS materializations (
+                materialization_id VARCHAR PRIMARY KEY,
+                archive_id VARCHAR NOT NULL,
+                archive_revision VARCHAR,
+                local_path VARCHAR NOT NULL,
+                file_format VARCHAR NOT NULL,
+                schema_version INTEGER NOT NULL,
+                layout_version INTEGER NOT NULL,
+                local_size BIGINT NOT NULL,
+                local_mtime_ns BIGINT,
+                row_count BIGINT NOT NULL,
+                first_timestamp TIMESTAMP NOT NULL,
+                last_timestamp TIMESTAMP NOT NULL,
+                ready_at TIMESTAMP NOT NULL,
+                superseded_at TIMESTAMP,
+                UNIQUE (archive_id, archive_revision, schema_version, layout_version)
+            );
+
+            CREATE TABLE IF NOT EXISTS logical_partitions (
+                partition_id VARCHAR PRIMARY KEY,
+                materialization_id VARCHAR NOT NULL,
+                source VARCHAR NOT NULL,
+                product VARCHAR NOT NULL,
+                dataset VARCHAR NOT NULL,
+                interval VARCHAR NOT NULL,
+                subject_kind VARCHAR NOT NULL,
+                subject_value VARCHAR NOT NULL,
+                coverage_start TIMESTAMP NOT NULL,
+                coverage_end TIMESTAMP NOT NULL,
+                predicate_column VARCHAR,
+                predicate_value VARCHAR,
+                row_count BIGINT NOT NULL,
+                source_day DATE
+            );
+
+            CREATE TABLE IF NOT EXISTS request_metrics (
+                provider VARCHAR NOT NULL,
+                dataset VARCHAR NOT NULL,
+                host VARCHAR NOT NULL,
+                download_bytes BIGINT NOT NULL,
+                download_seconds DOUBLE NOT NULL,
+                normalization_seconds DOUBLE NOT NULL,
+                observed_at TIMESTAMP NOT NULL DEFAULT current_timestamp
+            );
             """)
         self.connection.execute(
             "ALTER TABLE markets ADD COLUMN IF NOT EXISTS refreshed_at TIMESTAMP"
@@ -393,6 +477,7 @@ class Catalog:
                 ON CONFLICT DO NOTHING
                 """)
             self.connection.execute("DROP TABLE discoveries")
+        self._backfill_logical_catalog()
 
     def _tables(self) -> set[str]:
         """Return the names of tables already present in this catalog."""
@@ -448,6 +533,616 @@ class Catalog:
             raise
         else:
             self.connection.execute("COMMIT")
+
+    @staticmethod
+    def _archive_row(archive: ArchiveObject) -> tuple[object, ...]:
+        """Convert one physical archive into database values.
+
+        Args:
+            archive: The physical archive to store.
+
+        Returns:
+            Values matching the archive-object table order.
+        """
+        integrity = archive.integrity
+        return (
+            archive.key.archive_id,
+            archive.key.source,
+            archive.key.product,
+            archive.key.dataset,
+            archive.key.provider,
+            archive.key.remote_scope_kind,
+            archive.key.remote_scope_value,
+            archive.key.cadence,
+            archive.key.period_start,
+            archive.key.period_end,
+            archive.key.remote_name,
+            archive.url,
+            (
+                _database_timestamp(archive.url_expires_at)
+                if archive.url_expires_at is not None
+                else None
+            ),
+            archive.remote_size,
+            integrity.mode if integrity is not None else None,
+            integrity.algorithm if integrity is not None else None,
+            integrity.expected if integrity is not None else None,
+            integrity.sidecar_url if integrity is not None else None,
+            _database_timestamp(archive.discovered_at),
+            archive.status,
+            archive.revision_id,
+            (
+                _database_timestamp(archive.last_attempt_at)
+                if archive.last_attempt_at is not None
+                else None
+            ),
+            archive.error,
+        )
+
+    def _write_archive(self, archive: ArchiveObject) -> None:
+        """Insert or refresh one archive inside the caller's transaction.
+
+        Args:
+            archive: The physical archive metadata to write.
+        """
+        self.connection.execute(
+            """
+            INSERT INTO archive_objects VALUES (
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+            )
+            ON CONFLICT (archive_id) DO UPDATE SET
+                url = excluded.url,
+                url_expires_at = excluded.url_expires_at,
+                remote_size = excluded.remote_size,
+                integrity_mode = excluded.integrity_mode,
+                integrity_algorithm = excluded.integrity_algorithm,
+                integrity_expected = excluded.integrity_expected,
+                integrity_sidecar_url = excluded.integrity_sidecar_url,
+                discovered_at = excluded.discovered_at,
+                status = excluded.status,
+                revision_id = excluded.revision_id,
+                last_attempt_at = excluded.last_attempt_at,
+                error = excluded.error
+            """,
+            self._archive_row(archive),
+        )
+
+    @staticmethod
+    def _archive(row: Sequence[Any]) -> ArchiveObject:
+        """Rebuild one physical archive from catalog values.
+
+        Args:
+            row: Values selected in physical archive column order.
+
+        Returns:
+            The reconstructed archive object.
+        """
+        mode = cast(IntegrityMode | None, row[14])
+        integrity = (
+            IntegritySpec(
+                mode,
+                algorithm=row[15],
+                expected=row[16],
+                sidecar_url=row[17],
+            )
+            if mode is not None
+            else None
+        )
+        return ArchiveObject(
+            ArchiveKey(
+                source=row[1],
+                product=row[2],
+                dataset=row[3],
+                provider=row[4],
+                remote_scope_kind=cast(SubjectKind, row[5]),
+                remote_scope_value=row[6],
+                cadence=row[7],
+                period_start=row[8],
+                period_end=row[9],
+                remote_name=row[10],
+            ),
+            url=row[11],
+            url_expires_at=_utc_timestamp(row[12]),
+            remote_size=row[13],
+            integrity=integrity,
+            discovered_at=cast(datetime, _utc_timestamp(row[18])),
+            status=cast(ArchiveStatus, row[19]),
+            revision_id=row[20],
+            last_attempt_at=_utc_timestamp(row[21]),
+            error=row[22],
+        )
+
+    def save_archives(self, archives: Sequence[ArchiveObject]) -> None:
+        """Store discovered physical archives in one transaction.
+
+        Args:
+            archives: The physical archives to insert or refresh.
+        """
+        identifiers = [archive.key.archive_id for archive in archives]
+        if len(identifiers) != len(set(identifiers)):
+            raise ValueError("archive batch contains a duplicate identity")
+        if not archives:
+            return
+        with self._transaction():
+            for archive in archives:
+                self._write_archive(archive)
+
+    def archive(self, key: ArchiveKey) -> ArchiveObject | None:
+        """Return one physical archive by its stable identity.
+
+        Args:
+            key: The stable physical archive key.
+
+        Returns:
+            The archive metadata, or ``None`` when it is unknown.
+        """
+        row = self.connection.execute(
+            "SELECT * FROM archive_objects WHERE archive_id = ?",
+            [key.archive_id],
+        ).fetchone()
+        return self._archive(row) if row is not None else None
+
+    def mark_archive_failed(self, key: ArchiveKey, error: str) -> None:
+        """Record a failed attempt against a known physical archive.
+
+        Args:
+            key: The physical archive that failed.
+            error: The failure description.
+        """
+        row = self.connection.execute(
+            """
+            UPDATE archive_objects SET
+                status = 'failed', error = ?, last_attempt_at = current_timestamp
+            WHERE archive_id = ?
+            RETURNING archive_id
+            """,
+            [error, key.archive_id],
+        ).fetchone()
+        if row is None:
+            raise KeyError(f"archive {key.archive_id} was not discovered")
+
+    @staticmethod
+    def _materialization_row(materialization: Materialization) -> tuple[object, ...]:
+        """Convert one local materialization into database values.
+
+        Args:
+            materialization: The local file metadata to store.
+
+        Returns:
+            Values matching the materialization table order.
+        """
+        return (
+            materialization.materialization_id,
+            materialization.archive_key.archive_id,
+            materialization.archive_revision,
+            str(materialization.local_path),
+            materialization.file_format,
+            materialization.schema_version,
+            materialization.layout_version,
+            materialization.local_size,
+            materialization.local_mtime_ns,
+            materialization.row_count,
+            _database_timestamp(materialization.first_timestamp),
+            _database_timestamp(materialization.last_timestamp),
+            _database_timestamp(materialization.ready_at),
+            (
+                _database_timestamp(materialization.superseded_at)
+                if materialization.superseded_at is not None
+                else None
+            ),
+        )
+
+    def _write_materialization(self, materialization: Materialization) -> None:
+        """Publish local file metadata inside the caller's transaction.
+
+        Args:
+            materialization: The local materialization to publish.
+        """
+        self.connection.execute(
+            """
+            INSERT INTO materializations VALUES (
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+            )
+            ON CONFLICT (materialization_id) DO UPDATE SET
+                local_path = excluded.local_path,
+                local_size = excluded.local_size,
+                local_mtime_ns = excluded.local_mtime_ns,
+                row_count = excluded.row_count,
+                first_timestamp = excluded.first_timestamp,
+                last_timestamp = excluded.last_timestamp,
+                ready_at = excluded.ready_at,
+                superseded_at = excluded.superseded_at
+            """,
+            self._materialization_row(materialization),
+        )
+
+    @staticmethod
+    def _partition_row(
+        materialization_id: str, partition: LogicalPartition
+    ) -> tuple[object, ...]:
+        """Convert one logical partition into database values.
+
+        Args:
+            materialization_id: The physical file containing the partition.
+            partition: The logical rows exposed from the file.
+
+        Returns:
+            Values matching the logical partition table order.
+        """
+        return (
+            partition.partition_id(materialization_id),
+            materialization_id,
+            partition.source,
+            partition.product,
+            partition.dataset,
+            partition.interval or "",
+            partition.subject.kind,
+            partition.subject.value,
+            _database_timestamp(partition.coverage_start),
+            _database_timestamp(partition.coverage_end),
+            partition.predicate_column,
+            partition.predicate_value,
+            partition.row_count,
+            partition.source_day,
+        )
+
+    def _write_partitions(
+        self,
+        materialization: Materialization,
+        partitions: Sequence[LogicalPartition],
+    ) -> None:
+        """Replace logical rows for one materialization in a transaction.
+
+        Args:
+            materialization: The containing local file.
+            partitions: The logical subject ranges to expose.
+        """
+        identifier = materialization.materialization_id
+        self.connection.execute(
+            "DELETE FROM logical_partitions WHERE materialization_id = ?",
+            [identifier],
+        )
+        for partition in partitions:
+            self.connection.execute(
+                "INSERT INTO logical_partitions VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                self._partition_row(identifier, partition),
+            )
+
+    def publish_materialization(
+        self,
+        materialization: Materialization,
+        partitions: Sequence[LogicalPartition],
+    ) -> None:
+        """Atomically publish one local file and all of its logical partitions.
+
+        Args:
+            materialization: The verified local file metadata.
+            partitions: Every logical range provided by the file.
+        """
+        archive = self.archive(materialization.archive_key)
+        if archive is None:
+            raise KeyError(
+                f"archive {materialization.archive_key.archive_id} was not discovered"
+            )
+        if not partitions:
+            raise ValueError("materialization must contain a logical partition")
+        expected = (
+            materialization.archive_key.source,
+            materialization.archive_key.product,
+            materialization.archive_key.dataset,
+        )
+        for partition in partitions:
+            if partition.materialization_path != materialization.local_path:
+                raise ValueError(
+                    "logical partition path does not match materialization"
+                )
+            if (partition.source, partition.product, partition.dataset) != expected:
+                raise ValueError("logical partition dataset does not match archive")
+        identifiers = [
+            partition.partition_id(materialization.materialization_id)
+            for partition in partitions
+        ]
+        if len(identifiers) != len(set(identifiers)):
+            raise ValueError("materialization contains duplicate logical partitions")
+        with self._transaction():
+            self._write_materialization(materialization)
+            self._write_partitions(materialization, partitions)
+            self.connection.execute(
+                """
+                UPDATE archive_objects SET
+                    status = 'ready', error = NULL, last_attempt_at = current_timestamp,
+                    revision_id = COALESCE(?, revision_id)
+                WHERE archive_id = ?
+                """,
+                [materialization.archive_revision, archive.key.archive_id],
+            )
+
+    @staticmethod
+    def _logical_partition(row: Sequence[Any]) -> LogicalPartition:
+        """Rebuild one logical partition from catalog values.
+
+        Args:
+            row: Values selected in logical partition column order.
+
+        Returns:
+            The reconstructed partition.
+        """
+        start = cast(datetime, _utc_timestamp(row[6]))
+        end = cast(datetime, _utc_timestamp(row[7]))
+        return LogicalPartition(
+            source=row[0],
+            product=row[1],
+            dataset=row[2],
+            subject=DataSubject(cast(SubjectKind, row[3]), row[4]),
+            interval=row[5] or None,
+            coverage_start=start,
+            coverage_end=end,
+            materialization_path=Path(row[8]),
+            predicate_column=row[9],
+            predicate_value=row[10],
+            row_count=row[11],
+            source_day=row[12],
+        )
+
+    def partitions_between(
+        self,
+        source: str,
+        product: str,
+        dataset: str,
+        subject: DataSubject,
+        interval: str | None,
+        start: datetime,
+        end: datetime,
+    ) -> list[LogicalPartition]:
+        """Return logical partitions overlapping an exact requested range.
+
+        Args:
+            source: The source identifier.
+            product: The product identifier.
+            dataset: The dataset identifier.
+            subject: The native logical subject.
+            interval: The stored interval or ``None`` for raw events.
+            start: The inclusive UTC request boundary.
+            end: The exclusive UTC request boundary.
+
+        Returns:
+            Matching logical partitions ordered by coverage.
+        """
+        if start.tzinfo is None or end.tzinfo is None:
+            raise ValueError("partition query timestamps must include a timezone")
+        if start >= end:
+            raise ValueError("partition range must end after it starts")
+        rows = self.connection.execute(
+            """
+            SELECT p.source, p.product, p.dataset, p.subject_kind, p.subject_value,
+                   p.interval, p.coverage_start, p.coverage_end, m.local_path,
+                   p.predicate_column, p.predicate_value, p.row_count, p.source_day
+            FROM logical_partitions AS p
+            JOIN materializations AS m USING (materialization_id)
+            WHERE p.source = ? AND p.product = ? AND p.dataset = ?
+              AND p.subject_kind = ? AND p.subject_value = ? AND p.interval = ?
+              AND p.coverage_start < ? AND p.coverage_end > ?
+              AND m.superseded_at IS NULL
+            ORDER BY p.coverage_start, p.coverage_end, m.local_path
+            """,
+            [
+                source,
+                product,
+                dataset,
+                subject.kind,
+                subject.value,
+                interval or "",
+                _database_timestamp(end),
+                _database_timestamp(start),
+            ],
+        ).fetchall()
+        return [self._logical_partition(row) for row in rows]
+
+    def delete_partitions(
+        self,
+        source: str,
+        product: str,
+        dataset: str,
+        subject: DataSubject,
+        interval: str | None,
+        start: datetime,
+        end: datetime,
+    ) -> int:
+        """Remove logical references without deleting shared physical files.
+
+        Args:
+            source: The source identifier.
+            product: The product identifier.
+            dataset: The dataset identifier.
+            subject: The logical subject to remove.
+            interval: The stored interval or ``None`` for raw events.
+            start: The inclusive removal boundary.
+            end: The exclusive removal boundary.
+
+        Returns:
+            The number of logical partition rows removed.
+        """
+        if start.tzinfo is None or end.tzinfo is None or start >= end:
+            raise ValueError("partition removal requires a valid aware time range")
+        rows = self.connection.execute(
+            """
+            DELETE FROM logical_partitions
+            WHERE source = ? AND product = ? AND dataset = ?
+              AND subject_kind = ? AND subject_value = ? AND interval = ?
+              AND coverage_start < ? AND coverage_end > ?
+            RETURNING partition_id
+            """,
+            [
+                source,
+                product,
+                dataset,
+                subject.kind,
+                subject.value,
+                interval or "",
+                _database_timestamp(end),
+                _database_timestamp(start),
+            ],
+        ).fetchall()
+        return len(rows)
+
+    @staticmethod
+    def _stored_materialization(row: Sequence[Any]) -> Materialization:
+        """Rebuild one materialization joined to its archive key.
+
+        Args:
+            row: Materialization values followed by archive identity values.
+
+        Returns:
+            The reconstructed local materialization.
+        """
+        key = ArchiveKey(
+            source=row[14],
+            product=row[15],
+            dataset=row[16],
+            provider=row[17],
+            remote_scope_kind=cast(SubjectKind, row[18]),
+            remote_scope_value=row[19],
+            cadence=row[20],
+            period_start=row[21],
+            period_end=row[22],
+            remote_name=row[23],
+        )
+        return Materialization(
+            archive_key=key,
+            local_path=Path(row[3]),
+            schema_version=row[5],
+            row_count=row[9],
+            first_timestamp=cast(datetime, _utc_timestamp(row[10])),
+            last_timestamp=cast(datetime, _utc_timestamp(row[11])),
+            local_size=row[7],
+            local_mtime_ns=row[8],
+            file_format=row[4],
+            layout_version=row[6],
+            archive_revision=row[2],
+            ready_at=cast(datetime, _utc_timestamp(row[12])),
+            superseded_at=_utc_timestamp(row[13]),
+        )
+
+    def unreferenced_materializations(self) -> list[Materialization]:
+        """Return local files that no logical partition still references."""
+        rows = self.connection.execute("""
+            SELECT m.*, a.source, a.product, a.dataset, a.provider,
+                   a.remote_scope_kind, a.remote_scope_value, a.cadence,
+                   a.period_start, a.period_end, a.remote_name
+            FROM materializations AS m
+            JOIN archive_objects AS a USING (archive_id)
+            WHERE NOT EXISTS (
+                SELECT 1 FROM logical_partitions AS p
+                WHERE p.materialization_id = m.materialization_id
+            )
+            ORDER BY m.local_path
+            """).fetchall()
+        return [self._stored_materialization(row) for row in rows]
+
+    def delete_materialization(self, materialization_id: str) -> Path:
+        """Delete unreferenced local metadata and return its filesystem path.
+
+        Args:
+            materialization_id: The local materialization identity to remove.
+
+        Returns:
+            The path that the caller may safely delete from the filesystem.
+        """
+        referenced = self.connection.execute(
+            "SELECT count(*) FROM logical_partitions WHERE materialization_id = ?",
+            [materialization_id],
+        ).fetchone()
+        if referenced is not None and referenced[0]:
+            raise RuntimeError("materialization is still referenced")
+        row = self.connection.execute(
+            "DELETE FROM materializations WHERE materialization_id = ? RETURNING local_path",
+            [materialization_id],
+        ).fetchone()
+        if row is None:
+            raise KeyError(f"materialization {materialization_id} was not found")
+        return Path(row[0])
+
+    def _backfill_logical_catalog(self) -> None:
+        """Adapt existing one-file resources into physical and logical metadata."""
+        rows = self.connection.execute("""
+            SELECT source, product, dataset, symbol, interval, cadence,
+                   day, url, checksum_url, status, archive_checksum,
+                   parquet_path, parquet_size, parquet_mtime_ns, row_count,
+                   first_timestamp, last_timestamp, archive_symbol, timestamp_column,
+                   schema_version, error, last_attempt_at, end_day, cadence,
+                   coverage_start, coverage_end, checksum_algorithm
+            FROM resources
+            ORDER BY source, product, dataset, symbol, interval, cadence, day
+            """).fetchall()
+        if not rows:
+            return
+        now = datetime.now(UTC)
+        with self._transaction():
+            for row in rows:
+                resource = self._resource(row[6:])
+                remote_name = Path(urlsplit(resource.url).path).name or resource.url
+                key = ArchiveKey(
+                    source=row[0],
+                    product=row[1],
+                    dataset=row[2],
+                    provider="legacy_archive",
+                    remote_scope_kind="instrument",
+                    remote_scope_value=row[3],
+                    cadence=row[5],
+                    period_start=resource.day,
+                    period_end=resource.last_day,
+                    remote_name=remote_name,
+                )
+                integrity = resource.integrity_spec
+                status = (
+                    resource.status
+                    if resource.status in {"discovered", "ready", "failed", "missing"}
+                    else "discovered"
+                )
+                archive = ArchiveObject(
+                    key=key,
+                    url=resource.url,
+                    integrity=integrity,
+                    discovered_at=resource.last_attempt_at or now,
+                    status=cast(ArchiveStatus, status),
+                    revision_id=resource.archive_checksum,
+                    last_attempt_at=resource.last_attempt_at,
+                    error=resource.error,
+                )
+                self._write_archive(archive)
+                if resource.status != "ready" or resource.parquet_path is None:
+                    continue
+                coverage_start, coverage_end = resource.coverage
+                materialization = Materialization(
+                    archive_key=key,
+                    local_path=resource.parquet_path,
+                    schema_version=resource.schema_version,
+                    row_count=resource.row_count or 0,
+                    first_timestamp=resource.first_timestamp or coverage_start,
+                    last_timestamp=(
+                        resource.last_timestamp or coverage_end - datetime.resolution
+                    ),
+                    local_size=resource.parquet_size or 0,
+                    local_mtime_ns=resource.parquet_mtime_ns,
+                    archive_revision=resource.archive_checksum,
+                    ready_at=resource.last_attempt_at or now,
+                )
+                partition = LogicalPartition(
+                    source=key.source,
+                    product=key.product,
+                    dataset=key.dataset,
+                    subject=DataSubject("instrument", row[3]),
+                    interval=row[4] or None,
+                    coverage_start=coverage_start,
+                    coverage_end=coverage_end,
+                    materialization_path=resource.parquet_path,
+                    predicate_column=None,
+                    predicate_value=None,
+                    row_count=resource.row_count or 0,
+                    source_day=resource.day,
+                )
+                self._write_materialization(materialization)
+                self._write_partitions(materialization, [partition])
 
     def markets(self, source: str, product: str) -> list[Market]:
         """Return markets stored for one source product.
