@@ -24,7 +24,7 @@ from veldra.core.models import (
     ResourceKey,
     Result,
 )
-from veldra.core.matching import suggest_symbols
+from veldra.core.matching import exact_markets, suggest_symbols
 from veldra.core.query import (
     empty_frame,
     missing_ranges,
@@ -168,11 +168,7 @@ def _resolve_market(
     Returns:
         The unique market and no error, or no market and a structured error.
     """
-    native = [market for market in markets if market.symbol == pair]
-    if len(native) == 1:
-        return native[0], None
-    normalized = normalize_pair(pair)
-    matches = [market for market in markets if market.normalized_symbol == normalized]
+    matches = exact_markets(pair, markets)
     if len(matches) == 1:
         return matches[0], None
     if matches:

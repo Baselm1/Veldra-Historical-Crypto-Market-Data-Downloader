@@ -5,8 +5,45 @@ from collections.abc import Sequence
 from rapidfuzz.distance import JaroWinkler
 
 from veldra.core.models import Market
+from veldra.core.request import normalize_pair
 
 MINIMUM_SIMILARITY = 0.90
+
+
+def market_aliases(market: Market) -> tuple[str, ...]:
+    """Return normalized public, native, and archive names for one market.
+
+    Args:
+        market: The source market whose identifiers are inspected.
+
+    Returns:
+        Unique nonempty identifiers in stable preference order.
+    """
+    aliases: list[str] = []
+    for value in (market.symbol, market.normalized_symbol, market.pair):
+        if not value:
+            continue
+        normalized = normalize_pair(value)
+        if normalized and normalized not in aliases:
+            aliases.append(normalized)
+    return tuple(aliases)
+
+
+def exact_markets(query: str, markets: Sequence[Market]) -> list[Market]:
+    """Resolve a query against native names before normalized aliases.
+
+    Args:
+        query: The caller's original market query.
+        markets: Source markets eligible for matching.
+
+    Returns:
+        Native exact matches, or all matches through normalized aliases.
+    """
+    native = [market for market in markets if market.symbol == query]
+    if native:
+        return native
+    normalized = normalize_pair(query)
+    return [market for market in markets if normalized in market_aliases(market)]
 
 
 def _quote_matches(query: str, market: Market) -> bool:
@@ -34,8 +71,15 @@ def _fuzzy_markets(query: str, markets: Sequence[Market]) -> list[Market]:
         Candidates scoring at least ninety percent by Jaro-Winkler similarity.
     """
     scored = [
-        (JaroWinkler.normalized_similarity(query, market.normalized_symbol), market)
+        (
+            max(
+                JaroWinkler.normalized_similarity(query, alias)
+                for alias in market_aliases(market)
+            ),
+            market,
+        )
         for market in markets
+        if market_aliases(market)
     ]
     accepted = [item for item in scored if item[0] >= MINIMUM_SIMILARITY]
     accepted.sort(
@@ -61,12 +105,12 @@ def rank_markets(query: str, markets: Sequence[Market], limit: int) -> list[Mark
     Returns:
         Ranked markets without automatically selecting a fuzzy candidate.
     """
-    exact = [market for market in markets if market.normalized_symbol == query]
+    exact = exact_markets(query, markets)
     prefix = [
         market
         for market in markets
-        if market.normalized_symbol != query
-        and market.normalized_symbol.startswith(query)
+        if market not in exact
+        and any(alias.startswith(query) for alias in market_aliases(market))
     ]
     excluded = {*exact, *prefix}
     remaining = [market for market in markets if market not in excluded]

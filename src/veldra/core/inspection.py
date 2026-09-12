@@ -24,7 +24,7 @@ from veldra.core.engine import (
     utc_today,
 )
 from veldra.core.models import Availability, Market, Resource, ResourceKey
-from veldra.core.matching import rank_markets
+from veldra.core.matching import exact_markets, rank_markets
 from veldra.core.request import (
     Request,
     normalize_pair,
@@ -533,17 +533,9 @@ def _resolve_market(pair: object, markets: list[Market]) -> Market:
     """
     parsed, _single = parse_pairs(pair)
     requested = parsed[0]
-    native = [market for market in markets if market.symbol == requested]
-    if len(native) == 1:
-        return native[0]
-    normalized = [
-        market
-        for market in markets
-        if market.normalized_symbol == normalize_pair(requested)
-    ]
-    if len(normalized) == 1:
-        return normalized[0]
-    matches = native or normalized
+    matches = exact_markets(requested, markets)
+    if len(matches) == 1:
+        return matches[0]
     if len(matches) > 1:
         symbols = ", ".join(market.symbol for market in matches)
         raise ValueError(f"Pair '{requested}' is ambiguous; matches: {symbols}")
