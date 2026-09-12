@@ -8,6 +8,7 @@ import pytest
 from veldra.core.datasets import DatasetSpec
 from veldra.binance.datasets import get_dataset
 from veldra.core.request import Request, normalize_pair, parse_timestamp
+from veldra.core.subjects import DataSubject
 
 UTC = timezone.utc
 
@@ -62,6 +63,35 @@ def test_defaults_and_single_pair_shape() -> None:
     assert request.columns is None
     assert request.product == "spot"
     assert request.dataset == "klines"
+    assert request.subjects == (DataSubject("instrument", "BTCUSDT"),)
+
+
+@pytest.mark.parametrize(
+    ("kind", "value"),
+    [
+        ("instrument_family", "BTC-USD"),
+        ("currency", "USDT"),
+        ("all", "ANY"),
+    ],
+)
+def test_requests_accept_declared_non_instrument_subjects(
+    kind: str, value: str
+) -> None:
+    """Confirm provider requests can carry families, currencies, and bulk scope.
+
+    Args:
+        kind: The historical subject kind.
+        value: The corresponding native subject value.
+    """
+    request = Request.parse(
+        value,
+        "2024-01-01",
+        "2024-01-01",
+        subject_kind=kind,
+    )
+
+    assert request.subjects == (DataSubject(kind, value),)
+    assert request.pairs == (value,)
 
 
 def test_request_resolution_applies_kline_defaults_after_dataset_lookup() -> None:

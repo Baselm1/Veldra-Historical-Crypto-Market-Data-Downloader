@@ -8,6 +8,13 @@ from typing import TYPE_CHECKING, cast
 
 import pandas as pd
 
+from veldra.core.subjects import (
+    DataSubject,
+    SubjectKind,
+    normalize_subject,
+    parse_subjects,
+)
+
 if TYPE_CHECKING:
     from veldra.core.datasets import DatasetSpec
 
@@ -30,11 +37,7 @@ def normalize_pair(value: str) -> str:
     Returns:
         The normalized pair used to compare different spellings.
     """
-    return "".join(
-        character
-        for character in value.upper()
-        if character.isascii() and character.isalnum()
-    )
+    return normalize_subject(value)
 
 
 def _text_timestamp(value: str) -> date | datetime:
@@ -116,21 +119,12 @@ def parse_pairs(pairs: object) -> tuple[tuple[str, ...], bool]:
     Returns:
         The pairs as a tuple and whether the caller supplied one string.
     """
-    single = isinstance(pairs, str)
-    if single:
-        values = [pairs]
-    elif isinstance(pairs, list):
-        values = pairs
-    else:
-        raise TypeError("pairs must be a string or a list of strings")
-    if not values:
-        raise ValueError("pairs must not be empty")
-    if any(not isinstance(value, str) for value in values):
-        raise TypeError("each pair must be a string")
-    typed_values = cast(list[str], values)
-    if any(not normalize_pair(value) for value in typed_values):
-        raise ValueError("each pair must contain ASCII letters or digits")
-    return tuple(typed_values), single
+    try:
+        subjects, single = parse_subjects(pairs, "instrument")
+    except (TypeError, ValueError) as error:
+        message = str(error).replace("subjects", "pairs").replace("subject", "pair")
+        raise type(error)(message) from error
+    return tuple(subject.value for subject in subjects), single
 
 
 def parse_range(starting_date: object, end_date: object) -> TimeRange:
@@ -317,7 +311,7 @@ def parse_gap_policy(value: object) -> str:
 class Request:
     """Hold one validated source-independent downloader request."""
 
-    pairs: tuple[str, ...]
+    subjects: tuple[DataSubject, ...]
     single: bool
     start: datetime
     end: datetime
@@ -326,6 +320,11 @@ class Request:
     product: str = "spot"
     dataset: str = "klines"
     gap_policy: str | None = "forward"
+
+    @property
+    def pairs(self) -> tuple[str, ...]:
+        """Return native subject values for existing pair-oriented workflows."""
+        return tuple(subject.value for subject in self.subjects)
 
     @classmethod
     def parse(
@@ -340,6 +339,7 @@ class Request:
         product: object = "spot",
         dataset: object = "klines",
         gap_policy: object = "forward",
+        subject_kind: object = "instrument",
     ) -> "Request":
         """Validate caller values and create a request.
 
@@ -353,11 +353,12 @@ class Request:
             product: The lowercase source product identifier.
             dataset: The lowercase dataset identifier.
             gap_policy: The behavior used for internal missing candles.
+            subject_kind: The native scope represented by each requested value.
 
         Returns:
             A validated source-independent request.
         """
-        parsed_pairs, single = parse_pairs(pairs)
+        parsed_subjects, single = parse_subjects(pairs, subject_kind)
         start, end = parse_range(starting_date, end_date)
         parsed_product = parse_identifier(product, name="product")
         parsed_dataset = parse_identifier(dataset, name="dataset")
@@ -369,7 +370,7 @@ class Request:
         columns = parse_columns(desired_columns)
         parsed_gap_policy = None if gap_policy is None else parse_gap_policy(gap_policy)
         request = cls(
-            pairs=parsed_pairs,
+            subjects=parsed_subjects,
             single=single,
             start=start,
             end=end,

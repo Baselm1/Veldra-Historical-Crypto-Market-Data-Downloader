@@ -9,6 +9,8 @@ from typing import Literal
 
 import pandas as pd
 
+from veldra.core.subjects import DataSubject
+
 TimeRange = tuple[datetime, datetime]
 type JsonValue = (
     str | int | float | bool | None | list[JsonValue] | dict[str, JsonValue]
@@ -119,6 +121,12 @@ class ResourceKey:
     interval: str | None
     archive_symbol: str | None = None
     cadence: str = "daily"
+    subject: DataSubject | None = None
+
+    @property
+    def data_subject(self) -> DataSubject:
+        """Return explicit scope or adapt a legacy symbol to an instrument."""
+        return self.subject or DataSubject("instrument", self.symbol)
 
 
 @dataclass(frozen=True)

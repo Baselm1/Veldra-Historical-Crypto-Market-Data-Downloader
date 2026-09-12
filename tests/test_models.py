@@ -7,7 +7,14 @@ import pandas as pd
 import pytest
 
 from veldra import Gap, Message, MissingCandlesError, Result
-from veldra.core.models import IntegritySpec, Market, Resource, result_report
+from veldra.core.models import (
+    IntegritySpec,
+    Market,
+    Resource,
+    ResourceKey,
+    result_report,
+)
+from veldra.core.subjects import DataSubject
 
 UTC = timezone.utc
 START = datetime(2025, 1, 1, tzinfo=UTC)
@@ -21,6 +28,23 @@ def test_market_activity_is_independent_from_native_status() -> None:
 
     assert online.active is True
     assert halted.active is False
+
+
+def test_resource_keys_adapt_symbols_to_explicit_data_subjects() -> None:
+    """Confirm legacy keys expose instruments while new keys retain their scope."""
+    legacy = ResourceKey("binance", "spot", "klines", "BTCUSDT", "1m")
+    family = DataSubject("instrument_family", "BTC-USD")
+    scoped = ResourceKey(
+        "okx",
+        "inverse_futures",
+        "trades",
+        "BTC-USD",
+        None,
+        subject=family,
+    )
+
+    assert legacy.data_subject == DataSubject("instrument", "BTCUSDT")
+    assert scoped.data_subject is family
 
 
 def test_resource_rejects_an_unknown_checksum_algorithm() -> None:
