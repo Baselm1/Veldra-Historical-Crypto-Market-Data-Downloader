@@ -1,6 +1,7 @@
 """Query cached Parquet data through DuckDB."""
 
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 import logging
 from pathlib import Path
@@ -15,6 +16,23 @@ from veldra.core.request import parse_gap_policy
 
 EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 LOGGER = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class ParquetInput:
+    """Describe one Parquet file and an optional logical-subject predicate."""
+
+    path: Path
+    predicate_column: str | None = None
+    predicate_value: str | None = None
+
+    def __post_init__(self) -> None:
+        """Require complete predicate declarations."""
+        if (self.predicate_column is None) != (self.predicate_value is None):
+            raise ValueError("Parquet predicates require both column and value")
+
+
+type QueryInput = Path | ParquetInput
 
 
 def _microseconds(value: datetime) -> int:
@@ -54,7 +72,7 @@ def _grid(start: datetime, end: datetime, dataset: DatasetSpec) -> tuple[int, in
 
 def missing_ranges(
     connection: duckdb.DuckDBPyConnection,
-    paths: Sequence[Path],
+    paths: Sequence[QueryInput],
     dataset: DatasetSpec,
     start: datetime,
     end: datetime,
@@ -75,12 +93,13 @@ def missing_ranges(
     first, stop, step = _grid(start, end, dataset)
     if first >= stop or not paths:
         return []
+    relation, relation_parameters = _parquet_relation(paths)
     rows = connection.execute(
         f"""
         WITH actual AS (
             SELECT epoch_us({_identifier(dataset.time_column)}) AS point,
                    CAST({_identifier(dataset.time_column)} AS DATE) AS day
-            FROM read_parquet(?)
+            FROM {relation}
         ), day_bounds AS (
             SELECT day, min(point) AS first_point, max(point) AS last_point
             FROM actual GROUP BY day
@@ -100,7 +119,7 @@ def missing_ranges(
         SELECT min(point), max(point) + ?, count(*)
         FROM grouped GROUP BY island ORDER BY min(point)
         """,
-        [[str(path) for path in paths], first, stop, step, step, step],
+        [*relation_parameters, first, stop, step, step, step],
     ).fetchall()
     return [
         Gap(
@@ -259,6 +278,96 @@ def _usable_identifier(value: object) -> bool:
     return isinstance(value, str) and bool(value.strip()) and "\x00" not in value
 
 
+def _query_input(value: QueryInput) -> ParquetInput:
+    """Adapt a legacy path into an unfiltered query input.
+
+    Args:
+        value: A local path or explicit logical query input.
+
+    Returns:
+        The explicit query input.
+    """
+    item = value if isinstance(value, ParquetInput) else ParquetInput(value)
+    if item.predicate_column is not None and not _usable_identifier(
+        item.predicate_column
+    ):
+        raise ValueError("predicate column must contain usable text")
+    return item
+
+
+def _input_groups(
+    inputs: Sequence[QueryInput],
+) -> tuple[set[Path], dict[tuple[Path, str], set[str]]]:
+    """Group query inputs into unfiltered paths and filtered subject values.
+
+    Args:
+        inputs: Local files and optional subject predicates.
+
+    Returns:
+        Unfiltered paths and filtered values grouped by path and column.
+    """
+    items = [_query_input(value) for value in inputs]
+    unfiltered = {item.path for item in items if item.predicate_column is None}
+    filtered: dict[tuple[Path, str], set[str]] = {}
+    for item in items:
+        if item.path in unfiltered or item.predicate_column is None:
+            continue
+        assert item.predicate_value is not None
+        filtered.setdefault((item.path, item.predicate_column), set()).add(
+            item.predicate_value
+        )
+    return unfiltered, filtered
+
+
+def _filtered_relations(
+    filtered: Mapping[tuple[Path, str], set[str]],
+) -> tuple[list[str], list[object]]:
+    """Build parameterized relations for subject-filtered physical files.
+
+    Args:
+        filtered: Subject values grouped by materialization path and column.
+
+    Returns:
+        SQL relations and positional parameters in matching order.
+    """
+    relations: list[str] = []
+    parameters: list[object] = []
+    for (path, column), values in sorted(
+        filtered.items(), key=lambda item: (str(item[0][0]), item[0][1])
+    ):
+        ordered = sorted(values)
+        placeholders = ", ".join("?" for _ in ordered)
+        relations.append(
+            f"SELECT * FROM read_parquet(?) WHERE {_identifier(column)} IN ({placeholders})"
+        )
+        parameters.extend(([str(path)], *ordered))
+    return relations, parameters
+
+
+def _parquet_relation(inputs: Sequence[QueryInput]) -> tuple[str, list[object]]:
+    """Build one deduplicated and safely filtered Parquet relation.
+
+    Args:
+        inputs: Local Parquet files and their optional subject predicates.
+
+    Returns:
+        A SQL relation and its positional parameters.
+    """
+    unfiltered, filtered = _input_groups(inputs)
+    relations: list[str] = []
+    parameters: list[object] = []
+    if unfiltered:
+        paths = sorted(str(path) for path in unfiltered)
+        relations.append("SELECT * FROM read_parquet(?)")
+        parameters.append(paths)
+    filtered_sql, filtered_parameters = _filtered_relations(filtered)
+    relations.extend(filtered_sql)
+    parameters.extend(filtered_parameters)
+    if not relations:
+        raise ValueError("Parquet query requires at least one input")
+    return f"({' UNION ALL '.join(relations)})", parameters
+
+
 def _validate_columns(dataset: DatasetSpec, columns: Mapping[str, str]) -> None:
     """Reject empty, unknown, or ambiguous column projections.
 
@@ -366,7 +475,7 @@ def _filled_fields(dataset: DatasetSpec, step: int, policy: str) -> str:
 
 def _filled_query(
     dataset: DatasetSpec,
-    paths: Sequence[Path],
+    paths: Sequence[QueryInput],
     start: datetime,
     end: datetime,
     policy: str,
@@ -386,12 +495,13 @@ def _filled_query(
     _, _, step = _grid(start, end, dataset)
     time_column = _identifier(dataset.time_column)
     fields = _filled_fields(dataset, step, policy)
+    relation, relation_parameters = _parquet_relation(paths)
     sql = f"""
         WITH actual AS (
             SELECT epoch_us({time_column}) AS grid_time,
                    CAST({time_column} AS DATE) AS source_day,
                    * EXCLUDE ({time_column})
-            FROM read_parquet(?)
+            FROM {relation}
         ), day_bounds AS (
             SELECT source_day, min(grid_time) AS first_time,
                    max(grid_time) AS last_time
@@ -424,12 +534,12 @@ def _filled_query(
         WHERE {time_column} >= ? AND {time_column} < ?
         ORDER BY {_ordering(dataset)}
     """
-    return sql, [[str(path) for path in paths], step, step, start, end]
+    return sql, [*relation_parameters, step, step, start, end]
 
 
 def _raw_query(
     dataset: DatasetSpec,
-    paths: Sequence[Path],
+    paths: Sequence[QueryInput],
     start: datetime,
     end: datetime,
 ) -> tuple[str, list[object]]:
@@ -445,12 +555,13 @@ def _raw_query(
         SQL text and its positional parameters.
     """
     time_column = _identifier(dataset.time_column)
+    relation, parameters = _parquet_relation(paths)
     sql = (
-        "SELECT *, false AS is_synthetic FROM read_parquet(?) "
+        f"SELECT *, false AS is_synthetic FROM {relation} "
         f"WHERE {time_column} >= ? AND {time_column} < ? "
         f"ORDER BY {_ordering(dataset)}"
     )
-    return sql, [[str(path) for path in paths], start, end]
+    return sql, [*parameters, start, end]
 
 
 def _bucket_expression(interval: str) -> str:
@@ -611,7 +722,7 @@ def _query_options(
 
 def _source_query(
     dataset: DatasetSpec,
-    paths: Sequence[Path],
+    paths: Sequence[QueryInput],
     start: datetime,
     end: datetime,
     gap_policy: str | None,
@@ -663,7 +774,7 @@ def _result_query(
 
 def query_parquet(
     connection: duckdb.DuckDBPyConnection,
-    paths: Sequence[Path],
+    paths: Sequence[QueryInput],
     dataset: DatasetSpec,
     start: datetime,
     end: datetime,

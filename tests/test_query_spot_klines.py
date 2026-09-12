@@ -11,7 +11,7 @@ import pytest
 from veldra.core.datasets import DatasetSpec
 from veldra.binance.datasets import SPOT_AGG_TRADES, SPOT_KLINES, SPOT_TRADES
 from arrow_helpers import normalize_chunk
-from veldra.core.query import empty_frame, query_parquet
+from veldra.core.query import ParquetInput, empty_frame, query_parquet
 
 
 @pytest.fixture
@@ -129,6 +129,85 @@ def test_query_parquet_filters_end_exclusively_and_orders_multiple_files(
     assert str(result["time"].dtype) == "datetime64[us, UTC]"
     assert result["price"].dtype == "float64"
     assert result["trades"].dtype == "int64"
+
+
+def test_shared_parquet_is_filtered_before_projection_and_scanned_once(
+    connection: duckdb.DuckDBPyConnection, tmp_path: Path
+) -> None:
+    """Confirm one all-market file returns only the requested instrument."""
+    path = tmp_path / "all.parquet"
+    bitcoin = kline_frame("2025-01-01", (100.0, 110.0)).assign(
+        instrument_name="BTC-USDT"
+    )
+    ether = kline_frame("2025-01-01", (200.0, 210.0)).assign(instrument_name="ETH-USDT")
+    pd.concat([bitcoin, ether], ignore_index=True).to_parquet(path, index=False)
+    selected = ParquetInput(path, "instrument_name", "BTC-USDT")
+
+    result = query_parquet(
+        connection,
+        [selected, selected],
+        SPOT_KLINES,
+        datetime(2025, 1, 1, tzinfo=UTC),
+        datetime(2025, 1, 2, tzinfo=UTC),
+        selected_columns(),
+    )
+
+    assert result["price"].tolist() == [101.0, 111.0]
+
+
+def test_shared_parquet_predicate_values_are_sql_parameters(
+    connection: duckdb.DuckDBPyConnection, tmp_path: Path
+) -> None:
+    """Confirm unusual native subject text is matched as data, not SQL."""
+    path = tmp_path / "quoted.parquet"
+    value = "BTC'; DROP TABLE markets; --"
+    kline_frame("2025-01-01", (100.0, 110.0)).assign(instrument_name=value).to_parquet(
+        path, index=False
+    )
+
+    result = query_parquet(
+        connection,
+        [ParquetInput(path, "instrument_name", value)],
+        SPOT_KLINES,
+        datetime(2025, 1, 1, tzinfo=UTC),
+        datetime(2025, 1, 2, tzinfo=UTC),
+        selected_columns(),
+    )
+
+    assert len(result) == 2
+
+
+@pytest.mark.parametrize(
+    "input_value",
+    [
+        ParquetInput(Path("file.parquet"), " ", "BTC-USDT"),
+        ParquetInput(Path("file.parquet"), "bad\0column", "BTC-USDT"),
+    ],
+)
+def test_shared_parquet_rejects_unsafe_predicate_columns(
+    connection: duckdb.DuckDBPyConnection, input_value: ParquetInput
+) -> None:
+    """Confirm logical predicate identifiers are validated before SQL runs.
+
+    Args:
+        connection: The isolated DuckDB connection.
+        input_value: The unsafe logical partition input.
+    """
+    with pytest.raises(ValueError, match="predicate column"):
+        query_parquet(
+            connection,
+            [input_value],
+            SPOT_KLINES,
+            datetime(2025, 1, 1, tzinfo=UTC),
+            datetime(2025, 1, 2, tzinfo=UTC),
+            selected_columns(),
+        )
+
+
+def test_shared_parquet_requires_complete_predicates() -> None:
+    """Confirm a predicate cannot omit its column or value."""
+    with pytest.raises(ValueError, match="both"):
+        ParquetInput(Path("file.parquet"), "instrument_name", None)
 
 
 def test_query_parquet_supports_all_columns_and_synthetic_marker(

@@ -30,6 +30,8 @@ from veldra.core.models import (
 )
 from veldra.core.matching import exact_markets, suggest_symbols
 from veldra.core.query import (
+    ParquetInput,
+    QueryInput,
     empty_frame,
     missing_ranges,
     query_parquet,
@@ -601,8 +603,8 @@ def _usable_range(
 def _query_result(
     result: Result,
     connection: duckdb.DuckDBPyConnection,
-    paths: list[Path],
-    gap_paths: list[Path],
+    paths: list[QueryInput],
+    gap_paths: list[QueryInput],
     dataset: DatasetSpec,
     request: Request,
     used_range: tuple[datetime, datetime],
@@ -814,8 +816,8 @@ def _discover(
 def _populate_query(
     result: Result,
     catalog: Catalog,
-    paths: list[Path],
-    gap_paths: list[Path],
+    paths: list[QueryInput],
+    gap_paths: list[QueryInput],
     dataset: DatasetSpec,
     request: Request,
     used_range: tuple[datetime, datetime],
@@ -873,6 +875,69 @@ def _query_failure(result: Result, error: Exception) -> bool:
     return False
 
 
+def _logical_query_inputs(
+    catalog: Catalog,
+    key: ResourceKey,
+    paths: list[Path],
+    used_range: tuple[datetime, datetime],
+) -> tuple[list[QueryInput], int]:
+    """Prefer logical partition predicates while retaining legacy path fallback.
+
+    Args:
+        catalog: The catalog containing logical materializations.
+        key: The requested logical dataset identity.
+        paths: Valid local files selected by the legacy cache pipeline.
+        used_range: The exact range about to be queried.
+
+    Returns:
+        Query inputs and the number of matching logical partitions.
+    """
+    valid_paths = set(paths)
+    partitions = [
+        partition
+        for partition in catalog.partitions_between(
+            key.source,
+            key.product,
+            key.dataset,
+            key.data_subject,
+            key.interval,
+            used_range[0],
+            used_range[1],
+        )
+        if partition.materialization_path in valid_paths
+    ]
+    if not partitions:
+        return list(paths), 0
+    return [
+        ParquetInput(
+            partition.materialization_path,
+            partition.predicate_column,
+            partition.predicate_value,
+        )
+        for partition in partitions
+    ], len(partitions)
+
+
+def _suspect_query_inputs(
+    query_inputs: list[QueryInput], gap_paths: list[Path]
+) -> list[QueryInput]:
+    """Keep query inputs whose physical files still require gap inspection.
+
+    Args:
+        query_inputs: Logical or legacy inputs selected for the result query.
+        gap_paths: Physical files whose metadata cannot prove continuity.
+
+    Returns:
+        Inputs retaining any required logical predicate.
+    """
+    suspects = set(gap_paths)
+    return [
+        value
+        for value in query_inputs
+        if (value.path if isinstance(value, ParquetInput) else value) in suspects
+    ]
+
+
 def _populate_cached_query(
     result: Result,
     catalog: Catalog,
@@ -906,17 +971,22 @@ def _populate_cached_query(
     )
     current_resources = catalog_archives_between(catalog, key, *used_range)
     gap_paths = suspect_gap_paths(current_resources, paths, dataset)
+    query_inputs, partition_count = _logical_query_inputs(
+        catalog, key, paths, used_range
+    )
+    gap_inputs = _suspect_query_inputs(query_inputs, gap_paths)
     LOGGER.debug(
-        "Gap scan planned: key=%s paths=%d suspect=%d",
+        "Gap scan planned: key=%s paths=%d logical=%d suspect=%d",
         key,
         len(paths),
-        len(gap_paths),
+        partition_count,
+        len(gap_inputs),
     )
     error = _populate_query(
         result,
         catalog,
-        paths,
-        gap_paths,
+        query_inputs,
+        gap_inputs,
         dataset,
         request,
         used_range,
