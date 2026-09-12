@@ -1,5 +1,5 @@
-"""Expose KuCoin source components before the public facade is added."""
+"""Expose the public KuCoin facade."""
 
-from .connector import KuCoinConnector
+from veldra.kucoin.facade import KuCoin
 
-__all__: tuple[str, ...] = ("KuCoinConnector",)
+__all__: tuple[str, ...] = ("KuCoin",)
