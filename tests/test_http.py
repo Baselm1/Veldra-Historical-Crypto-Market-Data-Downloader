@@ -1,6 +1,7 @@
 """Test retrying HTTP requests and verified streamed downloads."""
 
 from collections.abc import Iterator
+import base64
 from datetime import UTC, date, datetime, timedelta
 from email.utils import format_datetime
 import hashlib
@@ -19,7 +20,7 @@ from veldra.core.download import (
     get,
     retry_delay,
 )
-from veldra.core.models import Resource
+from veldra.core.models import IntegritySpec, Resource
 
 
 class Chunks(httpx.SyncByteStream):
@@ -676,3 +677,132 @@ def test_archive_checksum_retries_a_temporary_sidecar_failure() -> None:
 
     assert digest == hashlib.sha256(b"archive").hexdigest()
     assert calls == 2
+
+
+@pytest.mark.parametrize("header", ["content-md5", "etag"])
+def test_download_verifies_response_declared_md5(tmp_path: Path, header: str) -> None:
+    """Confirm OKX-style response headers verify one streamed archive.
+
+    Args:
+        tmp_path: The isolated download directory.
+        header: The MD5-bearing response header variant.
+    """
+    contents = b"okx archive"
+    digest = hashlib.md5(contents).hexdigest()
+    value = (
+        base64.b64encode(bytes.fromhex(digest)).decode()
+        if header == "content-md5"
+        else f'"{digest}"'
+    )
+    resource = Resource(
+        date(2025, 1, 1),
+        "https://data.example/file.zip",
+        None,
+        integrity=IntegritySpec("response_header", algorithm="md5"),
+    )
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        """Return one archive carrying the selected integrity header."""
+        calls.append(request.url.path)
+        return httpx.Response(200, content=contents, headers={header: value})
+
+    destination = tmp_path / "archive.zip"
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        actual = download(client, resource, destination, retries=0)
+
+    assert actual == digest
+    assert destination.read_bytes() == contents
+    assert calls == ["/file.zip"]
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [
+        {},
+        {"Content-MD5": "not base64"},
+        {"ETag": '"0123456789abcdef0123456789abcdef-2"'},
+    ],
+)
+def test_response_integrity_rejects_missing_or_unusable_md5(
+    tmp_path: Path, headers: dict[str, str]
+) -> None:
+    """Confirm absent, malformed, and multipart response digests fail safely.
+
+    Args:
+        tmp_path: The isolated download directory.
+        headers: The unusable response integrity metadata.
+    """
+    resource = Resource(
+        date(2025, 1, 1),
+        "https://data.example/file.zip",
+        None,
+        integrity=IntegritySpec("response_header", algorithm="md5"),
+    )
+    destination = tmp_path / "archive.zip"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        """Return bytes without usable MD5 evidence."""
+        return httpx.Response(200, content=b"archive", headers=headers)
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(ChecksumError, match="MD5"):
+            download(client, resource, destination, retries=0)
+
+    assert not destination.exists()
+    assert not destination.with_name("archive.zip.part").exists()
+
+
+def test_response_integrity_mismatch_is_retried_and_cleaned(tmp_path: Path) -> None:
+    """Confirm a mismatched response digest retries without partial bytes."""
+    resource = Resource(
+        date(2025, 1, 1),
+        "https://data.example/file.zip",
+        None,
+        integrity=IntegritySpec("response_header", algorithm="md5"),
+    )
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        """Return one bad digest followed by matching integrity metadata."""
+        nonlocal calls
+        calls += 1
+        contents = b"bad" if calls == 1 else b"good"
+        expected = hashlib.md5(b"good").digest()
+        return httpx.Response(
+            200,
+            content=contents,
+            headers={"Content-MD5": base64.b64encode(expected).decode()},
+        )
+
+    destination = tmp_path / "archive.zip"
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        digest = download(client, resource, destination, retries=1, backoff=0)
+
+    assert calls == 2
+    assert digest == hashlib.md5(b"good").hexdigest()
+    assert destination.read_bytes() == b"good"
+
+
+def test_archive_only_integrity_computes_sha256_without_a_sidecar(
+    tmp_path: Path,
+) -> None:
+    """Confirm structure-only archives retain a stable local content digest."""
+    contents = b"validated by the archive reader"
+    resource = Resource(
+        date(2025, 1, 1),
+        "https://data.example/file.zip",
+        None,
+        integrity=IntegritySpec("archive_only"),
+    )
+
+    destination = tmp_path / "archive.zip"
+    with httpx.Client(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, content=contents)
+        )
+    ) as client:
+        digest = download(client, resource, destination, retries=0)
+
+    assert digest == hashlib.sha256(contents).hexdigest()
+    assert destination.read_bytes() == contents

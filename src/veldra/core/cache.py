@@ -263,6 +263,13 @@ def _revalidate_cached_resource(
     Returns:
         Whether the local partition remains usable and an optional warning.
     """
+    if resource.integrity_spec.mode != "sidecar":
+        LOGGER.debug(
+            "Cached archive cannot be sidecar-revalidated: day=%s mode=%s",
+            resource.day,
+            resource.integrity_spec.mode,
+        )
+        return True, None
     if resource.archive_checksum is None:
         LOGGER.debug(
             "Cached archive lacks a source checksum and will be rebuilt: day=%s",

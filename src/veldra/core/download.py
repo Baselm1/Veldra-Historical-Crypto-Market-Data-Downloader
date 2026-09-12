@@ -1,6 +1,8 @@
 """Make retrying HTTP requests and verified streaming downloads."""
 
 from collections.abc import Callable, Mapping
+import base64
+import binascii
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 import hashlib
@@ -13,7 +15,7 @@ from urllib.parse import unquote, urlsplit
 
 import httpx
 
-from veldra.core.models import Resource
+from veldra.core.models import IntegritySpec, Resource
 
 RETRYABLE_STATUS_CODES = frozenset({408, 429, 500, 502, 503, 504})
 LOGGER = logging.getLogger(__name__)
@@ -272,17 +274,20 @@ def archive_checksum(
         Returns:
             The digest declared by the checksum sidecar.
         """
-        response = client.get(resource.checksum_url, timeout=timeout)
+        integrity = resource.integrity_spec
+        if integrity.mode != "sidecar" or integrity.sidecar_url is None:
+            raise ValueError("resource does not use a checksum sidecar")
+        response = client.get(integrity.sidecar_url, timeout=timeout)
         response.raise_for_status()
         digest = _checksum(
             response.text,
             resource.url,
-            resource.checksum_algorithm,
+            integrity.algorithm or resource.checksum_algorithm,
         )
         LOGGER.debug(
             "Archive checksum fetched: url=%s algorithm=%s digest=%s",
             resource.url,
-            resource.checksum_algorithm,
+            integrity.algorithm or resource.checksum_algorithm,
             digest,
         )
         return digest
@@ -307,6 +312,59 @@ def _declared_size(response: httpx.Response) -> int | None:
     except ValueError:
         return None
     return size if size >= 0 else None
+
+
+def _content_md5(value: str) -> str | None:
+    """Decode one base64 Content-MD5 value.
+
+    Args:
+        value: The response header value.
+
+    Returns:
+        The lowercase hexadecimal MD5 digest, or ``None`` when malformed.
+    """
+    try:
+        digest = base64.b64decode(value, validate=True)
+    except ValueError, binascii.Error:
+        return None
+    return digest.hex() if len(digest) == 16 else None
+
+
+def _etag_md5(value: str) -> str | None:
+    """Read a plain or quoted non-multipart MD5 ETag.
+
+    Args:
+        value: The response ETag header.
+
+    Returns:
+        The lowercase digest, or ``None`` for malformed and multipart ETags.
+    """
+    candidate = value.strip().removeprefix("W/").strip().strip('"')
+    if "-" in candidate or not re.fullmatch(r"[0-9a-fA-F]{32}", candidate):
+        return None
+    return candidate.lower()
+
+
+def _response_md5(response: httpx.Response, integrity: IntegritySpec) -> str:
+    """Return the expected MD5 from metadata or one response header.
+
+    Args:
+        response: The streamed source response carrying integrity metadata.
+        integrity: The response-header integrity policy.
+
+    Returns:
+        The expected lowercase MD5 digest.
+    """
+    if integrity.expected is not None:
+        return integrity.expected
+    content_md5 = response.headers.get("Content-MD5")
+    digest = _content_md5(content_md5) if content_md5 is not None else None
+    if digest is None:
+        etag = response.headers.get("ETag")
+        digest = _etag_md5(etag) if etag is not None else None
+    if digest is None:
+        raise ChecksumError("response does not provide a usable MD5 digest")
+    return digest
 
 
 def download(
@@ -348,18 +406,25 @@ def download(
         """
         partial.unlink(missing_ok=True)
         try:
-            sidecar = client.get(resource.checksum_url, timeout=timeout)
-            sidecar.raise_for_status()
-            expected = _checksum(
-                sidecar.text,
-                resource.url,
-                resource.checksum_algorithm,
-            )
-            digest = hashlib.new(resource.checksum_algorithm)
+            integrity = resource.integrity_spec
+            algorithm = integrity.algorithm or "sha256"
+            expected: str | None = None
+            if integrity.mode == "sidecar":
+                assert integrity.sidecar_url is not None
+                sidecar = client.get(integrity.sidecar_url, timeout=timeout)
+                sidecar.raise_for_status()
+                expected = _checksum(
+                    sidecar.text,
+                    resource.url,
+                    algorithm,
+                )
+            digest = hashlib.new(algorithm)
             size = 0
 
             with client.stream("GET", resource.url, timeout=timeout) as response:
                 response.raise_for_status()
+                if integrity.mode == "response_header":
+                    expected = _response_md5(response, integrity)
                 declared = _declared_size(response)
                 if declared is not None and declared > max_bytes:
                     raise DownloadSizeError("download size exceeds configured limit")
@@ -374,10 +439,9 @@ def download(
                         digest.update(chunk)
 
             actual = digest.hexdigest()
-            if actual != expected:
+            if expected is not None and actual != expected:
                 raise ChecksumError(
-                    f"{_algorithm_name(resource.checksum_algorithm)} mismatch "
-                    f"for {resource.url}"
+                    f"{_algorithm_name(algorithm)} mismatch " f"for {resource.url}"
                 )
             partial.replace(destination)
             LOGGER.info(
@@ -385,7 +449,7 @@ def download(
                 "digest=%s path=%s",
                 resource.url,
                 size,
-                resource.checksum_algorithm,
+                algorithm,
                 actual,
                 destination,
             )

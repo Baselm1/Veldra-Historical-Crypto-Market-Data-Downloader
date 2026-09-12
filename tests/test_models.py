@@ -7,7 +7,7 @@ import pandas as pd
 import pytest
 
 from veldra import Gap, Message, MissingCandlesError, Result
-from veldra.core.models import Market, Resource, result_report
+from veldra.core.models import IntegritySpec, Market, Resource, result_report
 
 UTC = timezone.utc
 START = datetime(2025, 1, 1, tzinfo=UTC)
@@ -32,6 +32,73 @@ def test_resource_rejects_an_unknown_checksum_algorithm() -> None:
             "https://data.example/file.zip.CHECKSUM",
             checksum_algorithm="crc32",  # type: ignore[arg-type]
         )
+
+
+def test_resource_adapts_legacy_sidecars_to_an_integrity_policy() -> None:
+    """Confirm existing connectors acquire an explicit sidecar policy."""
+    resource = Resource(
+        date(2025, 1, 1),
+        "https://data.example/file.zip",
+        "https://data.example/file.zip.CHECKSUM",
+        checksum_algorithm="md5",
+    )
+
+    assert resource.integrity_spec == IntegritySpec(
+        "sidecar",
+        algorithm="md5",
+        sidecar_url="https://data.example/file.zip.CHECKSUM",
+    )
+
+
+@pytest.mark.parametrize(
+    "integrity",
+    [
+        IntegritySpec("response_header", algorithm="md5"),
+        IntegritySpec("archive_only"),
+    ],
+)
+def test_resource_accepts_integrity_without_a_sidecar(
+    integrity: IntegritySpec,
+) -> None:
+    """Confirm response-header and structural policies need no sidecar URL.
+
+    Args:
+        integrity: The valid sidecar-free integrity declaration.
+    """
+    resource = Resource(
+        date(2025, 1, 1),
+        "https://data.example/file.zip",
+        None,
+        integrity=integrity,
+    )
+
+    assert resource.integrity_spec is integrity
+
+
+@pytest.mark.parametrize(
+    ("arguments", "message"),
+    [
+        ({"mode": "sidecar", "algorithm": "sha256"}, "sidecar_url"),
+        ({"mode": "response_header", "algorithm": "sha256"}, "MD5"),
+        ({"mode": "archive_only", "expected": "a" * 32}, "expected"),
+        ({"mode": "archive_only", "sidecar_url": "https://x"}, "sidecar"),
+        (
+            {"mode": "response_header", "algorithm": "md5", "expected": "bad"},
+            "digest",
+        ),
+    ],
+)
+def test_integrity_policy_rejects_contradictory_fields(
+    arguments: dict[str, object], message: str
+) -> None:
+    """Confirm integrity modes cannot silently accept contradictory metadata.
+
+    Args:
+        arguments: The malformed integrity constructor values.
+        message: The expected validation error fragment.
+    """
+    with pytest.raises((TypeError, ValueError), match=message):
+        IntegritySpec(**arguments)  # type: ignore[arg-type]
 
 
 def make_result() -> Result:

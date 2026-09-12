@@ -14,11 +14,54 @@ type JsonValue = (
     str | int | float | bool | None | list[JsonValue] | dict[str, JsonValue]
 )
 type ChecksumAlgorithm = Literal["md5", "sha256"]
+type IntegrityMode = Literal["sidecar", "response_header", "archive_only"]
 LOGGER = logging.getLogger(__name__)
 
 
 class DataValidationError(ValueError):
     """Report malformed source rows or archive structure."""
+
+
+@dataclass(frozen=True)
+class IntegritySpec:
+    """Describe how downloaded source bytes prove their integrity."""
+
+    mode: IntegrityMode
+    algorithm: ChecksumAlgorithm | None = None
+    expected: str | None = None
+    sidecar_url: str | None = None
+
+    def __post_init__(self) -> None:
+        """Reject contradictory or malformed integrity metadata."""
+        if self.mode == "sidecar":
+            if self.algorithm not in {"md5", "sha256"}:
+                raise ValueError("sidecar integrity requires a checksum algorithm")
+            if not isinstance(self.sidecar_url, str) or not self.sidecar_url:
+                raise ValueError("sidecar integrity requires sidecar_url")
+        elif self.mode == "response_header":
+            if self.algorithm != "md5":
+                raise ValueError("response-header integrity requires MD5")
+            if self.sidecar_url is not None:
+                raise ValueError("response-header integrity cannot use a sidecar")
+        elif self.mode == "archive_only":
+            if self.algorithm is not None:
+                raise ValueError("archive-only integrity cannot declare an algorithm")
+            if self.expected is not None:
+                raise ValueError(
+                    "archive-only integrity cannot declare an expected digest"
+                )
+            if self.sidecar_url is not None:
+                raise ValueError("archive-only integrity cannot use a sidecar")
+            return
+        else:
+            raise ValueError("unsupported archive integrity mode")
+        if self.expected is not None:
+            length = 32 if self.algorithm == "md5" else 64
+            if len(self.expected) != length or any(
+                character not in "0123456789abcdefABCDEF" for character in self.expected
+            ):
+                raise ValueError("integrity expected digest is malformed")
+            object.__setattr__(self, "expected", self.expected.lower())
 
 
 @dataclass(frozen=True)
@@ -84,7 +127,7 @@ class Resource:
 
     day: date
     url: str
-    checksum_url: str
+    checksum_url: str | None
     status: str = "discovered"
     archive_checksum: str | None = None
     checksum_algorithm: ChecksumAlgorithm = "sha256"
@@ -104,11 +147,30 @@ class Resource:
     cadence: str = "daily"
     coverage_start: datetime | None = None
     coverage_end: datetime | None = None
+    integrity: IntegritySpec | None = None
 
     def __post_init__(self) -> None:
-        """Reject unsupported source checksum algorithms."""
+        """Reject unsupported source checksum and integrity declarations."""
         if self.checksum_algorithm not in {"md5", "sha256"}:
             raise ValueError("unsupported archive checksum algorithm")
+        if self.integrity is None and not self.checksum_url:
+            raise ValueError("resource requires an archive integrity policy")
+
+    @property
+    def integrity_spec(self) -> IntegritySpec:
+        """Return explicit integrity metadata for new and legacy resources.
+
+        Returns:
+            The declared policy or a sidecar policy adapted from legacy fields.
+        """
+        if self.integrity is not None:
+            return self.integrity
+        assert self.checksum_url is not None
+        return IntegritySpec(
+            "sidecar",
+            algorithm=self.checksum_algorithm,
+            sidecar_url=self.checksum_url,
+        )
 
     @property
     def last_day(self) -> date:
