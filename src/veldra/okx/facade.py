@@ -215,6 +215,38 @@ class OKX:
             return result.frame()
         return [item.frame() for item in result]
 
+    def get_borrow_rates(
+        self,
+        currencies: PairInput,
+        start: DateInput,
+        end: DateInput,
+        *,
+        transport: Transport = "auto",
+        offline: bool = False,
+    ) -> FrameOutput:
+        """Return historical margin borrowing rates for currencies.
+
+        Args:
+            currencies: One currency or an ordered currency list.
+            start: Inclusive request start.
+            end: Inclusive date or exclusive timestamp end.
+            transport: Automatic, specific, or bulk archive selection.
+            offline: Whether source access is forbidden.
+
+        Returns:
+            One DataFrame or a list matching the input shape.
+        """
+        result = self._service.get_currency_results(
+            currencies,
+            start,
+            end,
+            transport=transport,
+            offline=offline,
+        )
+        if isinstance(result, Result):
+            return result.frame()
+        return [item.frame() for item in result]
+
     def get_order_book_updates(
         self,
         pairs: PairInput,
@@ -601,3 +633,439 @@ class OKX:
                 raise TypeError(f"{name} must be numeric")
         parsed_expiry = parse_timestamp(expiry).date() if expiry is not None else None
         return OptionChainFilter(parsed_expiry, strike_min, strike_max, native_type)
+
+    def get_index_price_klines(
+        self,
+        index: str,
+        start: DateInput,
+        end: DateInput,
+        *,
+        interval: str = "1m",
+        offline: bool = False,
+    ) -> pd.DataFrame:
+        """Return cached historical index-price Klines.
+
+        Args:
+            index: Native index such as ``BTC-USD``.
+            start: Inclusive request start.
+            end: Inclusive date or exclusive timestamp end.
+            interval: Native OKX Kline interval.
+            offline: Whether source access is forbidden.
+
+        Returns:
+            Confirmed OHLC observations in UTC.
+        """
+        bar = self._rest_interval(interval)
+        return self._rest(
+            index,
+            start,
+            end,
+            subject_kind="instrument",
+            product="index",
+            dataset="index_price_klines",
+            params={"instId": index.upper(), "bar": bar},
+            interval=interval,
+            offline=offline,
+        )
+
+    def get_mark_price_klines(
+        self,
+        instrument: str,
+        start: DateInput,
+        end: DateInput,
+        *,
+        product: Literal[
+            "linear_swap",
+            "inverse_swap",
+            "linear_futures",
+            "inverse_futures",
+            "options",
+        ],
+        interval: str = "1m",
+        offline: bool = False,
+    ) -> pd.DataFrame:
+        """Return cached historical mark-price Klines.
+
+        Args:
+            instrument: Native derivative instrument ID.
+            start: Inclusive request start.
+            end: Inclusive date or exclusive timestamp end.
+            product: Derivative product used for catalog separation.
+            interval: Native OKX Kline interval.
+            offline: Whether source access is forbidden.
+
+        Returns:
+            Confirmed OHLC observations in UTC.
+        """
+        bar = self._rest_interval(interval)
+        return self._rest(
+            instrument,
+            start,
+            end,
+            subject_kind="instrument",
+            product=product,
+            dataset="mark_price_klines",
+            params={"instId": instrument.upper(), "bar": bar},
+            interval=interval,
+            offline=offline,
+        )
+
+    def get_premium_history(
+        self,
+        instrument: str,
+        start: DateInput,
+        end: DateInput,
+        *,
+        product: Literal["linear_swap", "inverse_swap"],
+        offline: bool = False,
+    ) -> pd.DataFrame:
+        """Return a perpetual instrument's historical premium index.
+
+        Args:
+            instrument: Native perpetual instrument ID.
+            start: Inclusive request start.
+            end: Inclusive date or exclusive timestamp end.
+            product: Linear- or inverse-margined perpetual product.
+            offline: Whether source access is forbidden.
+
+        Returns:
+            Timestamped signed premium observations.
+        """
+        return self._rest(
+            instrument,
+            start,
+            end,
+            subject_kind="instrument",
+            product=product,
+            dataset="premium_history",
+            params={"instId": instrument.upper()},
+            offline=offline,
+        )
+
+    def get_recent_funding_rates(
+        self,
+        instrument: str,
+        start: DateInput,
+        end: DateInput,
+        *,
+        product: Literal["linear_swap", "inverse_swap"],
+        offline: bool = False,
+    ) -> pd.DataFrame:
+        """Return the mutable recent funding-rate REST tail.
+
+        Args:
+            instrument: Native perpetual instrument ID.
+            start: Inclusive request start.
+            end: Inclusive date or exclusive timestamp end.
+            product: Linear- or inverse-margined perpetual product.
+            offline: Whether source access is forbidden.
+
+        Returns:
+            Predicted and realized funding observations.
+        """
+        return self._rest(
+            instrument,
+            start,
+            end,
+            subject_kind="instrument",
+            product=product,
+            dataset="recent_funding_rates",
+            params={"instId": instrument.upper()},
+            offline=offline,
+        )
+
+    def get_settlement_history(
+        self,
+        instrument_family: str,
+        start: DateInput,
+        end: DateInput,
+        *,
+        product: Literal["linear_futures", "inverse_futures"],
+        offline: bool = False,
+    ) -> pd.DataFrame:
+        """Return recent dated-Futures settlements for one family.
+
+        Args:
+            instrument_family: Native Futures family.
+            start: Inclusive request start.
+            end: Inclusive date or exclusive timestamp end.
+            product: Linear- or inverse-margined Futures product.
+            offline: Whether source access is forbidden.
+
+        Returns:
+            Flattened settlement events by exact contract.
+        """
+        return self._rest(
+            instrument_family,
+            start,
+            end,
+            subject_kind="instrument_family",
+            product=product,
+            dataset="settlements",
+            params={"instFamily": instrument_family.upper()},
+            offline=offline,
+        )
+
+    def get_delivery_exercise_history(
+        self,
+        instrument_family: str,
+        start: DateInput,
+        end: DateInput,
+        *,
+        product: Literal["linear_futures", "inverse_futures", "options"],
+        offline: bool = False,
+    ) -> pd.DataFrame:
+        """Return recent Futures delivery or Option exercise events.
+
+        Args:
+            instrument_family: Native Futures or Option family.
+            start: Inclusive request start.
+            end: Inclusive date or exclusive timestamp end.
+            product: Dated Futures or Options product.
+            offline: Whether source access is forbidden.
+
+        Returns:
+            Flattened lifecycle events by exact contract.
+        """
+        native = "OPTION" if product == "options" else "FUTURES"
+        return self._rest(
+            instrument_family,
+            start,
+            end,
+            subject_kind="instrument_family",
+            product=product,
+            dataset="delivery_exercise",
+            params={"instType": native, "instFamily": instrument_family.upper()},
+            offline=offline,
+        )
+
+    def get_open_interest_history(
+        self,
+        currency: str,
+        start: DateInput,
+        end: DateInput,
+        *,
+        period: Literal["5m", "1h", "1d"] = "1h",
+        offline: bool = False,
+    ) -> pd.DataFrame:
+        """Return aggregate contract open interest and volume.
+
+        Args:
+            currency: Native underlying currency.
+            start: Inclusive request start.
+            end: Inclusive date or exclusive timestamp end.
+            period: Native analytical aggregation period.
+            offline: Whether source access is forbidden.
+
+        Returns:
+            Timestamped open-interest and volume observations.
+        """
+        native_period = self._statistics_period(period)
+        return self._rest(
+            currency,
+            start,
+            end,
+            subject_kind="currency",
+            product="analytics",
+            dataset="open_interest_history",
+            params={"ccy": currency.upper(), "period": native_period},
+            interval=period,
+            offline=offline,
+        )
+
+    def get_taker_volume(
+        self,
+        currency: str,
+        start: DateInput,
+        end: DateInput,
+        *,
+        market: Literal["spot", "contracts"] = "contracts",
+        period: Literal["5m", "1h", "1d"] = "1h",
+        offline: bool = False,
+    ) -> pd.DataFrame:
+        """Return aggregate taker buy and sell volume.
+
+        Args:
+            currency: Native underlying currency.
+            start: Inclusive request start.
+            end: Inclusive date or exclusive timestamp end.
+            market: Spot or combined derivatives statistics.
+            period: Native analytical aggregation period.
+            offline: Whether source access is forbidden.
+
+        Returns:
+            Timestamped taker-side volume observations.
+        """
+        if market not in {"spot", "contracts"}:
+            raise ValueError("market must be spot or contracts")
+        native_period = self._statistics_period(period)
+        return self._rest(
+            currency,
+            start,
+            end,
+            subject_kind="currency",
+            product="analytics",
+            dataset="taker_volume",
+            params={
+                "ccy": currency.upper(),
+                "instType": market.upper(),
+                "period": native_period,
+            },
+            interval=period,
+            offline=offline,
+        )
+
+    def get_long_short_ratio(
+        self,
+        currency: str,
+        start: DateInput,
+        end: DateInput,
+        *,
+        period: Literal["5m", "1h", "1d"] = "1h",
+        offline: bool = False,
+    ) -> pd.DataFrame:
+        """Return aggregate contract long/short account ratios.
+
+        Args:
+            currency: Native underlying currency.
+            start: Inclusive request start.
+            end: Inclusive date or exclusive timestamp end.
+            period: Native analytical aggregation period.
+            offline: Whether source access is forbidden.
+
+        Returns:
+            Timestamped long/short ratios.
+        """
+        native_period = self._statistics_period(period)
+        return self._rest(
+            currency,
+            start,
+            end,
+            subject_kind="currency",
+            product="analytics",
+            dataset="long_short_ratio",
+            params={"ccy": currency.upper(), "period": native_period},
+            interval=period,
+            offline=offline,
+        )
+
+    def get_option_interest_volume(
+        self,
+        currency: str,
+        start: DateInput,
+        end: DateInput,
+        *,
+        period: Literal["8h", "1d"] = "1d",
+        offline: bool = False,
+    ) -> pd.DataFrame:
+        """Return aggregate Option open interest and volume.
+
+        Args:
+            currency: Native Option underlying currency.
+            start: Inclusive request start.
+            end: Inclusive date or exclusive timestamp end.
+            period: Native Option statistics period.
+            offline: Whether source access is forbidden.
+
+        Returns:
+            Timestamped Option interest and volume observations.
+        """
+        if period not in {"8h", "1d"}:
+            raise ValueError("Option statistics period must be 8h or 1d")
+        native = {"8h": "8H", "1d": "1D"}[period]
+        return self._rest(
+            currency,
+            start,
+            end,
+            subject_kind="currency",
+            product="analytics",
+            dataset="option_interest_volume",
+            params={"ccy": currency.upper(), "period": native},
+            interval=period,
+            offline=offline,
+        )
+
+    def _rest(
+        self,
+        subject: str,
+        start: DateInput,
+        end: DateInput,
+        *,
+        subject_kind: str,
+        product: str,
+        dataset: str,
+        params: dict[str, str],
+        interval: str | None = None,
+        offline: bool,
+    ) -> pd.DataFrame:
+        """Delegate one typed facade call to the cached REST service.
+
+        Args:
+            subject: Native logical subject.
+            start: Inclusive request start.
+            end: Inclusive date or exclusive timestamp end.
+            subject_kind: Instrument, family, or currency scope.
+            product: Catalog product label.
+            dataset: Registered REST dataset.
+            params: Endpoint query parameters.
+            interval: Optional native interval.
+            offline: Whether source access is forbidden.
+
+        Returns:
+            Canonical cached historical frame.
+        """
+        return self._service.get_rest_history(
+            subject,
+            start,
+            end,
+            subject_kind=subject_kind,
+            product=product,
+            dataset=dataset,
+            params=params,
+            interval=interval,
+            offline=offline,
+        )
+
+    @staticmethod
+    def _rest_interval(value: object) -> str:
+        """Return one native UTC-aligned historical Kline interval.
+
+        Args:
+            value: Public lowercase Veldra interval.
+
+        Returns:
+            Native OKX bar spelling.
+        """
+        mapping = {
+            "1m": "1m",
+            "3m": "3m",
+            "5m": "5m",
+            "15m": "15m",
+            "30m": "30m",
+            "1h": "1H",
+            "2h": "2H",
+            "4h": "4H",
+            "6h": "6Hutc",
+            "12h": "12Hutc",
+            "1d": "1Dutc",
+            "1w": "1Wutc",
+            "1mo": "1Mutc",
+        }
+        if not isinstance(value, str) or value not in mapping:
+            raise ValueError("unsupported OKX REST Kline interval")
+        return mapping[value]
+
+    @staticmethod
+    def _statistics_period(value: object) -> str:
+        """Return one supported native trading-statistics period.
+
+        Args:
+            value: Public lowercase period.
+
+        Returns:
+            Native OKX period spelling.
+        """
+        mapping = {"5m": "5m", "1h": "1H", "1d": "1D"}
+        if not isinstance(value, str) or value not in mapping:
+            raise ValueError("statistics period must be 5m, 1h, or 1d")
+        return mapping[value]

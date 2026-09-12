@@ -50,6 +50,10 @@ DEFAULT_POLICIES: dict[str, RatePolicy] = {
     "premium_history": RatePolicy(20, 2),
     "settlement_history": RatePolicy(40, 2),
     "delivery_exercise": RatePolicy(40, 2),
+    "open_interest_history": RatePolicy(5, 2),
+    "taker_volume": RatePolicy(5, 2),
+    "long_short_ratio": RatePolicy(5, 2),
+    "option_interest_volume": RatePolicy(5, 2),
 }
 
 
@@ -548,9 +552,12 @@ class OKXClient:
             "begin": _epoch_milliseconds(begin),
             "end": _epoch_milliseconds(end),
         }
-        params["instIdList" if native == "SPOT" else "instFamilyList"] = ",".join(
-            values
-        )
+        if module == 11:
+            params["ccyList"] = ",".join(values)
+        else:
+            params["instIdList" if native == "SPOT" else "instFamilyList"] = ",".join(
+                values
+            )
         return params
 
     def get_manifest(

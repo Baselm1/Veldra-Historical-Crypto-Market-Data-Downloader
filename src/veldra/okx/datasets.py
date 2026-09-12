@@ -70,6 +70,11 @@ ORDER_BOOK_SOURCE_COLUMNS: tuple[str, ...] = (
     "bids",
     "asks",
 )
+BORROW_RATE_SOURCE_COLUMNS: tuple[str, ...] = (
+    "currency_name",
+    "borrow_rate",
+    "time",
+)
 
 SPOT_KLINES = DatasetSpec(
     product="spot",
@@ -292,6 +297,24 @@ def _funding_rates(product: str) -> DatasetSpec:
 LINEAR_SWAP_FUNDING = _funding_rates("linear_swap")
 INVERSE_SWAP_FUNDING = _funding_rates("inverse_swap")
 
+MARGIN_BORROW_RATES = DatasetSpec(
+    product="margin",
+    name="borrow_rates",
+    remote_name="module_11",
+    source_columns=BORROW_RATE_SOURCE_COLUMNS,
+    stored_columns=("event_time", "borrow_rate"),
+    time_column="event_time",
+    base_interval=None,
+    output_intervals=(),
+    aliases=MappingProxyType({}),
+    max_concurrency=32,
+    csv_header="present",
+    ordering_columns=("event_time",),
+    timestamp_columns=("event_time",),
+    archive_day_offset=timedelta(hours=8),
+    publication_delay_days=2,
+)
+
 
 def _order_book(product: str, depth: int) -> DatasetSpec:
     """Build one native OKX order-book update declaration.
@@ -343,6 +366,7 @@ DATASETS: Mapping[tuple[str, str], DatasetSpec] = MappingProxyType(
         ("inverse_swap", "trades"): INVERSE_SWAP_TRADES,
         ("linear_swap", "funding_rates"): LINEAR_SWAP_FUNDING,
         ("inverse_swap", "funding_rates"): INVERSE_SWAP_FUNDING,
+        ("margin", "borrow_rates"): MARGIN_BORROW_RATES,
         ("linear_futures", "klines"): LINEAR_FUTURES_KLINES,
         ("linear_futures", "trades"): LINEAR_FUTURES_TRADES,
         ("inverse_futures", "klines"): INVERSE_FUTURES_KLINES,

@@ -122,7 +122,9 @@ class OKXArchivePlanner:
             cached,
             use_bulk=use_bulk,
             supports_monthly=spec.supports_monthly,
-            monthly_only_specific=dataset == "funding_rates" and not use_bulk,
+            monthly_only_specific=(
+                dataset in {"funding_rates", "borrow_rates"} and not use_bulk
+            ),
         )
         mode = "bulk daily" if use_bulk else "specific"
         cadences = {item.key.cadence for item in selected}

@@ -185,14 +185,17 @@ def test_empty_manifest_is_success_and_invalid_rows_fail() -> None:
     with raw:
         discovery = OKXManifestDiscovery(OKXClient(client=raw, retries=0))
         subjects = [DataSubject("instrument", "BTC-USDT")]
-        assert discovery.discover(
-            "spot",
-            "klines",
-            subjects,
-            "daily",
-            date(2025, 1, 1),
-            date(2025, 1, 1),
-        ) == []
+        assert (
+            discovery.discover(
+                "spot",
+                "klines",
+                subjects,
+                "daily",
+                date(2025, 1, 1),
+                date(2025, 1, 1),
+            )
+            == []
+        )
         with pytest.raises(ValueError, match="groupDetails"):
             discovery.discover(
                 "spot",

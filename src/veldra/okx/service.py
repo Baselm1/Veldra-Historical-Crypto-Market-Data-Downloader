@@ -20,17 +20,18 @@ from veldra.core.models import ArchiveObject, LogicalPartition, Market, Message,
 from veldra.core.providers import MaterializedArchive
 from veldra.core.query import ParquetInput, empty_frame, query_parquet
 from veldra.core.reporting import Reporter
-from veldra.core.request import Request, parse_timestamp
+from veldra.core.request import Request, parse_range, parse_timestamp
 from veldra.core.subjects import DataSubject
 from veldra.okx.client import OKXClient
 from veldra.okx.chain import OptionChainFilter, query_chain
 from veldra.okx.connector import OKXConnector
 from veldra.okx.datasets import get_dataset, manifest_spec
 from veldra.okx.manifest import OKXManifestDiscovery
-from veldra.okx.identities import historical_future, historical_option
+from veldra.okx.identities import historical_future, historical_option, parse_currency
 from veldra.okx.planner import OKXArchivePlanner
 from veldra.okx.processing import OKXArchiveProvider
 from veldra.okx.reports import CacheReport
+from veldra.okx.rest import OKXRESTHistory
 
 LOGGER = logging.getLogger(__name__)
 
@@ -614,6 +615,167 @@ class OKXService:
         LOGGER.info("OKX request completed in %.3fs", perf_counter() - started)
         return results[0] if request.single else results
 
+    def get_currency_results(
+        self,
+        currencies: object,
+        start: object,
+        end: object,
+        *,
+        transport: object,
+        offline: object,
+    ) -> Result | list[Result]:
+        """Return currency-scoped historical margin borrowing rates.
+
+        Args:
+            currencies: One currency or an ordered currency list.
+            start: Inclusive request start.
+            end: Inclusive date or exclusive timestamp end.
+            transport: Automatic, specific, or bulk archive selection.
+            offline: Whether source access is forbidden.
+
+        Returns:
+            One structured result or a list matching the input shape.
+        """
+        if transport not in {"auto", "specific", "bulk"}:
+            raise ValueError("transport must be 'auto', 'specific', or 'bulk'")
+        if not isinstance(offline, bool):
+            raise TypeError("offline must be a Boolean")
+        normalized: object
+        if isinstance(currencies, str):
+            normalized = parse_currency(currencies)
+        elif isinstance(currencies, list):
+            normalized = [parse_currency(value) for value in currencies]
+        else:
+            normalized = currencies
+        request = Request.parse(
+            normalized,
+            start,
+            end,
+            product="margin",
+            dataset="borrow_rates",
+            interval=None,
+            desired_columns=None,
+            gap_policy=None,
+            subject_kind="currency",
+        )
+        specification = get_dataset("margin", "borrow_rates")
+        request = request.resolve_dataset(specification)
+        catalog_path = self.data_dir / "catalog.duckdb"
+        with catalog_lock(catalog_path):
+            with self._client(offline=offline) as client:
+                with open_catalog(catalog_path) as catalog:
+                    results = [
+                        self._currency_result(
+                            catalog,
+                            client,
+                            subject,
+                            request,
+                            specification,
+                            transport=str(transport),
+                            offline=offline,
+                        )
+                        for subject in request.subjects
+                    ]
+        return results[0] if request.single else results
+
+    def _currency_result(
+        self,
+        catalog: Catalog,
+        client: httpx.Client,
+        subject: DataSubject,
+        request: Request,
+        dataset: DatasetSpec,
+        *,
+        transport: str,
+        offline: bool,
+    ) -> Result:
+        """Materialize and query one currency-scoped borrowing series.
+
+        Args:
+            catalog: Open source catalog.
+            client: Shared request client.
+            subject: Requested margin currency.
+            request: Resolved logical request.
+            dataset: Borrowing-rate declaration.
+            transport: Archive transport selection.
+            offline: Whether source access is forbidden.
+
+        Returns:
+            Structured borrowing-rate result.
+        """
+        result = Result(
+            subject.value,
+            empty_frame(dataset, request.columns or {}),
+            (request.start, request.end),
+            source="okx",
+            product="margin",
+            dataset="borrow_rates",
+            gap_policy=None,
+        )
+        start = self._effective_start(request)
+        if start >= request.end:
+            result.warnings.append(
+                Message("configured_start", "Request ends before configured history.")
+            )
+            return result
+        first_day, last_day = self._source_days(start, request.end, dataset)
+        if not offline:
+            cached = catalog.ready_archives_between(
+                "okx", "margin", "borrow_rates", first_day, last_day
+            )
+            api = OKXClient(
+                client=client,
+                limiter=self.connector.limiter,
+                timeout=self.timeout,
+                retries=self.retries,
+                backoff=self.backoff,
+            )
+            plan = OKXArchivePlanner(OKXManifestDiscovery(api), cached=cached).plan(
+                "margin",
+                "borrow_rates",
+                [subject],
+                first_day,
+                last_day,
+                transport=transport,
+            )
+            result.problems.extend(
+                self._materialize(
+                    catalog,
+                    client,
+                    list(plan.selected),
+                    dataset,
+                    [],
+                    Reporter(self.progress),
+                ).problems
+            )
+        partitions = catalog.partitions_between(
+            "okx", "margin", "borrow_rates", subject, None, start, request.end
+        )
+        result.data = query_parquet(
+            catalog.connection,
+            self._inputs(partitions),
+            dataset,
+            start,
+            request.end,
+            request.columns or {},
+            gap_policy=None,
+            interval=None,
+        )
+        if partitions:
+            result.available_range = (
+                min(item.coverage_start for item in partitions),
+                max(item.coverage_end for item in partitions),
+            )
+        if not result.data.empty:
+            result.used_range = (start, request.end)
+        elif not result.problems:
+            result.problems.append(
+                Message(
+                    "no_data", f"No OKX borrowing data was found for '{subject.value}'."
+                )
+            )
+        return result
+
     def get_chain(
         self,
         family: object,
@@ -1055,3 +1217,64 @@ class OKXService:
             dry_run,
             offline,
         )
+
+    def get_rest_history(
+        self,
+        subject_value: object,
+        start: object,
+        end: object,
+        *,
+        subject_kind: object,
+        product: object,
+        dataset: object,
+        params: dict[str, str],
+        interval: str | None,
+        offline: object,
+    ) -> pd.DataFrame:
+        """Return one cached public OKX historical REST series.
+
+        Args:
+            subject_value: Native instrument, family, or currency scope.
+            start: Inclusive request start.
+            end: Inclusive date or exclusive timestamp end.
+            subject_kind: Native logical subject kind.
+            product: Catalog product label.
+            dataset: Registered REST dataset.
+            params: Validated endpoint query parameters.
+            interval: Optional native Kline interval.
+            offline: Whether source access is forbidden.
+
+        Returns:
+            Canonical historical rows from DuckDB-backed Parquet.
+        """
+        if not isinstance(subject_value, str):
+            raise TypeError("REST history subject must be a string")
+        if not isinstance(subject_kind, str) or not isinstance(product, str):
+            raise TypeError("REST history kind and product must be strings")
+        if not isinstance(dataset, str):
+            raise TypeError("REST history dataset must be a string")
+        if not isinstance(offline, bool):
+            raise TypeError("offline must be a Boolean")
+        range_start, range_end = parse_range(start, end)
+        subject = DataSubject(subject_kind, subject_value.strip().upper())  # type: ignore[arg-type]
+        catalog_path = self.data_dir / "catalog.duckdb"
+        with catalog_lock(catalog_path):
+            with self._client(offline=offline) as client:
+                api = OKXClient(
+                    client=client,
+                    limiter=self.connector.limiter,
+                    timeout=self.timeout,
+                    retries=self.retries,
+                    backoff=self.backoff,
+                )
+                with open_catalog(catalog_path) as catalog:
+                    return OKXRESTHistory(api, catalog, self.data_dir).get(
+                        dataset,
+                        subject,
+                        range_start,
+                        range_end,
+                        product=product,
+                        params=params,
+                        interval=interval,
+                        offline=offline,
+                    )

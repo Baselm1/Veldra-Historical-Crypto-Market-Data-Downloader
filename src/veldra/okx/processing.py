@@ -220,6 +220,8 @@ def normalize(
         return normalize_trades(frame, dataset, contract_sizes)
     if dataset.name == "funding_rates":
         return normalize_funding_rates(frame, dataset)
+    if dataset.name == "borrow_rates":
+        return normalize_borrow_rates(frame, dataset)
     raise ValueError(f"unsupported OKX normalizer {dataset.product}/{dataset.name}")
 
 
@@ -255,6 +257,41 @@ def normalize_funding_rates(frame: pd.DataFrame, dataset: DatasetSpec) -> pd.Dat
     result = _deduplicate(result, ["instrument_id", "funding_time"])
     return result.sort_values(
         ["instrument_id", "funding_time"], kind="stable", ignore_index=True
+    )
+
+
+def normalize_borrow_rates(frame: pd.DataFrame, dataset: DatasetSpec) -> pd.DataFrame:
+    """Return canonical hourly margin borrowing rates by currency.
+
+    Args:
+        frame: Source module 11 CSV rows.
+        dataset: Margin borrowing declaration.
+
+    Returns:
+        Sorted currency-scoped observations in UTC.
+    """
+    if tuple(frame.columns) != dataset.source_columns or frame.empty:
+        raise DataValidationError("CSV does not match the OKX borrowing schema")
+    currencies = frame["currency_name"].astype("string").str.strip().str.upper()
+    if currencies.isna().any() or currencies.eq("").any():
+        raise DataValidationError("OKX borrowing currency cannot be empty")
+    _numbers(frame, ("borrow_rate",))
+    try:
+        times = pd.to_datetime(
+            pd.to_numeric(frame["time"], errors="raise"), unit="ms", utc=True
+        )
+    except (TypeError, ValueError) as error:
+        raise DataValidationError("invalid OKX borrowing timestamp") from error
+    result = pd.DataFrame(
+        {
+            "currency": currencies,
+            "event_time": times,
+            "borrow_rate": frame["borrow_rate"].astype("float64"),
+        }
+    )
+    result = _deduplicate(result, ["currency", "event_time"])
+    return result.sort_values(
+        ["currency", "event_time"], kind="stable", ignore_index=True
     )
 
 
@@ -317,18 +354,20 @@ def _partitions(
     """
     coverage_start, coverage_end = _source_coverage(resource, dataset)
     values: list[LogicalPartition] = []
-    for instrument, rows in frame.groupby("instrument_id", sort=True):
+    predicate = "currency" if dataset.name == "borrow_rates" else "instrument_id"
+    kind = "currency" if dataset.name == "borrow_rates" else "instrument"
+    for instrument, rows in frame.groupby(predicate, sort=True):
         values.append(
             LogicalPartition(
                 "okx",
                 resource.key.product,
                 resource.key.dataset,
-                DataSubject("instrument", str(instrument)),
+                DataSubject(kind, str(instrument)),  # type: ignore[arg-type]
                 dataset.base_interval,
                 coverage_start,
                 coverage_end,
                 destination,
-                "instrument_id",
+                predicate,
                 str(instrument),
                 len(rows),
                 source_day=resource.key.period_start,
