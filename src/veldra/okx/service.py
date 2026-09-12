@@ -249,6 +249,7 @@ class OKXService:
         client: httpx.Client,
         selected: list[ArchiveObject],
         dataset: DatasetSpec,
+        markets: list[Market],
         reporter: Reporter,
     ) -> list[Message]:
         """Materialize selected archives concurrently and publish successes.
@@ -258,6 +259,7 @@ class OKXService:
             client: Shared request connection pool.
             selected: Remote physical archives selected by the planner.
             dataset: Canonical dataset declaration.
+            markets: Current product markets carrying contract metadata.
             reporter: Optional Rich progress reporter.
 
         Returns:
@@ -271,6 +273,7 @@ class OKXService:
             timeout=self.timeout,
             retries=self.retries,
             backoff=self.backoff,
+            contract_sizes={market.symbol: market.contract_size for market in markets},
         )
 
         def process(resource: ArchiveObject) -> MaterializedArchive:
@@ -339,6 +342,7 @@ class OKXService:
         catalog: Catalog,
         client: httpx.Client,
         market: Market,
+        markets: list[Market],
         original_pair: str,
         request: Request,
         dataset: DatasetSpec,
@@ -353,6 +357,7 @@ class OKXService:
             catalog: Open local catalog.
             client: Shared request client.
             market: Resolved current OKX instrument.
+            markets: Current product markets carrying shared archive metadata.
             original_pair: Caller spelling retained in errors.
             request: Validated logical request.
             dataset: Canonical dataset declaration.
@@ -379,6 +384,12 @@ class OKXService:
             )
             return result
         subject = DataSubject("instrument", market.symbol)
+        physical_subject = (
+            subject
+            if manifest_spec(request.product, request.dataset).subject_kind
+            == "instrument"
+            else DataSubject("instrument_family", market.pair or market.symbol)
+        )
         first_day, last_day = self._source_days(start, request.end, dataset)
         if not offline:
             cached = catalog.ready_archives_between(
@@ -396,7 +407,7 @@ class OKXService:
             plan = OKXArchivePlanner(discovery, cached=cached).plan(
                 request.product,
                 request.dataset,
-                [subject],
+                [physical_subject],
                 first_day,
                 last_day,
                 transport=transport,
@@ -404,7 +415,7 @@ class OKXService:
             LOGGER.info("OKX archive plan: %s", plan.explanation)
             result.problems.extend(
                 self._materialize(
-                    catalog, client, list(plan.selected), dataset, reporter
+                    catalog, client, list(plan.selected), dataset, markets, reporter
                 )
             )
         partitions = catalog.partitions_between(
@@ -541,6 +552,7 @@ class OKXService:
                                 catalog,
                                 client,
                                 market,
+                                markets,
                                 pair,
                                 request,
                                 specification,

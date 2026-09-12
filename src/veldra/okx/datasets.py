@@ -117,8 +117,103 @@ SPOT_TRADES = DatasetSpec(
     publication_delay_days=2,
 )
 
+
+def _perpetual_klines(product: str) -> DatasetSpec:
+    """Build one perpetual Kline declaration with explicit volume units.
+
+    Args:
+        product: Linear- or inverse-margined swap product.
+
+    Returns:
+        Product-specific one-minute Kline schema.
+    """
+    return DatasetSpec(
+        product=product,
+        name="klines",
+        remote_name="module_2",
+        source_columns=KLINE_SOURCE_COLUMNS,
+        stored_columns=(
+            "open_time",
+            "open",
+            "high",
+            "low",
+            "close",
+            "contract_volume",
+            "base_volume",
+            "quote_volume",
+        ),
+        time_column="open_time",
+        base_interval="1m",
+        output_intervals=KLINE_INTERVALS,
+        aliases=MappingProxyType({"volume": "contract_volume"}),
+        max_concurrency=32,
+        csv_header="present",
+        supports_resampling=True,
+        supports_gap_policy=True,
+        resample_sum_columns=("contract_volume", "base_volume", "quote_volume"),
+        ordering_columns=("open_time",),
+        timestamp_columns=("open_time",),
+        sort_source_rows=True,
+        archive_day_offset=timedelta(hours=8),
+        publication_delay_days=2,
+    )
+
+
+def _perpetual_trades(product: str) -> DatasetSpec:
+    """Build one perpetual trade declaration with explicit contract units.
+
+    Args:
+        product: Linear- or inverse-margined swap product.
+
+    Returns:
+        Product-specific raw trade schema.
+    """
+    quote = "quote_quantity" if product == "linear_swap" else "quote_notional"
+    return DatasetSpec(
+        product=product,
+        name="trades",
+        remote_name="module_1",
+        source_columns=TRADE_SOURCE_COLUMNS,
+        stored_columns=(
+            "event_time",
+            "trade_id",
+            "price",
+            "contract_quantity",
+            "base_quantity",
+            quote,
+            "side",
+        ),
+        time_column="event_time",
+        base_interval=None,
+        output_intervals=(),
+        aliases=MappingProxyType({}),
+        max_concurrency=16,
+        csv_header="present",
+        requires_contract_size=True,
+        ordering_columns=("event_time", "trade_id"),
+        timestamp_columns=("event_time",),
+        integer_columns=("trade_id",),
+        string_columns=("side",),
+        sort_source_rows=True,
+        archive_day_offset=timedelta(hours=8),
+        publication_delay_days=2,
+    )
+
+
+LINEAR_SWAP_KLINES = _perpetual_klines("linear_swap")
+INVERSE_SWAP_KLINES = _perpetual_klines("inverse_swap")
+LINEAR_SWAP_TRADES = _perpetual_trades("linear_swap")
+INVERSE_SWAP_TRADES = _perpetual_trades("inverse_swap")
+
 DATASETS: Mapping[tuple[str, str], DatasetSpec] = MappingProxyType(
-    {("spot", "klines"): SPOT_KLINES, ("spot", "trades"): SPOT_TRADES}
+    {
+        ("spot", "klines"): SPOT_KLINES,
+        ("spot", "trades"): SPOT_TRADES,
+        ("linear_swap", "klines"): LINEAR_SWAP_KLINES,
+        ("linear_swap", "trades"): LINEAR_SWAP_TRADES,
+        ("inverse_swap", "klines"): INVERSE_SWAP_KLINES,
+        ("inverse_swap", "trades"): INVERSE_SWAP_TRADES,
+    }
 )
 
 

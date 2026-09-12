@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, time, timedelta
+from collections.abc import Mapping
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import zipfile
@@ -96,13 +97,17 @@ def normalize_klines(frame: pd.DataFrame, dataset: DatasetSpec) -> pd.DataFrame:
             "high": frame["high"].astype("float64"),
             "low": frame["low"].astype("float64"),
             "close": frame["close"].astype("float64"),
-            "base_volume": frame["vol"].astype("float64"),
-            "quote_volume": frame["vol_quote"].astype("float64"),
         }
     )
+    if dataset.product == "spot":
+        result["base_volume"] = frame["vol"].astype("float64")
+    else:
+        result["contract_volume"] = frame["vol"].astype("float64")
+        result["base_volume"] = frame["vol_ccy"].astype("float64")
+    result["quote_volume"] = frame["vol_quote"].astype("float64")
     if (result[["open", "high", "low", "close"]] <= 0).any(axis=None):
         raise DataValidationError("OKX Kline prices must be positive")
-    if (result[["base_volume", "quote_volume"]] < 0).any(axis=None):
+    if (result[list(dataset.resample_sum_columns)] < 0).any(axis=None):
         raise DataValidationError("OKX Kline volumes must be nonnegative")
     if (
         result["high"].lt(result[["open", "low", "close"]].max(axis=1)).any()
@@ -120,12 +125,17 @@ def normalize_klines(frame: pd.DataFrame, dataset: DatasetSpec) -> pd.DataFrame:
     )
 
 
-def normalize_trades(frame: pd.DataFrame, dataset: DatasetSpec) -> pd.DataFrame:
+def normalize_trades(
+    frame: pd.DataFrame,
+    dataset: DatasetSpec,
+    contract_sizes: Mapping[str, float | None] | None = None,
+) -> pd.DataFrame:
     """Return canonical individual trades from an OKX module 1 CSV.
 
     Args:
         frame: Source CSV rows.
         dataset: Product-specific trade declaration.
+        contract_sizes: Native instruments mapped to contract face values.
 
     Returns:
         Sorted events retaining native instrument predicates and explicit units.
@@ -160,11 +170,24 @@ def normalize_trades(frame: pd.DataFrame, dataset: DatasetSpec) -> pd.DataFrame:
             "event_time": times,
             "trade_id": identifiers.astype("int64"),
             "price": prices,
-            "base_quantity": quantities,
-            "quote_quantity": prices * quantities,
             "side": sides,
         }
     )
+    if dataset.product == "spot":
+        result["base_quantity"] = quantities
+        result["quote_quantity"] = prices * quantities
+    else:
+        sizes = instruments.map(contract_sizes or {})
+        if sizes.isna().any() or sizes.le(0).any():
+            raise DataValidationError("OKX derivative contract size is unavailable")
+        result["contract_quantity"] = quantities
+        if dataset.product == "linear_swap":
+            result["base_quantity"] = quantities * sizes
+            result["quote_quantity"] = result["base_quantity"] * prices
+        else:
+            result["quote_notional"] = quantities * sizes
+            result["base_quantity"] = result["quote_notional"] / prices
+    result = result[["instrument_id", *dataset.stored_columns]]
     result = _deduplicate(result, ["instrument_id", "trade_id"])
     return result.sort_values(
         ["instrument_id", "event_time", "trade_id"],
@@ -173,12 +196,17 @@ def normalize_trades(frame: pd.DataFrame, dataset: DatasetSpec) -> pd.DataFrame:
     )
 
 
-def normalize(frame: pd.DataFrame, dataset: DatasetSpec) -> pd.DataFrame:
+def normalize(
+    frame: pd.DataFrame,
+    dataset: DatasetSpec,
+    contract_sizes: Mapping[str, float | None] | None = None,
+) -> pd.DataFrame:
     """Dispatch one OKX CSV to its product-specific normalizer.
 
     Args:
         frame: Source CSV rows.
         dataset: Canonical dataset declaration.
+        contract_sizes: Native derivatives mapped to contract face values.
 
     Returns:
         Canonical rows retaining the native instrument predicate.
@@ -186,7 +214,7 @@ def normalize(frame: pd.DataFrame, dataset: DatasetSpec) -> pd.DataFrame:
     if dataset.name == "klines":
         return normalize_klines(frame, dataset)
     if dataset.name == "trades":
-        return normalize_trades(frame, dataset)
+        return normalize_trades(frame, dataset, contract_sizes)
     raise ValueError(f"unsupported OKX normalizer {dataset.product}/{dataset.name}")
 
 
@@ -280,6 +308,7 @@ class OKXArchiveProvider:
         retries: int = 3,
         backoff: float = 0.5,
         max_archive_bytes: int = 8 * 1024 * 1024 * 1024,
+        contract_sizes: Mapping[str, float | None] | None = None,
     ) -> None:
         """Retain shared network and archive safety settings.
 
@@ -289,12 +318,14 @@ class OKXArchiveProvider:
             retries: Retries after the first attempt.
             backoff: Initial retry delay.
             max_archive_bytes: Maximum compressed object size.
+            contract_sizes: Native derivatives mapped to contract face values.
         """
         self.client = client
         self.timeout = timeout
         self.retries = retries
         self.backoff = backoff
         self.max_archive_bytes = max_archive_bytes
+        self.contract_sizes = dict(contract_sizes or {})
 
     def materialize(
         self, resource: ArchiveObject, destination: Path
@@ -344,7 +375,7 @@ class OKXArchiveProvider:
                 raise DataValidationError(
                     "OKX archive is not a readable ZIP/CSV"
                 ) from error
-            frame = normalize(raw, dataset)
+            frame = normalize(raw, dataset, self.contract_sizes)
             if (
                 frame[dataset.time_column].min() < start
                 or frame[dataset.time_column].max() >= end
