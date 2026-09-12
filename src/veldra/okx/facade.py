@@ -9,6 +9,7 @@ import pandas as pd
 
 from veldra.core.models import Result
 from veldra.okx.service import OKXService
+from veldra.okx.reports import CacheReport
 
 type DateInput = str | date | datetime
 type PairInput = str | list[str]
@@ -257,3 +258,135 @@ class OKX:
         if isinstance(result, Result):
             return result.frame()
         return [item.frame() for item in result]
+
+    def cache_klines(
+        self,
+        start: DateInput,
+        end: DateInput,
+        *,
+        product: Literal["spot", "linear_swap", "inverse_swap"] = "spot",
+        instruments: Literal["all"] = "all",
+        dry_run: bool = False,
+        refresh: bool = False,
+        offline: bool = False,
+    ) -> CacheReport:
+        """Cache all available Kline instruments without returning their rows.
+
+        Args:
+            start: Inclusive request start.
+            end: Inclusive date or exclusive timestamp end.
+            product: Spot or perpetual product.
+            instruments: The required all-market selection.
+            dry_run: Whether to return the physical plan without downloading.
+            refresh: Whether current markets must refresh.
+            offline: Whether source access is forbidden.
+
+        Returns:
+            Physical plan and local cache totals.
+        """
+        return self._cache_all(
+            start, end, product, "klines", instruments, dry_run, refresh, offline
+        )
+
+    def cache_trades(
+        self,
+        start: DateInput,
+        end: DateInput,
+        *,
+        product: Literal["spot", "linear_swap", "inverse_swap"] = "spot",
+        instruments: Literal["all"] = "all",
+        dry_run: bool = False,
+        refresh: bool = False,
+        offline: bool = False,
+    ) -> CacheReport:
+        """Cache all available individual trades without returning their rows.
+
+        Args:
+            start: Inclusive request start.
+            end: Inclusive date or exclusive timestamp end.
+            product: Spot or perpetual product.
+            instruments: The required all-market selection.
+            dry_run: Whether to return the physical plan without downloading.
+            refresh: Whether current markets must refresh.
+            offline: Whether source access is forbidden.
+
+        Returns:
+            Physical plan and local cache totals.
+        """
+        return self._cache_all(
+            start, end, product, "trades", instruments, dry_run, refresh, offline
+        )
+
+    def cache_funding_rates(
+        self,
+        start: DateInput,
+        end: DateInput,
+        *,
+        product: Literal["linear_swap", "inverse_swap"],
+        instruments: Literal["all"] = "all",
+        dry_run: bool = False,
+        refresh: bool = False,
+        offline: bool = False,
+    ) -> CacheReport:
+        """Cache all available funding observations without returning their rows.
+
+        Args:
+            start: Inclusive request start.
+            end: Inclusive date or exclusive timestamp end.
+            product: Linear- or inverse-margined swap product.
+            instruments: The required all-market selection.
+            dry_run: Whether to return the physical plan without downloading.
+            refresh: Whether current markets must refresh.
+            offline: Whether source access is forbidden.
+
+        Returns:
+            Physical plan and local cache totals.
+        """
+        return self._cache_all(
+            start,
+            end,
+            product,
+            "funding_rates",
+            instruments,
+            dry_run,
+            refresh,
+            offline,
+        )
+
+    def _cache_all(
+        self,
+        start: DateInput,
+        end: DateInput,
+        product: str,
+        dataset: str,
+        instruments: object,
+        dry_run: bool,
+        refresh: bool,
+        offline: bool,
+    ) -> CacheReport:
+        """Validate an all-market facade call and delegate cache planning.
+
+        Args:
+            start: Inclusive request start.
+            end: Inclusive date or exclusive timestamp end.
+            product: OKX product.
+            dataset: Bulk-capable historical dataset.
+            instruments: The required literal all-market selection.
+            dry_run: Whether to plan without downloading.
+            refresh: Whether current markets must refresh.
+            offline: Whether source access is forbidden.
+
+        Returns:
+            Physical plan and local cache totals.
+        """
+        if instruments != "all":
+            raise ValueError("instruments must be 'all' for bulk caching")
+        return self._service.cache_all(
+            start,
+            end,
+            product=product,
+            dataset=dataset,
+            dry_run=dry_run,
+            refresh=refresh,
+            offline=offline,
+        )

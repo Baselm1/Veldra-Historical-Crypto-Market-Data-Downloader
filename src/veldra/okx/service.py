@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from time import perf_counter
@@ -26,8 +27,17 @@ from veldra.okx.datasets import get_dataset, manifest_spec
 from veldra.okx.manifest import OKXManifestDiscovery
 from veldra.okx.planner import OKXArchivePlanner
 from veldra.okx.processing import OKXArchiveProvider
+from veldra.okx.reports import CacheReport
 
 LOGGER = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class _MaterializeOutcome:
+    """Collect physical successes and isolated archive problems."""
+
+    completed: tuple[MaterializedArchive, ...]
+    problems: tuple[Message, ...]
 
 
 class OKXService:
@@ -251,7 +261,7 @@ class OKXService:
         dataset: DatasetSpec,
         markets: list[Market],
         reporter: Reporter,
-    ) -> list[Message]:
+    ) -> _MaterializeOutcome:
         """Materialize selected archives concurrently and publish successes.
 
         Args:
@@ -263,10 +273,10 @@ class OKXService:
             reporter: Optional Rich progress reporter.
 
         Returns:
-            Structured problems for isolated archive failures.
+            Completed materializations and isolated archive failures.
         """
         if not selected:
-            return []
+            return _MaterializeOutcome((), ())
         catalog.save_archives(selected)
         provider = OKXArchiveProvider(
             client,
@@ -303,6 +313,7 @@ class OKXService:
                         outcomes.append((resource, None, caught_error))
                         advance(resource.key.period_start, False)
         problems: list[Message] = []
+        completed: list[MaterializedArchive] = []
         for resource, value, error in outcomes:
             if error is not None:
                 catalog.mark_archive_failed(resource.key, str(error))
@@ -316,7 +327,8 @@ class OKXService:
             else:
                 assert value is not None
                 catalog.publish_materialization(value.materialization, value.partitions)
-        return problems
+                completed.append(value)
+        return _MaterializeOutcome(tuple(completed), tuple(problems))
 
     @staticmethod
     def _inputs(partitions: list[LogicalPartition]) -> list[ParquetInput]:
@@ -414,11 +426,10 @@ class OKXService:
                 transport=transport,
             )
             LOGGER.info("OKX archive plan: %s", plan.explanation)
-            result.problems.extend(
-                self._materialize(
-                    catalog, client, list(plan.selected), dataset, markets, reporter
-                )
+            outcome = self._materialize(
+                catalog, client, list(plan.selected), dataset, markets, reporter
             )
+            result.problems.extend(outcome.problems)
         partitions = catalog.partitions_between(
             "okx",
             request.product,
@@ -564,3 +575,133 @@ class OKXService:
                         results.append(result)
         LOGGER.info("OKX request completed in %.3fs", perf_counter() - started)
         return results[0] if request.single else results
+
+    def cache_all(
+        self,
+        start: object,
+        end: object,
+        *,
+        product: object,
+        dataset: object,
+        dry_run: object,
+        refresh: object,
+        offline: object,
+    ) -> CacheReport:
+        """Cache one supported all-market archive dataset without returning rows.
+
+        Args:
+            start: Inclusive request start.
+            end: Inclusive date or exclusive timestamp end.
+            product: OKX product.
+            dataset: Bulk-capable historical dataset.
+            dry_run: Whether to discover but not download remote files.
+            refresh: Whether current instrument metadata must refresh.
+            offline: Whether source access is forbidden.
+
+        Returns:
+            Physical plan, completion, and local cache totals.
+        """
+        if (
+            not isinstance(dry_run, bool)
+            or not isinstance(refresh, bool)
+            or not isinstance(offline, bool)
+        ):
+            raise TypeError("dry_run, refresh and offline must be Booleans")
+        if refresh and offline:
+            raise ValueError("refresh and offline cannot both be enabled")
+        request = Request.parse(
+            "ANY",
+            start,
+            end,
+            product=product,
+            dataset=dataset,
+            interval=None,
+            desired_columns=None,
+            gap_policy="keep" if dataset == "klines" else None,
+        )
+        specification = get_dataset(request.product, request.dataset)
+        request = request.resolve_dataset(specification)
+        start_time = self._effective_start(request)
+        if start_time >= request.end:
+            raise ValueError("request ends before configured OKX history")
+        first_day, last_day = self._source_days(start_time, request.end, specification)
+        reporter = Reporter(self.progress)
+        catalog_path = self.data_dir / "catalog.duckdb"
+        with catalog_lock(catalog_path):
+            with self._client(offline=offline) as client:
+                with open_catalog(catalog_path) as catalog:
+                    markets = self._markets(
+                        catalog,
+                        client,
+                        request.product,
+                        reporter,
+                        refresh=refresh,
+                        offline=offline,
+                    )
+                    cached = catalog.ready_archives_between(
+                        "okx", request.product, request.dataset, first_day, last_day
+                    )
+                    if offline:
+                        selected: tuple[ArchiveObject, ...] = ()
+                        explanation = f"offline; {len(cached)} cached physical files"
+                        outcome = _MaterializeOutcome((), ())
+                    else:
+                        discovery = OKXManifestDiscovery(
+                            OKXClient(
+                                client=client,
+                                limiter=self.connector.limiter,
+                                timeout=self.timeout,
+                                retries=self.retries,
+                                backoff=self.backoff,
+                            )
+                        )
+                        plan = OKXArchivePlanner(discovery, cached=cached).plan(
+                            request.product,
+                            request.dataset,
+                            [DataSubject("all", "ANY")],
+                            first_day,
+                            last_day,
+                            transport="bulk",
+                        )
+                        selected = plan.selected
+                        explanation = plan.explanation
+                        outcome = (
+                            _MaterializeOutcome((), ())
+                            if dry_run
+                            else self._materialize(
+                                catalog,
+                                client,
+                                list(selected),
+                                specification,
+                                markets,
+                                reporter,
+                            )
+                        )
+                    subjects, rows, local_bytes = catalog.partition_totals_between(
+                        "okx",
+                        request.product,
+                        request.dataset,
+                        start_time,
+                        request.end,
+                    )
+        downloaded = len(outcome.completed)
+        failures = len(outcome.problems)
+        remaining = len(selected) if dry_run else failures
+        return CacheReport(
+            "okx",
+            request.product,
+            request.dataset,
+            (start_time, request.end),
+            "bulk",
+            explanation,
+            len(cached),
+            remaining,
+            sum(item.remote_size or 0 for item in selected),
+            downloaded,
+            failures,
+            subjects,
+            rows,
+            local_bytes,
+            dry_run,
+            offline,
+        )

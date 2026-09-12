@@ -5,9 +5,11 @@ from veldra.okx.connector import OKXConnector
 from veldra.okx.facade import OKX
 from veldra.okx.identities import OKXInstrument
 from veldra.okx.manifest import OKXManifestDiscovery
+from veldra.okx.reports import CacheReport
 
 __all__ = [
     "OKXClient",
+    "CacheReport",
     "OKX",
     "OKXConnector",
     "OKXInstrument",

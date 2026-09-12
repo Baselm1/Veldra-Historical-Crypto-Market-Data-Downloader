@@ -5,7 +5,7 @@ import logging
 from .binance import Binance
 from .htx import HTX
 from .kucoin import KuCoin
-from .okx import OKX
+from .okx import CacheReport, OKX
 from .core.models import (
     Availability,
     Gap,
@@ -22,6 +22,7 @@ __all__: tuple[str, ...] = (
     "HTX",
     "KuCoin",
     "OKX",
+    "CacheReport",
     "Availability",
     "Gap",
     "Market",

@@ -973,6 +973,60 @@ class Catalog:
         ).fetchall()
         return [self._logical_partition(row) for row in rows]
 
+    def partition_totals_between(
+        self,
+        source: str,
+        product: str,
+        dataset: str,
+        start: datetime,
+        end: datetime,
+    ) -> tuple[int, int, int]:
+        """Return logical subject, row, and unique local-byte totals.
+
+        Args:
+            source: Historical source identifier.
+            product: Source product identifier.
+            dataset: Historical dataset identifier.
+            start: Inclusive UTC range start.
+            end: Exclusive UTC range end.
+
+        Returns:
+            Distinct subjects, partition rows, and unique materialization bytes.
+        """
+        if start.tzinfo is None or end.tzinfo is None or start >= end:
+            raise ValueError("partition totals require a valid aware time range")
+        row = self.connection.execute(
+            """
+            WITH relevant AS (
+                SELECT p.materialization_id, p.subject_kind, p.subject_value,
+                       p.row_count, m.local_size
+                FROM logical_partitions AS p
+                JOIN materializations AS m USING (materialization_id)
+                WHERE p.source = ? AND p.product = ? AND p.dataset = ?
+                  AND p.coverage_start < ? AND p.coverage_end > ?
+                  AND m.superseded_at IS NULL
+            ), physical AS (
+                SELECT materialization_id, max(local_size) AS local_size
+                FROM relevant GROUP BY materialization_id
+            )
+            SELECT
+                (SELECT count(*) FROM (
+                    SELECT DISTINCT subject_kind, subject_value FROM relevant
+                )),
+                coalesce((SELECT sum(row_count) FROM relevant), 0),
+                coalesce((SELECT sum(local_size) FROM physical), 0)
+            """,
+            [
+                source,
+                product,
+                dataset,
+                _database_timestamp(end),
+                _database_timestamp(start),
+            ],
+        ).fetchone()
+        assert row is not None
+        return int(row[0]), int(row[1]), int(row[2])
+
     def delete_partitions(
         self,
         source: str,
