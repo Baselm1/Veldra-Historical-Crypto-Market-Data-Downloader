@@ -21,9 +21,7 @@ type OKXProduct = Literal[
 type ContractStyle = Literal["normal", "xperp", "pre_market_xperp"]
 _SAFE = re.compile(r"[A-Z0-9_-]+")
 _TEXT = re.compile(r"[A-Za-z0-9_-]+")
-_OPTION = re.compile(
-    r"^[A-Z0-9]+-[A-Z0-9_]+-(\d{6})-([0-9]+(?:\.[0-9]+)?)-([CP])$"
-)
+_OPTION = re.compile(r"^[A-Z0-9]+-[A-Z0-9_]+-(\d{6})-([0-9]+(?:\.[0-9]+)?)-([CP])$")
 _STATES = frozenset({"live", "suspend", "rebase", "post_only", "preopen", "test"})
 
 
