@@ -111,6 +111,24 @@ def _normalize_spot_trades(table: Any, dataset: DatasetSpec) -> Any:
     return pa.table({column: values[column] for column in dataset.stored_columns})
 
 
+def _normalize_futures_klines(table: Any, dataset: DatasetSpec) -> Any:
+    """Convert KuCoin perpetual price Klines into canonical OHLC columns."""
+    if tuple(table.column_names) != dataset.source_columns:
+        raise DataValidationError("CSV does not match a KuCoin Futures Kline schema")
+    values = {
+        "open_time": _epoch(table["time"], "open_time", "ms"),
+        **{
+            column: _number(table[column], column)
+            for column in ("open", "high", "low", "close")
+        },
+    }
+    if dataset.name == "klines":
+        values["contract_volume"] = _number(table["volume"], "contract_volume")
+    else:
+        values["sample_count"] = pa.array([1] * len(table), type=pa.int64())
+    return pa.table({column: values[column] for column in dataset.stored_columns})
+
+
 def normalize_chunk(
     table: Any, dataset: DatasetSpec, contract_size: float | None = None
 ) -> Any:
@@ -128,6 +146,12 @@ def normalize_chunk(
         return _normalize_spot_klines(table, dataset)
     if dataset.product == "spot" and dataset.name == "trades":
         return _normalize_spot_trades(table, dataset)
+    if dataset.product in {"linear_futures", "inverse_futures"} and dataset.name in {
+        "klines",
+        "index_price_klines",
+        "mark_price_klines",
+    }:
+        return _normalize_futures_klines(table, dataset)
     raise ValueError(f"unsupported normalizer: {dataset.product}/{dataset.name}")
 
 
@@ -239,12 +263,18 @@ def validate_chunk(
     Returns:
         The final UTC timestamp in the table.
     """
-    if dataset.product != "spot" or dataset.name not in {"klines", "trades"}:
+    supported = (
+        dataset.product == "spot" and dataset.name in {"klines", "trades"}
+    ) or (
+        dataset.product in {"linear_futures", "inverse_futures"}
+        and dataset.name in {"klines", "index_price_klines", "mark_price_klines"}
+    )
+    if not supported:
         raise ValueError(f"unsupported validator: {dataset.product}/{dataset.name}")
     _validate_schema(table, dataset)
     _validate_values(table, dataset)
     last = _validate_times(table, dataset, day, previous_timestamp, end_day)
-    if dataset.name == "klines":
+    if dataset.name.endswith("klines"):
         _validate_ohlc(table, dataset)
     else:
         _validate_trades(table)
