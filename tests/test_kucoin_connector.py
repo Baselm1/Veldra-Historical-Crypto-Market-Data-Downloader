@@ -106,7 +106,7 @@ def test_spot_markets_merge_api_and_every_archive_branch() -> None:
     with httpx.Client(transport=httpx.MockTransport(source)) as client:
         markets = KuCoinConnector(retries=0).markets(client, "spot")
 
-    assert [market.symbol for market in markets] == ["BTC-USDT", "OLDUSDT"]
+    assert [market.symbol for market in markets] == ["BTC-USDT", "OLD-USDT"]
     btc = markets[0]
     assert btc.pair == "BTCUSDT"
     assert btc.active

@@ -171,6 +171,18 @@ class KuCoinConnector:
         destination: Path,
     ) -> IngestedResource:
         """Convert one verified KuCoin CSV archive into Parquet."""
+        if dataset.name == "order_book_snapshots":
+            from veldra.kucoin.orderbook import ingest_order_book
+
+            return ingest_order_book(
+                client,
+                resource,
+                dataset,
+                destination,
+                timeout=self.timeout,
+                retries=self.retries,
+                backoff=self.backoff,
+            )
         return ingest_archive(
             client,
             resource,
@@ -263,7 +275,7 @@ class KuCoinConnector:
             product=product,
         )
 
-    def _archive_markets(self, client: httpx.Client, product: str) -> set[str]:
+    def _archive_markets(self, client: httpx.Client, product: str) -> dict[str, str]:
         """Return valid market folders across every KuCoin dataset branch."""
         roots = (
             (
@@ -281,7 +293,7 @@ class KuCoinConnector:
                 "data/futures/daily/depth/orderbooklv50/",
             )
         )
-        found: set[str] = set()
+        found: dict[str, str] = {}
         for root in roots:
             for _, prefixes in self._pages(client, root, delimiter="/"):
                 for prefix in prefixes:
@@ -290,12 +302,13 @@ class KuCoinConnector:
                         continue
                     compact = normalize_pair(symbol)
                     if product == "spot" or self._archive_product(compact) == product:
-                        found.add(compact)
+                        if "-" in symbol or compact not in found:
+                            found[compact] = symbol
         return found
 
     @staticmethod
     def _merge_markets(
-        current: dict[str, Market], archived: set[str], product: str
+        current: dict[str, Market], archived: Mapping[str, str], product: str
     ) -> list[Market]:
         """Merge archive-only symbols and archive aliases into current markets."""
         merged = dict(current)
@@ -304,15 +317,18 @@ class KuCoinConnector:
             for symbol, market in current.items()
             if market.pair is not None
         }
-        for archive_symbol in archived:
+        for archive_symbol, native_archive_symbol in archived.items():
             native = current_by_archive.get(archive_symbol)
             if native is not None:
                 market = merged[native]
                 if market.pair != archive_symbol:
                     merged[native] = replace(market, pair=archive_symbol)
                 continue
-            merged[archive_symbol] = Market(
-                symbol=archive_symbol,
+            public_symbol = (
+                native_archive_symbol if product == "spot" else archive_symbol
+            )
+            merged[public_symbol] = Market(
+                symbol=public_symbol,
                 normalized_symbol=archive_symbol,
                 pair=archive_symbol,
                 contract_type="PERPETUAL" if product != "spot" else None,

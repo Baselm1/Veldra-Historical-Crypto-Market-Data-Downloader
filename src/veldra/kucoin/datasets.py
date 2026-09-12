@@ -243,6 +243,35 @@ def _funding_rates(product: str) -> DatasetSpec:
     )
 
 
+def _order_book_snapshots(product: str) -> DatasetSpec:
+    """Return one nested KuCoin level-50 order-book declaration."""
+    futures = product != "spot"
+    columns = (
+        ("event_time", "sequence", "bids", "asks")
+        if futures
+        else ("event_time", "bids", "asks")
+    )
+    return DatasetSpec(
+        product=product,
+        name="order_book_snapshots",
+        remote_name="orderbooklv50",
+        source_columns=columns,
+        stored_columns=columns,
+        time_column="event_time",
+        base_interval=None,
+        output_intervals=(),
+        aliases=MappingProxyType({}),
+        max_concurrency=4,
+        schema_version=1,
+        ordering_columns=("event_time", "sequence") if futures else ("event_time",),
+        timestamp_columns=("event_time",),
+        integer_columns=("sequence",) if futures else (),
+        object_columns=("bids", "asks"),
+        archive_symbol_attribute="pair",
+        discovery_lookahead_days=1,
+    )
+
+
 SPOT_KLINES = _spot_klines()
 SPOT_TRADES = _spot_trades()
 LINEAR_KLINES = _futures_klines("linear_futures")
@@ -255,6 +284,9 @@ LINEAR_MARK_PRICE_KLINES = _reference_klines("linear_futures", "mark_price_kline
 INVERSE_MARK_PRICE_KLINES = _reference_klines("inverse_futures", "mark_price_klines")
 LINEAR_FUNDING_RATES = _funding_rates("linear_futures")
 INVERSE_FUNDING_RATES = _funding_rates("inverse_futures")
+SPOT_ORDER_BOOK_SNAPSHOTS = _order_book_snapshots("spot")
+LINEAR_ORDER_BOOK_SNAPSHOTS = _order_book_snapshots("linear_futures")
+INVERSE_ORDER_BOOK_SNAPSHOTS = _order_book_snapshots("inverse_futures")
 
 DATASETS: Mapping[tuple[str, str], DatasetSpec] = MappingProxyType(
     {
@@ -270,6 +302,9 @@ DATASETS: Mapping[tuple[str, str], DatasetSpec] = MappingProxyType(
         ("inverse_futures", "mark_price_klines"): INVERSE_MARK_PRICE_KLINES,
         ("linear_futures", "funding_rates"): LINEAR_FUNDING_RATES,
         ("inverse_futures", "funding_rates"): INVERSE_FUNDING_RATES,
+        ("spot", "order_book_snapshots"): SPOT_ORDER_BOOK_SNAPSHOTS,
+        ("linear_futures", "order_book_snapshots"): LINEAR_ORDER_BOOK_SNAPSHOTS,
+        ("inverse_futures", "order_book_snapshots"): INVERSE_ORDER_BOOK_SNAPSHOTS,
     }
 )
 

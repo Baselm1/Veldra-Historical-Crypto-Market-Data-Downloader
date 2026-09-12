@@ -157,6 +157,16 @@ def test_interval_less_snapshot_capabilities_are_declared_without_a_subclass() -
     assert snapshot.discovery_lookahead_days == 0
 
 
+def test_nested_object_columns_have_stable_empty_frame_types() -> None:
+    """Confirm nested source fields are declared separately from numeric values."""
+    snapshot = minimal_snapshot(
+        stored_columns=("event_time", "levels"),
+        object_columns=("levels",),
+    )
+
+    assert snapshot.column_dtype("levels") == "object"
+
+
 @pytest.mark.parametrize("value", [-1, 1.5, True])
 def test_dataset_rejects_an_invalid_discovery_lookahead(value: object) -> None:
     """Confirm discovery lookahead is a nonnegative whole number.

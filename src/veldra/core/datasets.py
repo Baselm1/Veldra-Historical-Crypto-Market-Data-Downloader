@@ -146,6 +146,7 @@ def _validate_typed_columns(
     integer_columns: Columns,
     boolean_columns: Columns,
     string_columns: Columns,
+    object_columns: Columns,
 ) -> None:
     """Reject typed columns that are absent, ambiguous, or miss the primary time.
 
@@ -156,6 +157,7 @@ def _validate_typed_columns(
         integer_columns: Canonical columns stored as signed integers.
         boolean_columns: Canonical columns stored as booleans.
         string_columns: Canonical columns stored as text.
+        object_columns: Canonical columns stored as nested Python objects.
 
     Raises:
         ValueError: If a type declaration is not compatible with the schema.
@@ -165,10 +167,17 @@ def _validate_typed_columns(
         ("integer", integer_columns),
         ("boolean", boolean_columns),
         ("string", string_columns),
+        ("object", object_columns),
     ):
         if any(column not in stored_columns for column in columns):
             raise ValueError(f"dataset {name} columns must be stored")
-    declared = (*timestamp_columns, *integer_columns, *boolean_columns, *string_columns)
+    declared = (
+        *timestamp_columns,
+        *integer_columns,
+        *boolean_columns,
+        *string_columns,
+        *object_columns,
+    )
     if time_column not in timestamp_columns:
         raise ValueError("dataset time_column must be a timestamp column")
     if len(set(declared)) != len(declared):
@@ -255,6 +264,7 @@ class DatasetSpec:
     integer_columns: Columns = ()
     boolean_columns: Columns = ()
     string_columns: Columns = ()
+    object_columns: Columns = ()
     archive_symbol_attribute: ArchiveSymbolAttribute = "symbol"
     source_schemas: tuple[CsvSchema, ...] = ()
     sort_source_rows: bool = False
@@ -292,6 +302,7 @@ class DatasetSpec:
             self.integer_columns,
             self.boolean_columns,
             self.string_columns,
+            self.object_columns,
         )
         _validate_schema_version(self.schema_version)
         _validate_archive_symbol_attribute(self.archive_symbol_attribute)
@@ -372,6 +383,8 @@ class DatasetSpec:
             return "bool"
         if column in self.string_columns:
             return "string"
+        if column in self.object_columns:
+            return "object"
         return "float64"
 
     def resolve_interval(self, value: object) -> str | None:
