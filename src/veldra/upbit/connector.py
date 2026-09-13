@@ -5,14 +5,18 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 import logging
 import math
+from pathlib import Path
 import re
 from urllib.parse import quote
 
 import httpx
 
+from veldra.core.datasets import DatasetSpec
 from veldra.core.download import archive_checksum, get
-from veldra.core.models import Market, Resource, ResourceKey
+from veldra.core.ingest import ingest_archive
+from veldra.core.models import IngestedResource, Market, Resource, ResourceKey
 from veldra.upbit.datasets import PRODUCTS, supports
+from veldra.upbit.processing import normalize_chunk, validate_chunk
 
 LISTING_URL = "https://crix-data-api.upbit.com/api/v1/market-data/listing"
 ARCHIVE_URL = "https://crix-data.upbit.com"
@@ -143,6 +147,26 @@ class UpbitConnector:
                     continue
                 return None if resource.day > end_day else resource
         return None
+
+    def ingest(
+        self,
+        client: httpx.Client,
+        resource: Resource,
+        dataset: DatasetSpec,
+        destination: Path,
+    ) -> IngestedResource:
+        """Convert one verified Upbit CSV archive into Parquet."""
+        return ingest_archive(
+            client,
+            resource,
+            dataset,
+            destination,
+            normalizer=normalize_chunk,
+            validator=validate_chunk,
+            timeout=self.timeout,
+            retries=self.retries,
+            backoff=self.backoff,
+        )
 
     def _current_markets(self, client: httpx.Client) -> dict[str, Market]:
         """Parse Upbit's complete current Spot market snapshot."""
