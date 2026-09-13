@@ -93,6 +93,38 @@ def test_facade_construction_wires_upbit_without_io(tmp_path: Path) -> None:
     assert not data_dir.exists()
 
 
+def test_history_boundary_uses_config_then_explicit_overrides(tmp_path: Path) -> None:
+    """Confirm Upbit distinguishes configured, complete, and explicit history.
+
+    Args:
+        tmp_path: The isolated directory containing a custom configuration.
+    """
+    config = tmp_path / "upbit.toml"
+    config.write_text(
+        '[history]\nearliest_date = "2021-02-03"\n\n'
+        '[klines]\nbase_interval = "1m"\n',
+        encoding="utf-8",
+    )
+
+    configured = Upbit(tmp_path / "configured", config_path=config, progress=False)
+    complete = Upbit(
+        tmp_path / "complete",
+        config_path=config,
+        earliest_date="all",
+        progress=False,
+    )
+    explicit = Upbit(
+        tmp_path / "explicit",
+        config_path=config,
+        earliest_date=date(2022, 4, 5),
+        progress=False,
+    )
+
+    assert configured.earliest_date == date(2021, 2, 3)
+    assert complete.earliest_date is None
+    assert explicit.earliest_date == date(2022, 4, 5)
+
+
 @pytest.mark.parametrize(
     ("option", "value", "message"),
     [

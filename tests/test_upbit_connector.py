@@ -6,6 +6,7 @@ from urllib.parse import parse_qs
 import httpx
 import pytest
 
+from veldra.core.matching import exact_markets, suggest_symbols
 from veldra.core.models import ResourceKey
 from veldra.upbit.connector import UpbitConnector
 
@@ -86,6 +87,61 @@ def test_markets_preserve_native_names_and_reverse_quote_first_symbols() -> None
     assert by_symbol["BTC-USDT"].normalized_symbol == "USDTBTC"
     assert by_symbol["BTC-USDT"].status == "CAUTION"
     assert not by_symbol["OLD-COIN"].active
+
+
+@pytest.mark.parametrize(
+    ("query", "expected"),
+    [
+        ("BTCUSDT", "USDT-BTC"),
+        ("btc_usdt", "USDT-BTC"),
+        ("BTC/USDT", "USDT-BTC"),
+        ("ETHUSDT", "USDT-ETH"),
+        ("XRPKRW", "KRW-XRP"),
+        ("ADABTC", "BTC-ADA"),
+        ("BTC-USDT", "BTC-USDT"),
+    ],
+)
+def test_quote_first_semantic_queries_resolve_without_reversing_native_symbols(
+    query: str, expected: str
+) -> None:
+    """Confirm common semantic spellings preserve Upbit quote-first identity.
+
+    Args:
+        query: The caller-facing native or semantic market spelling.
+        expected: The one native Upbit market that must match.
+    """
+    markets = [
+        UpbitConnector._market(symbol, active=True)
+        for symbol in ("USDT-BTC", "USDT-ETH", "KRW-XRP", "BTC-ADA", "BTC-USDT")
+    ]
+
+    assert [market.symbol for market in exact_markets(query, markets)] == [expected]
+
+
+@pytest.mark.parametrize(
+    ("query", "expected"),
+    [
+        ("BTCSUDT", "USDT-BTC"),
+        ("ETTHUSDT", "USDT-ETH"),
+        ("XPRKRW", "KRW-XRP"),
+        ("ADABCT", "BTC-ADA"),
+    ],
+)
+def test_quote_first_typos_suggest_the_semantic_market(
+    query: str, expected: str
+) -> None:
+    """Confirm high-confidence typos suggest the intended native market.
+
+    Args:
+        query: A misspelled semantic market identifier.
+        expected: The native Upbit symbol expected first.
+    """
+    markets = [
+        UpbitConnector._market(symbol, active=True)
+        for symbol in ("USDT-BTC", "USDT-ETH", "KRW-XRP", "BTC-ADA", "BTC-USDT")
+    ]
+
+    assert suggest_symbols(query, markets)[0] == expected
 
 
 def test_quote_volumes_parse_nonnegative_current_turnover() -> None:
