@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
+import math
 from typing import TYPE_CHECKING
 
 import httpx
@@ -397,6 +398,8 @@ def get_option_contracts(
     selected_family = _optional_text(family, "family")
     assert selected_family is not None
     selected_expiry = parse_timestamp(expiry).date() if expiry is not None else None
+    if option_type is not None and not isinstance(option_type, str):
+        raise TypeError("option_type must be a string")
     if option_type not in {None, "call", "put"}:
         raise ValueError("option_type must be call or put")
     selected_type = {None: None, "call": "C", "put": "P"}[option_type]
@@ -406,6 +409,8 @@ def get_option_contracts(
             bounds.append(None)
         elif isinstance(value, bool) or not isinstance(value, (int, float)):
             raise TypeError(f"{name} must be numeric")
+        elif not math.isfinite(value) or value < 0:
+            raise ValueError(f"{name} must be a finite nonnegative number")
         else:
             bounds.append(float(value))
     minimum, maximum = bounds

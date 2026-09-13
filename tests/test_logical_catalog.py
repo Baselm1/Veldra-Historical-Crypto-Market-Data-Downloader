@@ -278,3 +278,29 @@ def test_materialization_deletion_is_reference_safe(
     assert catalog.unreferenced_materializations() == [item]
     assert catalog.delete_materialization(item.materialization_id) == path
     assert catalog.unreferenced_materializations() == []
+
+
+def test_invalid_materialization_removes_all_views_and_marks_archive_failed(
+    catalog: Catalog, tmp_path: Path
+) -> None:
+    """Confirm one corrupt shared file invalidates every logical subject view."""
+    path = tmp_path / "shared.parquet"
+    item = materialization(path)
+    catalog.save_archives([archive()])
+    catalog.publish_materialization(
+        item,
+        [partition(path, "BTC-USDT"), partition(path, "ETH-USDT")],
+    )
+
+    assert catalog.invalidate_materialization_path(path, "not parquet") is True
+    assert catalog.invalidate_materialization_path(path, "already gone") is False
+    assert catalog.connection.execute(
+        "select count(*) from logical_partitions"
+    ).fetchone() == (0,)
+    assert catalog.connection.execute(
+        "select count(*) from materializations"
+    ).fetchone() == (0,)
+    failed = catalog.archive(KEY)
+    assert failed is not None
+    assert failed.status == "failed"
+    assert failed.error == "not parquet"

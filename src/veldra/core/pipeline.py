@@ -243,6 +243,49 @@ def _metrics[InputT, OutputT](
     )
 
 
+def _join_pipeline_workers[HandoffT](
+    downloaders: Sequence[Thread],
+    processors: Sequence[Thread],
+    handoff: Queue[HandoffT | object],
+    sentinel: object,
+    stop: Event,
+) -> None:
+    """Join both pipeline stages and preserve an interrupt until cleanup ends.
+
+    Args:
+        downloaders: Active download-stage threads.
+        processors: Active processing-stage threads.
+        handoff: Queue connecting the two stages.
+        sentinel: Unique value that stops a processing worker.
+        stop: Shared cancellation signal.
+    """
+    interrupted: BaseException | None = None
+    sentinels_sent = 0
+    try:
+        for worker in downloaders:
+            worker.join()
+        for _ in processors:
+            handoff.put(sentinel)
+            sentinels_sent += 1
+        for worker in processors:
+            worker.join()
+    except BaseException as error:
+        stop.set()
+        interrupted = error
+    finally:
+        for worker in downloaders:
+            if worker.is_alive():
+                worker.join()
+        while sentinels_sent < len(processors):
+            handoff.put(sentinel)
+            sentinels_sent += 1
+        for worker in processors:
+            if worker.is_alive():
+                worker.join()
+    if interrupted is not None:
+        raise interrupted
+
+
 def run_bounded_pipeline[InputT, DownloadedT, OutputT](
     items: Sequence[PipelineItem[InputT]],
     download: Callable[[InputT], Downloaded[DownloadedT]],
@@ -363,12 +406,7 @@ def run_bounded_pipeline[InputT, DownloadedT, OutputT](
     downloaders = [Thread(target=download_worker) for _ in range(download_count)]
     for worker in (*processors, *downloaders):
         worker.start()
-    for worker in downloaders:
-        worker.join()
-    for _ in processors:
-        handoff.put(sentinel)
-    for worker in processors:
-        worker.join()
+    _join_pipeline_workers(downloaders, processors, handoff, sentinel, stop)
 
     ordered = [outcomes[index] for index in range(len(items))]
     catalog_seconds = 0.0

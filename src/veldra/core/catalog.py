@@ -1183,6 +1183,48 @@ class Catalog:
             raise KeyError(f"materialization {materialization_id} was not found")
         return Path(row[0])
 
+    def invalidate_materialization_path(self, path: Path, error: str) -> bool:
+        """Remove one unreadable materialization and mark its archive failed.
+
+        Args:
+            path: Local Parquet path that cannot be read.
+            error: Failure description retained on the physical archive.
+
+        Returns:
+            True when active metadata for the path was removed.
+        """
+        rows = self.connection.execute(
+            """
+            SELECT materialization_id, archive_id FROM materializations
+            WHERE local_path = ? AND superseded_at IS NULL
+            """,
+            [str(path)],
+        ).fetchall()
+        if not rows:
+            return False
+        identifiers = [row[0] for row in rows]
+        archive_ids = sorted({row[1] for row in rows})
+        placeholders = ", ".join("?" for _ in identifiers)
+        archive_placeholders = ", ".join("?" for _ in archive_ids)
+        with self._transaction():
+            self.connection.execute(
+                f"DELETE FROM logical_partitions WHERE materialization_id IN ({placeholders})",
+                identifiers,
+            )
+            self.connection.execute(
+                f"DELETE FROM materializations WHERE materialization_id IN ({placeholders})",
+                identifiers,
+            )
+            self.connection.execute(
+                f"""
+                UPDATE archive_objects SET status = 'failed', error = ?,
+                    last_attempt_at = current_timestamp
+                WHERE archive_id IN ({archive_placeholders})
+                """,
+                [error, *archive_ids],
+            )
+        return True
+
     def _backfill_logical_catalog(self) -> None:
         """Adapt existing one-file resources into physical and logical metadata."""
         rows = self.connection.execute("""

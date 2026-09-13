@@ -176,6 +176,8 @@ def test_option_declarations_and_archive_identity() -> None:
     [
         ({"strike_min": -1}, "strike_min"),
         ({"strike_max": -1}, "strike_max"),
+        ({"strike_min": float("nan")}, "strike_min"),
+        ({"strike_max": float("inf")}, "strike_max"),
         ({"strike_min": 2, "strike_max": 1}, "exceed"),
         ({"option_type": "X"}, "option_type"),
     ],
@@ -206,3 +208,7 @@ def test_option_facade_rejects_wrong_filter_types_and_family(tmp_path: Path) -> 
         )
     with pytest.raises(ValueError, match="does not match"):
         api.get_option_chain_klines("BTC-USDC", "2025-01-01", "2025-01-02")
+    with pytest.raises(ValueError, match="strike_min"):
+        api.get_option_chain_klines(
+            "BTC-USD", "2025-01-01", "2025-01-02", strike_min=float("nan")
+        )

@@ -422,28 +422,52 @@ class OKXRESTHistory:
         partitions = self.catalog.partitions_between(
             "okx", product, name, subject, interval, start, end
         )
-        exact = [
-            item
-            for item in partitions
-            if item.coverage_start == start and item.coverage_end == end
-        ]
+        cached = self._covering_partition(partitions, start, end)
         archive = self.catalog.archive(key)
-        fresh = archive is not None and self._fresh(archive, end, spec.mutable_hours)
-        if not exact or (not offline and not fresh):
+        fresh = end <= datetime.now(UTC) - timedelta(days=3) or (
+            archive is not None and self._fresh(archive, end, spec.mutable_hours)
+        )
+        if cached is None or (not offline and not fresh):
             if offline:
-                raise RuntimeError("offline mode requires this exact cached REST range")
+                raise RuntimeError("offline mode requires a cached covering REST range")
             rows = self._fetch(spec, start, end, params)
             frame = normalize_rest(spec, rows)
             if not frame.empty:
                 frame = frame[
                     frame[spec.time_column].ge(start) & frame[spec.time_column].lt(end)
                 ].reset_index(drop=True)
-            exact = [
-                self._publish(
-                    key, spec, subject, start, end, product, interval, frame, rows
-                )
-            ]
-        return self._query(exact, spec, start, end)
+            cached = self._publish(
+                key, spec, subject, start, end, product, interval, frame, rows
+            )
+        return self._query([cached], spec, start, end)
+
+    @staticmethod
+    def _covering_partition(
+        partitions: Sequence[LogicalPartition], start: datetime, end: datetime
+    ) -> LogicalPartition | None:
+        """Return the smallest cached partition covering a request.
+
+        Args:
+            partitions: Candidate partitions for the logical subject.
+            start: Inclusive requested timestamp.
+            end: Exclusive requested timestamp.
+
+        Returns:
+            Exact or smallest enclosing partition, when one exists.
+        """
+        covering = (
+            item
+            for item in partitions
+            if item.coverage_start <= start and item.coverage_end >= end
+        )
+        return min(
+            covering,
+            key=lambda item: (
+                item.coverage_end - item.coverage_start,
+                item.coverage_start,
+            ),
+            default=None,
+        )
 
     @staticmethod
     def _fresh(archive: ArchiveObject, end: datetime, mutable_hours: float) -> bool:

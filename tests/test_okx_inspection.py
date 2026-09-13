@@ -319,6 +319,10 @@ def test_option_contract_filters_parse_native_contract_terms(
         okx.get_option_contracts(
             family="BTC-USD", strike_max=True  # type: ignore[arg-type]
         )
+    with pytest.raises(ValueError, match="strike_min"):
+        okx.get_option_contracts(family="BTC-USD", strike_min=-1)
+    with pytest.raises(ValueError, match="strike_max"):
+        okx.get_option_contracts(family="BTC-USD", strike_max=float("nan"))
 
 
 def test_generic_cache_method_delegates_one_explicit_bulk_request(

@@ -4,6 +4,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
 from datetime import datetime
+import math
 from pathlib import Path
 
 import duckdb
@@ -30,6 +31,16 @@ class OptionChainFilter:
 
     def __post_init__(self) -> None:
         """Reject contradictory or unsupported Option filters."""
+        for name, value in (
+            ("strike_min", self.strike_min),
+            ("strike_max", self.strike_max),
+        ):
+            if value is not None and (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(value)
+            ):
+                raise ValueError(f"{name} must be a finite number")
         if self.strike_min is not None and self.strike_min < 0:
             raise ValueError("strike_min cannot be negative")
         if self.strike_max is not None and self.strike_max < 0:
@@ -40,6 +51,8 @@ class OptionChainFilter:
             and self.strike_min > self.strike_max
         ):
             raise ValueError("strike_min cannot exceed strike_max")
+        if self.option_type is not None and not isinstance(self.option_type, str):
+            raise TypeError("option_type must be a string")
         if self.option_type not in {None, "C", "P"}:
             raise ValueError("option_type must be C or P")
 

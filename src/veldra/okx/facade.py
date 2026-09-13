@@ -1,6 +1,7 @@
 """Provide the public facade for OKX historical data."""
 
 from datetime import date, datetime
+import math
 from pathlib import Path
 from typing import Literal
 
@@ -519,7 +520,15 @@ class OKX:
         Returns:
             One nested DataFrame or a list matching the input shape.
         """
-        if isinstance(depth, bool) or depth not in {400, 5000}:
+        if (
+            isinstance(depth, bool)
+            or not isinstance(depth, int)
+            or depth
+            not in {
+                400,
+                5000,
+            }
+        ):
             raise ValueError("depth must be 400 or 5000")
         result = self._service.get_results(
             pairs,
@@ -957,6 +966,8 @@ class OKX:
         Returns:
             Validated internal Option chain filter.
         """
+        if option_type is not None and not isinstance(option_type, str):
+            raise TypeError("option_type must be a string")
         native_type = {None: None, "call": "C", "put": "P"}.get(option_type)
         if option_type is not None and native_type is None:
             raise ValueError("option_type must be call or put")
@@ -965,6 +976,8 @@ class OKX:
                 isinstance(value, bool) or not isinstance(value, (int, float))
             ):
                 raise TypeError(f"{name} must be numeric")
+            if value is not None and not math.isfinite(value):
+                raise ValueError(f"{name} must be a finite number")
         parsed_expiry = parse_timestamp(expiry).date() if expiry is not None else None
         return OptionChainFilter(parsed_expiry, strike_min, strike_max, native_type)
 
@@ -997,7 +1010,7 @@ class OKX:
             subject_kind="instrument",
             product="index",
             dataset="index_price_klines",
-            params={"instId": index.upper(), "bar": bar},
+            params={"instId": self._native_text(index, "index"), "bar": bar},
             interval=interval,
             offline=offline,
         )
@@ -1039,7 +1052,10 @@ class OKX:
             subject_kind="instrument",
             product=product,
             dataset="mark_price_klines",
-            params={"instId": instrument.upper(), "bar": bar},
+            params={
+                "instId": self._native_text(instrument, "instrument"),
+                "bar": bar,
+            },
             interval=interval,
             offline=offline,
         )
@@ -1072,7 +1088,7 @@ class OKX:
             subject_kind="instrument",
             product=product,
             dataset="premium_history",
-            params={"instId": instrument.upper()},
+            params={"instId": self._native_text(instrument, "instrument")},
             offline=offline,
         )
 
@@ -1104,7 +1120,7 @@ class OKX:
             subject_kind="instrument",
             product=product,
             dataset="recent_funding_rates",
-            params={"instId": instrument.upper()},
+            params={"instId": self._native_text(instrument, "instrument")},
             offline=offline,
         )
 
@@ -1136,7 +1152,9 @@ class OKX:
             subject_kind="instrument_family",
             product=product,
             dataset="settlements",
-            params={"instFamily": instrument_family.upper()},
+            params={
+                "instFamily": self._native_text(instrument_family, "instrument_family")
+            },
             offline=offline,
         )
 
@@ -1169,7 +1187,10 @@ class OKX:
             subject_kind="instrument_family",
             product=product,
             dataset="delivery_exercise",
-            params={"instType": native, "instFamily": instrument_family.upper()},
+            params={
+                "instType": native,
+                "instFamily": self._native_text(instrument_family, "instrument_family"),
+            },
             offline=offline,
         )
 
@@ -1202,7 +1223,10 @@ class OKX:
             subject_kind="currency",
             product="analytics",
             dataset="open_interest_history",
-            params={"ccy": currency.upper(), "period": native_period},
+            params={
+                "ccy": self._native_text(currency, "currency"),
+                "period": native_period,
+            },
             interval=period,
             offline=offline,
         )
@@ -1230,6 +1254,8 @@ class OKX:
         Returns:
             Timestamped taker-side volume observations.
         """
+        if not isinstance(market, str):
+            raise TypeError("market must be a string")
         if market not in {"spot", "contracts"}:
             raise ValueError("market must be spot or contracts")
         native_period = self._statistics_period(period)
@@ -1241,7 +1267,7 @@ class OKX:
             product="analytics",
             dataset="taker_volume",
             params={
-                "ccy": currency.upper(),
+                "ccy": self._native_text(currency, "currency"),
                 "instType": market.upper(),
                 "period": native_period,
             },
@@ -1278,7 +1304,10 @@ class OKX:
             subject_kind="currency",
             product="analytics",
             dataset="long_short_ratio",
-            params={"ccy": currency.upper(), "period": native_period},
+            params={
+                "ccy": self._native_text(currency, "currency"),
+                "period": native_period,
+            },
             interval=period,
             offline=offline,
         )
@@ -1304,7 +1333,7 @@ class OKX:
         Returns:
             Timestamped Option interest and volume observations.
         """
-        if period not in {"8h", "1d"}:
+        if not isinstance(period, str) or period not in {"8h", "1d"}:
             raise ValueError("Option statistics period must be 8h or 1d")
         native = {"8h": "8H", "1d": "1D"}[period]
         return self._rest(
@@ -1314,7 +1343,10 @@ class OKX:
             subject_kind="currency",
             product="analytics",
             dataset="option_interest_volume",
-            params={"ccy": currency.upper(), "period": native},
+            params={
+                "ccy": self._native_text(currency, "currency"),
+                "period": native,
+            },
             interval=period,
             offline=offline,
         )
@@ -1359,6 +1391,24 @@ class OKX:
             interval=interval,
             offline=offline,
         )
+
+    @staticmethod
+    def _native_text(value: object, name: str) -> str:
+        """Return one nonempty uppercase native OKX identifier.
+
+        Args:
+            value: Caller-provided identifier.
+            name: Field name used in validation errors.
+
+        Returns:
+            Normalized native identifier.
+        """
+        if not isinstance(value, str):
+            raise TypeError(f"{name} must be a string")
+        result = value.strip().upper()
+        if not result:
+            raise ValueError(f"{name} must not be empty")
+        return result
 
     @staticmethod
     def _rest_interval(value: object) -> str:

@@ -2,7 +2,7 @@
 
 from concurrent.futures import CancelledError, ThreadPoolExecutor
 from pathlib import Path
-from threading import Event, Lock
+from threading import Event, Lock, Thread
 import time
 
 import pytest
@@ -173,6 +173,41 @@ def test_pipeline_honors_preexisting_cancellation() -> None:
     assert called == []
     assert all(isinstance(outcome.error, CancelledError) for outcome in outcomes)
     assert metrics.failed == 2
+
+
+def test_keyboard_interrupt_cancels_and_joins_pipeline_workers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Confirm a caller interrupt stops queued work and leaves no live workers."""
+    cancellation = Event()
+    joined: list[Thread] = []
+    original_join = Thread.join
+    interrupted = False
+
+    def interrupt_once(self: Thread, timeout: float | None = None) -> None:
+        """Interrupt the first join and delegate every cleanup join afterward."""
+        nonlocal interrupted
+        if not interrupted:
+            interrupted = True
+            raise KeyboardInterrupt
+        original_join(self, timeout)
+        joined.append(self)
+
+    monkeypatch.setattr(Thread, "join", interrupt_once)
+    with pytest.raises(KeyboardInterrupt):
+        run_bounded_pipeline(
+            [PipelineItem(value, 1) for value in range(20)],
+            lambda value: (time.sleep(0.002), Downloaded(value))[1],
+            lambda value: value,
+            download_workers=2,
+            processing_workers=1,
+            byte_budget=InFlightByteBudget(2),
+            cancellation=cancellation,
+        )
+
+    assert cancellation.is_set()
+    assert joined
+    assert all(not worker.is_alive() for worker in joined)
 
 
 def test_pipeline_validates_workers_and_duplicate_item_identity() -> None:

@@ -8,21 +8,30 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from time import perf_counter
 import logging
+import math
 
 import httpx
 import pandas as pd
 
+from veldra.core.cache import invalid_parquet_paths
 from veldra.core.catalog import Catalog, catalog_lock, open_catalog
 from veldra.core.config import load_settings
 from veldra.core.datasets import DatasetSpec
 from veldra.core.matching import exact_markets, suggest_symbols
-from veldra.core.models import ArchiveObject, LogicalPartition, Market, Message, Result
+from veldra.core.models import (
+    ArchiveObject,
+    LogicalPartition,
+    Market,
+    Message,
+    MissingCandlesError,
+    Result,
+)
 from veldra.core.providers import MaterializedArchive
 from veldra.core.query import ParquetInput, empty_frame, query_parquet
 from veldra.core.reporting import Reporter
 from veldra.core.request import Request, parse_range, parse_timestamp
 from veldra.core.subjects import DataSubject
-from veldra.okx.client import OKXClient
+from veldra.okx.client import OKXClient, OKXResponseError
 from veldra.okx.chain import OptionChainFilter, query_chain
 from veldra.okx.connector import OKXConnector
 from veldra.okx.datasets import get_dataset, manifest_spec
@@ -31,9 +40,51 @@ from veldra.okx.identities import historical_future, historical_option, parse_cu
 from veldra.okx.planner import OKXArchivePlanner
 from veldra.okx.processing import OKXArchiveProvider
 from veldra.okx.reports import CacheReport
-from veldra.okx.rest import OKXRESTHistory
+from veldra.okx.rest import OKXRESTHistory, REST_SPECS, normalize_rest
 
 LOGGER = logging.getLogger(__name__)
+
+
+def _finite_number(
+    value: object, name: str, *, minimum: float, inclusive: bool
+) -> float:
+    """Return one finite numeric setting within its accepted range.
+
+    Args:
+        value: Proposed numeric setting.
+        name: Setting name used in validation errors.
+        minimum: Smallest accepted boundary.
+        inclusive: Whether the boundary itself is accepted.
+
+    Returns:
+        The validated floating-point value.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise TypeError(f"{name} must be numeric")
+    result = float(value)
+    if not math.isfinite(result):
+        raise ValueError(f"{name} must be finite")
+    if result < minimum or (not inclusive and result == minimum):
+        comparison = "nonnegative" if inclusive and minimum == 0 else "positive"
+        raise ValueError(f"{name} must be {comparison}")
+    return result
+
+
+def _nonnegative_integer(value: object, name: str) -> int:
+    """Return one nonnegative integer setting.
+
+    Args:
+        value: Proposed integer setting.
+        name: Setting name used in validation errors.
+
+    Returns:
+        The validated integer.
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"{name} must be an integer")
+    if value < 0:
+        raise ValueError(f"{name} must be nonnegative")
+    return value
 
 
 @dataclass(frozen=True)
@@ -92,8 +143,15 @@ class OKXService:
             or max_workers < 1
         ):
             raise ValueError("max_workers must be a positive integer")
-        if market_refresh_hours <= 0:
-            raise ValueError("market_refresh_hours must be positive")
+        refresh_hours = _finite_number(
+            market_refresh_hours,
+            "market_refresh_hours",
+            minimum=0,
+            inclusive=False,
+        )
+        request_timeout = _finite_number(timeout, "timeout", minimum=0, inclusive=False)
+        retry_count = _nonnegative_integer(retries, "retries")
+        retry_backoff = _finite_number(backoff, "backoff", minimum=0, inclusive=True)
         if not isinstance(progress, bool):
             raise TypeError("progress must be a Boolean")
         settings = load_settings(config_path)
@@ -101,13 +159,15 @@ class OKXService:
         self.earliest_date = self._history_date(selected)
         self.data_dir = Path(data_dir).expanduser().resolve()
         self.max_workers = max_workers
-        self.market_refresh_hours = float(market_refresh_hours)
-        self.timeout = timeout
-        self.retries = retries
-        self.backoff = backoff
+        self.market_refresh_hours = refresh_hours
+        self.timeout = request_timeout
+        self.retries = retry_count
+        self.backoff = retry_backoff
         self.progress = progress
         self.transport = transport
-        self.connector = OKXConnector(timeout=timeout, retries=retries, backoff=backoff)
+        self.connector = OKXConnector(
+            timeout=request_timeout, retries=retry_count, backoff=retry_backoff
+        )
 
     @staticmethod
     def _history_date(value: object) -> date | None:
@@ -124,6 +184,8 @@ class OKXService:
         parsed = parse_timestamp(value)
         if parsed.time() != datetime.min.time():
             raise ValueError("earliest_date must be a UTC day or 'all'")
+        if parsed.date() > datetime.now(UTC).date():
+            raise ValueError("earliest_date cannot be in the future")
         return parsed.date()
 
     def _client(self, *, offline: bool) -> httpx.Client:
@@ -342,13 +404,18 @@ class OKXService:
                         BaseException | None,
                     ]
                 ] = []
-                for resource, future in zip(selected, futures):
-                    try:
-                        outcomes.append((resource, future.result(), None))
-                        advance(resource.key.period_start, True)
-                    except BaseException as caught_error:
-                        outcomes.append((resource, None, caught_error))
-                        advance(resource.key.period_start, False)
+                try:
+                    for resource, future in zip(selected, futures):
+                        try:
+                            outcomes.append((resource, future.result(), None))
+                            advance(resource.key.period_start, True)
+                        except Exception as caught_error:
+                            outcomes.append((resource, None, caught_error))
+                            advance(resource.key.period_start, False)
+                except BaseException:
+                    for future in futures:
+                        future.cancel()
+                    raise
         problems: list[Message] = []
         completed: list[MaterializedArchive] = []
         for resource, value, error in outcomes:
@@ -386,6 +453,61 @@ class OKXService:
             )
             values[key] = ParquetInput(*key)
         return list(values.values())
+
+    @staticmethod
+    def _discard_invalid_partitions(
+        catalog: Catalog, partitions: list[LogicalPartition]
+    ) -> int:
+        """Remove unreadable Parquet metadata so online planning rebuilds it.
+
+        Args:
+            catalog: Catalog containing the logical partitions.
+            partitions: Candidate partitions for one request.
+
+        Returns:
+            Number of invalid physical files removed.
+        """
+        paths = sorted({item.materialization_path for item in partitions})
+        invalid = invalid_parquet_paths(paths)
+        for path in invalid:
+            catalog.invalidate_materialization_path(
+                path, "cached Parquet is unreadable"
+            )
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                LOGGER.warning(
+                    "Unreadable OKX cache file could not be removed: %s", path
+                )
+        return len(invalid)
+
+    @staticmethod
+    def _failed_result(
+        pair: str, request: Request, dataset: DatasetSpec, error: Exception
+    ) -> Result:
+        """Return one structured result for an isolated source failure.
+
+        Args:
+            pair: Original caller-provided instrument.
+            request: Validated request shared by the batch.
+            dataset: Dataset declaration used for the empty frame.
+            error: Source, storage, or query failure.
+
+        Returns:
+            Empty result retaining the failure without stopping sibling pairs.
+        """
+        result = Result(
+            pair,
+            empty_frame(dataset, request.columns or {}),
+            (request.start, request.end),
+            source="okx",
+            product=request.product,
+            dataset=request.dataset,
+            gap_policy=request.gap_policy,
+        )
+        result.errors.append(Message("source_failed", str(error)))
+        LOGGER.exception("OKX pair failed: pair=%s", pair, exc_info=error)
+        return result
 
     def _pair(
         self,
@@ -441,6 +563,25 @@ class OKXService:
             else DataSubject("instrument_family", market.pair or market.symbol)
         )
         first_day, last_day = self._source_days(start, request.end, dataset)
+        existing = catalog.partitions_between(
+            "okx",
+            request.product,
+            request.dataset,
+            subject,
+            dataset.base_interval,
+            start,
+            request.end,
+        )
+        invalid_count = self._discard_invalid_partitions(catalog, existing)
+        if invalid_count and offline:
+            result.errors.append(
+                Message(
+                    "query_failed",
+                    f"{invalid_count} cached Parquet file(s) are unreadable; "
+                    "run online to rebuild them.",
+                )
+            )
+            return result
         if not offline:
             cached = catalog.ready_archives_between(
                 "okx", request.product, request.dataset, first_day, last_day
@@ -476,16 +617,21 @@ class OKXService:
             start,
             request.end,
         )
-        result.data = query_parquet(
-            catalog.connection,
-            self._inputs(partitions),
-            dataset,
-            start,
-            request.end,
-            request.columns or {},
-            gap_policy=request.gap_policy,
-            interval=request.interval,
-        )
+        try:
+            result.data = query_parquet(
+                catalog.connection,
+                self._inputs(partitions),
+                dataset,
+                start,
+                request.end,
+                request.columns or {},
+                gap_policy=request.gap_policy,
+                interval=request.interval,
+            )
+        except Exception as error:
+            LOGGER.exception("OKX Parquet query failed: pair=%s", market.symbol)
+            result.errors.append(Message("query_failed", str(error)))
+            return result
         if partitions:
             result.available_range = (
                 min(item.coverage_start for item in partitions),
@@ -599,18 +745,25 @@ class OKXService:
                             assert error is not None
                             result.errors.append(error)
                         else:
-                            result = self._pair(
-                                catalog,
-                                client,
-                                market,
-                                markets,
-                                pair,
-                                request,
-                                specification,
-                                reporter,
-                                transport=transport,
-                                offline=offline,
-                            )
+                            try:
+                                result = self._pair(
+                                    catalog,
+                                    client,
+                                    market,
+                                    markets,
+                                    pair,
+                                    request,
+                                    specification,
+                                    reporter,
+                                    transport=transport,
+                                    offline=offline,
+                                )
+                            except MissingCandlesError:
+                                raise
+                            except Exception as error:
+                                result = self._failed_result(
+                                    pair, request, specification, error
+                                )
                         results.append(result)
         LOGGER.info("OKX request completed in %.3fs", perf_counter() - started)
         return results[0] if request.single else results
@@ -636,7 +789,11 @@ class OKXService:
         Returns:
             One structured result or a list matching the input shape.
         """
-        if transport not in {"auto", "specific", "bulk"}:
+        if not isinstance(transport, str) or transport not in {
+            "auto",
+            "specific",
+            "bulk",
+        }:
             raise ValueError("transport must be 'auto', 'specific', or 'bulk'")
         if not isinstance(offline, bool):
             raise TypeError("offline must be a Boolean")
@@ -935,8 +1092,14 @@ class OKXService:
             contract_style: Optional Futures contract style.
             option_filter: Optional Option chain constraints.
         """
-        if product not in {"linear_futures", "inverse_futures", "options"}:
+        if not isinstance(product, str) or product not in {
+            "linear_futures",
+            "inverse_futures",
+            "options",
+        }:
             raise ValueError("chain product must be Futures or Options")
+        if contract_style is not None and not isinstance(contract_style, str):
+            raise TypeError("contract_style must be a string")
         if contract_style not in {None, "normal", "xperp", "pre_market_xperp"}:
             raise ValueError("contract_style is unsupported")
         if product == "options" and contract_style is not None:
@@ -1268,13 +1431,46 @@ class OKXService:
                     backoff=self.backoff,
                 )
                 with open_catalog(catalog_path) as catalog:
-                    return OKXRESTHistory(api, catalog, self.data_dir).get(
-                        dataset,
-                        subject,
-                        range_start,
-                        range_end,
+                    try:
+                        frame = OKXRESTHistory(api, catalog, self.data_dir).get(
+                            dataset,
+                            subject,
+                            range_start,
+                            range_end,
+                            product=product,
+                            params=params,
+                            interval=interval,
+                            offline=offline,
+                        )
+                    except OKXResponseError as error:
+                        codes = {
+                            "51001": "unknown_subject",
+                            "50030": "range_unavailable",
+                        }
+                        if error.code not in codes:
+                            raise
+                        specification = REST_SPECS.get(dataset)
+                        if specification is None:
+                            raise
+                        result = Result(
+                            subject.value,
+                            normalize_rest(specification, []),
+                            (range_start, range_end),
+                            source="okx",
+                            product=product,
+                            dataset=dataset,
+                            gap_policy=None,
+                        )
+                        result.errors.append(Message(codes[error.code], str(error)))
+                        return result.frame()
+                    return Result(
+                        subject.value,
+                        frame,
+                        (range_start, range_end),
+                        used_range=(range_start, range_end),
+                        available_range=(range_start, range_end),
+                        source="okx",
                         product=product,
-                        params=params,
-                        interval=interval,
-                        offline=offline,
-                    )
+                        dataset=dataset,
+                        gap_policy=None,
+                    ).frame()

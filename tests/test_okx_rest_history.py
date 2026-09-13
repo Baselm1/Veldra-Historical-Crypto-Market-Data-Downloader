@@ -125,6 +125,21 @@ def test_price_rate_and_lifecycle_history_is_cached(tmp_path: Path) -> None:
     assert funding["realized_rate"].tolist() == [0.00009]
     assert settlements["event_type"].tolist() == ["settlement"]
     assert exercises["event_type"].tolist() == ["exercised"]
+    assert index.attrs["download"] == {
+        "pair": "BTC-USD",
+        "source": "okx",
+        "product": "index",
+        "dataset": "index_price_klines",
+        "requested_range": [start.isoformat(), end.isoformat()],
+        "used_range": [start.isoformat(), end.isoformat()],
+        "available_range": [start.isoformat(), end.isoformat()],
+        "complete": True,
+        "gap_policy": None,
+        "gaps": [],
+        "warnings": [],
+        "problems": [],
+        "errors": [],
+    }
 
     cached = api.get_index_price_klines("BTC-USD", start, end, offline=True)
     assert len(cached) == 2
@@ -234,6 +249,112 @@ def test_rest_pagination_stops_at_requested_start_and_reuses_cache(
         "BTC-USDT-SWAP", start, end, product="linear_swap", offline=True
     )
     assert len(cached) == 3 and calls == 2
+
+
+def test_larger_cached_rest_range_serves_an_offline_subset(tmp_path: Path) -> None:
+    """Confirm offline queries reuse an enclosing immutable REST partition."""
+    fixture = RESTFixture()
+    api = configured(tmp_path, fixture)
+    start = datetime(2025, 1, 1, tzinfo=UTC)
+    end = datetime(2025, 1, 1, 0, 2, tzinfo=UTC)
+    api.get_index_price_klines("BTC-USD", start, end)
+
+    subset = api.get_index_price_klines(
+        "BTC-USD",
+        start,
+        datetime(2025, 1, 1, 0, 1, tzinfo=UTC),
+        offline=True,
+    )
+    assert len(subset) == 1
+    assert fixture.calls["/api/v5/market/history-index-candles"] == 1
+
+
+@pytest.mark.parametrize(
+    ("native_code", "expected_code"),
+    [("51001", "unknown_subject"), ("50030", "range_unavailable")],
+)
+def test_expected_rest_semantic_failures_return_error_bearing_frames(
+    tmp_path: Path, native_code: str, expected_code: str
+) -> None:
+    """Confirm invalid instruments and unavailable ranges do not abort callers."""
+
+    def rejected(request: httpx.Request) -> httpx.Response:
+        """Return one expected OKX semantic failure."""
+        return httpx.Response(
+            200,
+            json={"code": native_code, "msg": "not available", "data": []},
+            request=request,
+        )
+
+    api = OKX(
+        tmp_path,
+        earliest_date="all",
+        retries=0,
+        progress=False,
+        transport=httpx.MockTransport(rejected),
+    )
+    frame = api.get_index_price_klines("NOT-A-REAL-INDEX", "2025-01-01", "2025-01-02")
+    assert frame.empty
+    assert frame.attrs["download"]["errors"][0]["code"] == expected_code
+
+
+def test_retry_exhaustion_remains_a_typed_source_failure(tmp_path: Path) -> None:
+    """Confirm rate-limit exhaustion is not mislabeled as missing data."""
+
+    def throttled(request: httpx.Request) -> httpx.Response:
+        """Return one retryable OKX rate-limit response."""
+        return httpx.Response(
+            200,
+            json={"code": "50011", "msg": "too many requests", "data": []},
+            request=request,
+        )
+
+    api = OKX(
+        tmp_path,
+        retries=0,
+        progress=False,
+        transport=httpx.MockTransport(throttled),
+    )
+    with pytest.raises(OKXResponseError, match="50011"):
+        api.get_index_price_klines("BTC-USD", "2025-01-01", "2025-01-02")
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        lambda api: api.get_index_price_klines(1, "2025-01-01", "2025-01-02"),
+        lambda api: api.get_taker_volume("BTC", "2025-01-01", "2025-01-02", market=[]),
+        lambda api: api.get_option_chain_klines(
+            "BTC-USD", "2025-01-01", "2025-01-02", option_type=[]
+        ),
+        lambda api: api.get_option_interest_volume(
+            "BTC", "2025-01-01", "2025-01-02", period=[]
+        ),
+        lambda api: api.get_borrow_rates(
+            "BTC", "2025-01-01", "2025-01-02", transport=[]
+        ),
+        lambda api: api.get_futures_chain_klines(
+            "BTC-USDT", "2025-01-01", "2025-01-02", product=[]
+        ),
+        lambda api: api.get_futures_chain_klines(
+            "BTC-USDT",
+            "2025-01-01",
+            "2025-01-02",
+            product="linear_futures",
+            contract_style=[],
+        ),
+        lambda api: api.get_order_book_updates(
+            "BTC-USDT", "2025-01-01", "2025-01-02", depth=[]
+        ),
+    ],
+)
+def test_rest_facade_rejects_unhashable_values_cleanly(
+    tmp_path: Path, call: Callable[[OKX], object]
+) -> None:
+    """Confirm malformed public values raise deliberate validation errors."""
+    with pytest.raises((TypeError, ValueError)) as caught:
+        call(OKX(tmp_path, progress=False))
+    assert "unhashable" not in str(caught.value)
 
 
 def test_empty_rest_range_is_cached_as_an_empty_typed_frame(tmp_path: Path) -> None:

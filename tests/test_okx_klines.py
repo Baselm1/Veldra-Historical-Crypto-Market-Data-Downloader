@@ -18,8 +18,13 @@ from veldra.core.models import (
     ArchiveKey,
     ArchiveObject,
     DataValidationError,
+    Gap,
     IntegritySpec,
+    Market,
+    MissingCandlesError,
+    Result,
 )
+from veldra.okx.client import OKXResponseError
 from veldra.okx.datasets import KLINE_SOURCE_COLUMNS, SPOT_KLINES, get_dataset
 from veldra.okx.processing import OKXArchiveProvider, normalize_klines
 
@@ -274,6 +279,29 @@ class OKXFixture:
         raise AssertionError(f"unexpected request {request.url}")
 
 
+@pytest.mark.parametrize(
+    ("arguments", "exception"),
+    [
+        ({"market_refresh_hours": True}, TypeError),
+        ({"market_refresh_hours": float("nan")}, ValueError),
+        ({"market_refresh_hours": float("inf")}, ValueError),
+        ({"timeout": 0}, ValueError),
+        ({"timeout": float("nan")}, ValueError),
+        ({"retries": True}, TypeError),
+        ({"retries": -1}, ValueError),
+        ({"backoff": -0.1}, ValueError),
+        ({"backoff": float("inf")}, ValueError),
+        ({"earliest_date": "2999-01-01"}, ValueError),
+    ],
+)
+def test_okx_constructor_rejects_invalid_runtime_settings(
+    tmp_path: Path, arguments: dict[str, object], exception: type[Exception]
+) -> None:
+    """Confirm malformed runtime settings fail before disk or network access."""
+    with pytest.raises(exception):
+        OKX(tmp_path, progress=False, **arguments)  # type: ignore[arg-type]
+
+
 def test_public_spot_klines_cache_query_and_offline_reuse(tmp_path: Path) -> None:
     """Confirm a cold request becomes an exact reusable DataFrame."""
     fixture = OKXFixture()
@@ -328,3 +356,155 @@ def test_public_multi_request_is_ordered_and_unknown_pair_isolated(
     assert frames[0].attrs["download"]["errors"][0]["code"] == "unknown_pair"
     assert frames[0].attrs["download"]["errors"][0]["suggestions"] == ["BTC-USDT"]
     assert len(frames[1]) == 2
+
+
+def test_public_multi_request_isolates_one_source_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Confirm a manifest failure becomes one error without stopping siblings."""
+    api = OKX(tmp_path, earliest_date="all", retries=0, progress=False)
+    markets = [
+        Market(
+            name,
+            name.replace("-", ""),
+            base_asset=name.split("-")[0],
+            quote_asset="USDT",
+            status="live",
+            source="okx",
+            product="spot",
+            active=True,
+        )
+        for name in ("BTC-USDT", "ETH-USDT")
+    ]
+    monkeypatch.setattr(api._service, "_markets", lambda *args, **kwargs: markets)
+
+    def retrieve(*args: object, **kwargs: object) -> Result:
+        """Fail BTC and return a completed ETH result."""
+        market = args[2]
+        request = args[5]
+        assert isinstance(market, Market)
+        if market.symbol == "BTC-USDT":
+            raise OKXResponseError("50011", "source busy", retryable=True)
+        return Result(
+            market.symbol,
+            pd.DataFrame({"open_time": pd.Series(dtype="datetime64[us, UTC]")}),
+            (request.start, request.end),  # type: ignore[attr-defined]
+            used_range=(request.start, request.end),  # type: ignore[attr-defined]
+            source="okx",
+            product="spot",
+            dataset="klines",
+        )
+
+    monkeypatch.setattr(api._service, "_pair", retrieve)
+    frames = api.get_klines(
+        ["BTC-USDT", "ETH-USDT"], "2025-01-01", "2025-01-01", gap_policy="keep"
+    )
+    assert isinstance(frames, list)
+    assert frames[0].attrs["download"]["errors"][0]["code"] == "source_failed"
+    assert frames[1].attrs["download"]["complete"] is True
+
+
+def test_strict_gap_failure_is_not_converted_to_a_source_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Confirm the documented strict gap policy still raises its typed error."""
+    api = OKX(tmp_path, earliest_date="all", retries=0, progress=False)
+    market = Market(
+        "BTC-USDT",
+        "BTCUSDT",
+        base_asset="BTC",
+        quote_asset="USDT",
+        status="live",
+        source="okx",
+        product="spot",
+        active=True,
+    )
+    monkeypatch.setattr(api._service, "_markets", lambda *args, **kwargs: [market])
+
+    def strict_failure(*args: object, **kwargs: object) -> Result:
+        """Raise the same typed failure produced by strict Kline querying."""
+        raise MissingCandlesError(
+            "BTC-USDT",
+            [
+                Gap(
+                    datetime(2025, 1, 1, tzinfo=UTC),
+                    datetime(2025, 1, 1, 0, 1, tzinfo=UTC),
+                    1,
+                )
+            ],
+        )
+
+    monkeypatch.setattr(api._service, "_pair", strict_failure)
+    with pytest.raises(MissingCandlesError):
+        api.get_klines("BTC-USDT", "2025-01-01", "2025-01-01", gap_policy="raise")
+
+
+def test_corrupted_okx_parquet_is_rebuilt_once_online(tmp_path: Path) -> None:
+    """Confirm an unreadable shared cache file is removed and downloaded again."""
+    fixture = OKXFixture()
+    api = OKX(
+        tmp_path,
+        earliest_date="all",
+        retries=0,
+        progress=False,
+        transport=httpx.MockTransport(fixture),
+    )
+    first = api.get_klines("BTC-USDT", "2025-01-01", "2025-01-01", gap_policy="keep")
+    assert isinstance(first, pd.DataFrame)
+    parquet = next((tmp_path / "okx").rglob("*.parquet"))
+    parquet.write_bytes(b"not parquet")
+
+    rebuilt = api.get_klines("BTC-USDT", "2025-01-01", "2025-01-01", gap_policy="keep")
+    assert isinstance(rebuilt, pd.DataFrame)
+    assert len(rebuilt) == 2
+    assert rebuilt.attrs["download"]["complete"] is True
+    assert fixture.files == 4
+
+
+def test_corrupted_okx_parquet_is_reported_cleanly_offline(tmp_path: Path) -> None:
+    """Confirm offline cache corruption returns a structured recoverable error."""
+    fixture = OKXFixture()
+    api = OKX(
+        tmp_path,
+        earliest_date="all",
+        retries=0,
+        progress=False,
+        transport=httpx.MockTransport(fixture),
+    )
+    api.get_klines("BTC-USDT", "2025-01-01", "2025-01-01", gap_policy="keep")
+    parquet = next((tmp_path / "okx").rglob("*.parquet"))
+    parquet.write_bytes(b"not parquet")
+
+    result = api.get_klines(
+        "BTC-USDT",
+        "2025-01-01",
+        "2025-01-01",
+        gap_policy="keep",
+        offline=True,
+    )
+    assert isinstance(result, pd.DataFrame)
+    assert result.empty
+    assert result.attrs["download"]["errors"][0]["code"] == "query_failed"
+    assert not parquet.exists()
+
+
+def test_okx_archive_materialization_does_not_swallow_interrupts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Confirm Ctrl+C escapes archive workers instead of becoming a data gap."""
+    fixture = OKXFixture()
+    api = OKX(
+        tmp_path,
+        earliest_date="all",
+        retries=0,
+        progress=False,
+        transport=httpx.MockTransport(fixture),
+    )
+
+    def interrupted(*args: object, **kwargs: object) -> object:
+        """Simulate an interrupt raised while awaiting archive materialization."""
+        raise KeyboardInterrupt()
+
+    monkeypatch.setattr(OKXArchiveProvider, "materialize", interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        api.get_klines("BTC-USDT", "2025-01-01", "2025-01-01", gap_policy="keep")
