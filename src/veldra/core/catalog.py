@@ -1242,70 +1242,80 @@ class Catalog:
         now = datetime.now(UTC)
         with self._transaction():
             for row in rows:
-                resource = self._resource(row[6:])
-                remote_name = Path(urlsplit(resource.url).path).name or resource.url
-                key = ArchiveKey(
-                    source=row[0],
-                    product=row[1],
-                    dataset=row[2],
-                    provider="legacy_archive",
-                    remote_scope_kind="instrument",
-                    remote_scope_value=row[3],
-                    cadence=row[5],
-                    period_start=resource.day,
-                    period_end=resource.last_day,
-                    remote_name=remote_name,
-                )
-                integrity = resource.integrity_spec
-                status = (
-                    resource.status
-                    if resource.status in {"discovered", "ready", "failed", "missing"}
-                    else "discovered"
-                )
-                archive = ArchiveObject(
-                    key=key,
-                    url=resource.url,
-                    integrity=integrity,
-                    discovered_at=resource.last_attempt_at or now,
-                    status=cast(ArchiveStatus, status),
-                    revision_id=resource.archive_checksum,
-                    last_attempt_at=resource.last_attempt_at,
-                    error=resource.error,
-                )
-                self._write_archive(archive)
-                if resource.status != "ready" or resource.parquet_path is None:
-                    continue
-                coverage_start, coverage_end = resource.coverage
-                materialization = Materialization(
-                    archive_key=key,
-                    local_path=resource.parquet_path,
-                    schema_version=resource.schema_version,
-                    row_count=resource.row_count or 0,
-                    first_timestamp=resource.first_timestamp or coverage_start,
-                    last_timestamp=(
-                        resource.last_timestamp or coverage_end - datetime.resolution
-                    ),
-                    local_size=resource.parquet_size or 0,
-                    local_mtime_ns=resource.parquet_mtime_ns,
-                    archive_revision=resource.archive_checksum,
-                    ready_at=resource.last_attempt_at or now,
-                )
-                partition = LogicalPartition(
-                    source=key.source,
-                    product=key.product,
-                    dataset=key.dataset,
-                    subject=DataSubject("instrument", row[3]),
-                    interval=row[4] or None,
-                    coverage_start=coverage_start,
-                    coverage_end=coverage_end,
-                    materialization_path=resource.parquet_path,
-                    predicate_column=None,
-                    predicate_value=None,
-                    row_count=resource.row_count or 0,
-                    source_day=resource.day,
-                )
-                self._write_materialization(materialization)
-                self._write_partitions(materialization, [partition])
+                self._write_legacy_logical_resource(row, now)
+
+    def _write_legacy_logical_resource(
+        self, row: Sequence[Any], observed_at: datetime
+    ) -> None:
+        """Adapt one legacy resource row into physical and logical metadata.
+
+        Args:
+            row: A complete legacy resource row prefixed by its dataset identity.
+            observed_at: The UTC timestamp used when older metadata has no timestamp.
+        """
+        resource = self._resource(row[6:])
+        remote_name = Path(urlsplit(resource.url).path).name or resource.url
+        key = ArchiveKey(
+            source=row[0],
+            product=row[1],
+            dataset=row[2],
+            provider="legacy_archive",
+            remote_scope_kind="instrument",
+            remote_scope_value=row[3],
+            cadence=row[5],
+            period_start=resource.day,
+            period_end=resource.last_day,
+            remote_name=remote_name,
+        )
+        integrity = resource.integrity_spec
+        status = (
+            resource.status
+            if resource.status in {"discovered", "ready", "failed", "missing"}
+            else "discovered"
+        )
+        archive = ArchiveObject(
+            key=key,
+            url=resource.url,
+            integrity=integrity,
+            discovered_at=resource.last_attempt_at or observed_at,
+            status=cast(ArchiveStatus, status),
+            revision_id=resource.archive_checksum,
+            last_attempt_at=resource.last_attempt_at,
+            error=resource.error,
+        )
+        self._write_archive(archive)
+        if resource.status != "ready" or resource.parquet_path is None:
+            return
+        coverage_start, coverage_end = resource.coverage
+        materialization = Materialization(
+            archive_key=key,
+            local_path=resource.parquet_path,
+            schema_version=resource.schema_version,
+            row_count=resource.row_count or 0,
+            first_timestamp=resource.first_timestamp or coverage_start,
+            last_timestamp=resource.last_timestamp
+            or coverage_end - datetime.resolution,
+            local_size=resource.parquet_size or 0,
+            local_mtime_ns=resource.parquet_mtime_ns,
+            archive_revision=resource.archive_checksum,
+            ready_at=resource.last_attempt_at or observed_at,
+        )
+        partition = LogicalPartition(
+            source=key.source,
+            product=key.product,
+            dataset=key.dataset,
+            subject=DataSubject("instrument", row[3]),
+            interval=row[4] or None,
+            coverage_start=coverage_start,
+            coverage_end=coverage_end,
+            materialization_path=resource.parquet_path,
+            predicate_column=None,
+            predicate_value=None,
+            row_count=resource.row_count or 0,
+            source_day=resource.day,
+        )
+        self._write_materialization(materialization)
+        self._write_partitions(materialization, [partition])
 
     def markets(self, source: str, product: str) -> list[Market]:
         """Return markets stored for one source product.
@@ -2076,6 +2086,33 @@ class Catalog:
                 if updated_days != set(days):
                     missing = min(set(days) - updated_days)
                     raise KeyError(f"resource {missing.isoformat()} was not discovered")
+                ready_rows = self.connection.execute(
+                    """
+                    SELECT stored.source, stored.product, stored.dataset,
+                           stored.symbol, stored.interval, stored.cadence,
+                           stored.day, stored.url, stored.checksum_url, stored.status,
+                           stored.archive_checksum, stored.parquet_path,
+                           stored.parquet_size, stored.parquet_mtime_ns,
+                           stored.row_count, stored.first_timestamp,
+                           stored.last_timestamp, stored.archive_symbol,
+                           stored.timestamp_column, stored.schema_version,
+                           stored.error, stored.last_attempt_at, stored.end_day,
+                           stored.cadence, stored.coverage_start,
+                           stored.coverage_end, stored.checksum_algorithm
+                    FROM resources AS stored
+                    JOIN incoming_resource_outcomes AS incoming
+                      ON stored.day = incoming.day
+                    WHERE incoming.status = 'ready'
+                      AND stored.source = ? AND stored.product = ?
+                      AND stored.dataset = ? AND stored.symbol = ?
+                      AND stored.interval = ? AND stored.cadence = ?
+                    ORDER BY stored.day
+                    """,
+                    _key_values(key),
+                ).fetchall()
+                observed_at = datetime.now(UTC)
+                for row in ready_rows:
+                    self._write_legacy_logical_resource(row, observed_at)
         finally:
             self.connection.unregister("incoming_resource_outcomes")
         LOGGER.debug(

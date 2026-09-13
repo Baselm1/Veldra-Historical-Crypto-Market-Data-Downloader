@@ -22,14 +22,24 @@ def _archive(member: str, text: str) -> bytes:
     return output.getvalue()
 
 
-def _kline_archive(symbol: str, interval: str) -> bytes:
-    """Return one sparse but valid synthetic Upbit Kline archive."""
-    name = f"{symbol}_candle-{interval}_20250101.csv"
+def _kline_archive(symbol: str, interval: str, day: date) -> bytes:
+    """Return one sparse but valid synthetic Upbit Kline archive.
+
+    Args:
+        symbol: The native quote-first Upbit market.
+        interval: The physical candle interval.
+        day: The UTC archive day represented by the rows.
+
+    Returns:
+        A ZIP containing one official-shaped candle CSV.
+    """
+    stamp = day.strftime("%Y%m%d")
+    name = f"{symbol}_candle-{interval}_{stamp}.csv"
     spacing = "00:00:01" if interval == "1s" else "00:01:00"
     text = (
         "date_time_utc,open,high,low,close,acc_trade_price,acc_trade_volume\n"
-        "2025-01-01T00:00:00,100,102,99,101,202,2\n"
-        f"2025-01-01T{spacing},101,104,100,103,309,3\n"
+        f"{day.isoformat()}T00:00:00,100,102,99,101,202,2\n"
+        f"{day.isoformat()}T{spacing},101,104,100,103,309,3\n"
     )
     return _archive(name, text)
 
@@ -50,17 +60,23 @@ class UpbitServer:
 
     symbols = ("USDT-BTC", "BTC-USDT", "KRW-BTC")
 
-    def __init__(self) -> None:
-        """Build all supported synthetic archives and an empty request log."""
+    def __init__(self, days: tuple[date, ...] = (date(2025, 1, 1),)) -> None:
+        """Build supported synthetic archives and an empty request log.
+
+        Args:
+            days: UTC source days made available by the archive portal.
+        """
         self.requests: list[httpx.Request] = []
         self.archives: dict[str, bytes] = {}
         for symbol in self.symbols:
-            for interval in ("1s", "1m"):
-                key = (
-                    f"candle/{symbol}/daily/{interval}/2025/"
-                    f"{symbol}_candle-{interval}_20250101.zip"
-                )
-                self.archives[key] = _kline_archive(symbol, interval)
+            for day in days:
+                stamp = day.strftime("%Y%m%d")
+                for interval in ("1s", "1m"):
+                    key = (
+                        f"candle/{symbol}/daily/{interval}/{day.year}/"
+                        f"{symbol}_candle-{interval}_{stamp}.zip"
+                    )
+                    self.archives[key] = _kline_archive(symbol, interval, day)
             key = f"trade/{symbol}/daily/2025/{symbol}_trade_20250101.zip"
             self.archives[key] = _trade_archive(symbol)
 
@@ -239,6 +255,78 @@ def test_refresh_relists_resources_but_reuses_valid_materialization(
 
     assert server.count("crix-data-api.upbit.com") > listing_count
     assert server.count("crix-data.upbit.com", ".zip") == object_count
+
+
+def test_mixed_existing_and_new_daily_archives_are_queryable_immediately(
+    tmp_path: Path,
+) -> None:
+    """Confirm a larger request includes files downloaded during that same call.
+
+    Args:
+        tmp_path: The isolated cache and catalog directory.
+    """
+    server = UpbitServer((date(2025, 1, 1), date(2025, 1, 2)))
+    upbit = service(tmp_path, server)
+    first = upbit.get_klines("BTCUSDT", "2025-01-01", "2025-01-01", interval="1m")
+    expanded = upbit.get_klines("BTCUSDT", "2025-01-01", "2025-01-02", interval="1d")
+
+    assert isinstance(first, pd.DataFrame)
+    assert isinstance(expanded, pd.DataFrame)
+    assert len(first) == 2
+    assert expanded["open_time"].tolist() == [
+        pd.Timestamp("2025-01-01T00:00:00Z"),
+        pd.Timestamp("2025-01-02T00:00:00Z"),
+    ]
+    assert expanded["base_volume"].tolist() == [5.0, 5.0]
+
+
+def test_daily_archives_resample_to_canonical_coarse_intervals(
+    tmp_path: Path,
+) -> None:
+    """Confirm one-minute Upbit archives produce daily through monthly candles.
+
+    Args:
+        tmp_path: The isolated cache and catalog directory.
+    """
+    days = tuple(date(2025, 1, day) for day in range(1, 32))
+    upbit = service(tmp_path, UpbitServer(days))
+
+    daily = upbit.get_klines("BTCUSDT", "2025-01-01", "2025-01-31", interval="1d")
+    three_day = upbit.get_klines(
+        "BTCUSDT",
+        "2025-01-01",
+        "2025-01-31",
+        interval="3d",
+        offline=True,
+    )
+    weekly = upbit.get_klines(
+        "BTCUSDT",
+        "2025-01-01",
+        "2025-01-31",
+        interval="1w",
+        offline=True,
+    )
+    monthly = upbit.get_klines(
+        "BTCUSDT",
+        "2025-01-01",
+        "2025-01-31",
+        interval="1mo",
+        offline=True,
+    )
+
+    assert all(
+        isinstance(frame, pd.DataFrame) for frame in (daily, three_day, weekly, monthly)
+    )
+    assert len(daily) == 31
+    assert len(three_day) == 11
+    assert len(weekly) == 5
+    assert len(monthly) == 1
+    assert daily["base_volume"].tolist() == [5.0] * 31
+    assert three_day["open_time"].iloc[0] == pd.Timestamp("2024-12-31T00:00:00Z")
+    assert weekly["open_time"].iloc[0] == pd.Timestamp("2024-12-30T00:00:00Z")
+    assert monthly["open_time"].tolist() == [pd.Timestamp("2025-01-01T00:00:00Z")]
+    assert monthly["base_volume"].tolist() == [155.0]
+    assert monthly["quote_volume"].tolist() == [15841.0]
 
 
 def test_availability_changes_only_after_bounded_discovery(tmp_path: Path) -> None:

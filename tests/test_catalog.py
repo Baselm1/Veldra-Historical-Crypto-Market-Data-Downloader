@@ -15,6 +15,7 @@ from veldra.core.models import (
     Resource,
     ResourceKey,
 )
+from veldra.core.subjects import DataSubject
 
 KEY = ResourceKey("binance", "spot", "klines", "BTCUSDT", "1m")
 
@@ -594,6 +595,23 @@ def test_resource_outcomes_are_stored_together(
     assert found[1].parquet_path is None
     assert found[2].parquet_mtime_ns == third.parquet_mtime_ns
     assert all(item.last_attempt_at is not None for item in found)
+    partitions = catalog.partitions_between(
+        "binance",
+        "spot",
+        "klines",
+        DataSubject("instrument", "BTCUSDT"),
+        "1m",
+        datetime(2025, 1, 1, tzinfo=UTC),
+        datetime(2025, 1, 4, tzinfo=UTC),
+    )
+    assert [item.source_day for item in partitions] == [
+        date(2025, 1, 1),
+        date(2025, 1, 3),
+    ]
+    assert [item.materialization_path for item in partitions] == [
+        tmp_path / "one.parquet",
+        tmp_path / "three.parquet",
+    ]
 
 
 def test_resource_outcome_batch_rolls_back_when_a_day_is_unknown(
