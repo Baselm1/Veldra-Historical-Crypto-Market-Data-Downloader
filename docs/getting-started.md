@@ -27,15 +27,16 @@ boundary, and discovers useful archives for the requested range. It does not
 crawl every dataset file for every market.
 
 ```python
-from veldra import Binance, HTX, KuCoin, OKX
+from veldra import Binance, HTX, KuCoin, OKX, Upbit
 
 binance = Binance(data_dir="data/binance")
 htx = HTX(data_dir="data/htx", progress=False)
 kucoin = KuCoin(data_dir="data/kucoin")
 okx = OKX(data_dir="data/okx")
+upbit = Upbit(data_dir="data/upbit")
 ```
 
-All four constructors accept these common options:
+All five constructors accept these common options:
 
 | Argument | Default | Meaning |
 | --- | --- | --- |
@@ -49,8 +50,8 @@ All four constructors accept these common options:
 | `backoff` | `0.5` | Initial exponential retry delay, in seconds |
 | `progress` | `True` | Show Rich status and download progress |
 
-Binance, HTX, and KuCoin also accept `discovery_tail_days`. OKX instead uses
-bounded historical manifests and endpoint-specific rate limiters.
+Binance, HTX, KuCoin, and Upbit also accept `discovery_tail_days`. OKX instead
+uses bounded historical manifests and endpoint-specific rate limiters.
 
 Each facade also exposes four read-only properties:
 

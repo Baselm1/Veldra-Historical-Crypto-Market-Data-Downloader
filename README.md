@@ -20,7 +20,7 @@ live market streaming.
 | Bitget | ⏳ | Planned | — |
 | Bybit | ⏳ | Planned | — |
 | Gate.io | ⏳ | Planned | — |
-| Upbit | ⏳ | Planned | — |
+| Upbit | ✅ | Public archives | [Upbit guide](docs/upbit.md) |
 
 Products, datasets, intervals, and source-specific behavior are documented in
 each exchange guide.
@@ -68,7 +68,7 @@ Each exchange has its own facade with consistent conventions and
 exchange-specific datasets:
 
 ```python
-from veldra import Binance, HTX, KuCoin, OKX
+from veldra import Binance, HTX, KuCoin, OKX, Upbit
 ```
 
 For example:
@@ -113,3 +113,4 @@ for shared behavior and each exchange guide for its supported methods.
 - [HTX API and datasets](docs/htx.md)
 - [KuCoin API and datasets](docs/kucoin.md)
 - [OKX API and datasets](docs/okx.md)
+- [Upbit API and datasets](docs/upbit.md)
