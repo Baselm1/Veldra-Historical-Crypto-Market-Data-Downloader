@@ -24,6 +24,7 @@ def test_package_can_be_imported() -> None:
         "HTX",
         "KuCoin",
         "OKX",
+        "Upbit",
         "CacheReport",
         "Availability",
         "Gap",

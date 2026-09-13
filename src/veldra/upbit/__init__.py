@@ -1,5 +1,5 @@
-"""Provide Upbit historical data source components."""
+"""Expose the public Upbit facade."""
 
-from .connector import UpbitConnector
+from .facade import Upbit
 
-__all__: tuple[str, ...] = ("UpbitConnector",)
+__all__: tuple[str, ...] = ("Upbit",)
