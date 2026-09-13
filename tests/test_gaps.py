@@ -326,23 +326,38 @@ def test_edge_absences_and_completely_missing_days_are_never_filled(
     assert not frame["is_synthetic"].any()
 
 
-def test_gap_helpers_handle_empty_paths_and_reject_other_base_intervals(
-    connection: duckdb.DuckDBPyConnection,
+def test_gap_helpers_handle_empty_paths_and_second_base_intervals(
+    connection: duckdb.DuckDBPyConnection, tmp_path: Path
 ) -> None:
-    """Confirm gap detection has explicit empty and unsupported-base behavior.
+    """Confirm gap detection handles empty paths and second-level storage.
 
     Args:
         connection: The isolated DuckDB connection.
+        tmp_path: The isolated cache directory.
     """
     assert missing_ranges(connection, [], SPOT_KLINES, START, END) == []
-    with pytest.raises(ValueError, match="1m base interval"):
-        missing_ranges(
-            connection,
-            [],
-            replace(SPOT_KLINES, base_interval="1s"),
-            START,
-            END,
-        )
+    specification = replace(
+        SPOT_KLINES,
+        base_interval="1s",
+        output_intervals=("1s",),
+    )
+    values = candles(3)
+    values["open_time"] = pd.to_datetime(
+        ["2024-01-01T00:00:00Z", "2024-01-01T00:00:01Z", "2024-01-01T00:00:03Z"]
+    ).as_unit("us")
+    path = write_frame(tmp_path, values)
+
+    gaps = missing_ranges(
+        connection,
+        [path],
+        specification,
+        START,
+        datetime(2024, 1, 1, 0, 0, 4, tzinfo=UTC),
+    )
+
+    assert len(gaps) == 1
+    assert gaps[0].start == datetime(2024, 1, 1, 0, 0, 2, tzinfo=UTC)
+    assert gaps[0].count == 1
 
 
 def test_catalog_metadata_selects_only_possible_gap_partitions(tmp_path: Path) -> None:
@@ -544,3 +559,44 @@ def test_raise_policy_raises_the_structured_missing_candles_error(
 
     assert caught.value.pair == "BTCUSDT"
     assert caught.value.gaps[0].count == 2
+
+
+def test_sparse_keep_policy_does_not_report_expected_missing_candles(
+    tmp_path: Path,
+) -> None:
+    """Confirm naturally sparse source rows remain complete when preserved.
+
+    Args:
+        tmp_path: The isolated downloader directory.
+    """
+    sparse = replace(SPOT_KLINES, gap_semantics="sparse")
+
+    def resolver(
+        product: object,
+        dataset: object,
+        *,
+        kline_base_interval: object = "1m",
+        requested_interval: object = None,
+    ) -> DatasetSpec:
+        """Return the sparse test schema.
+
+        Args:
+            product: The requested product.
+            dataset: The requested dataset.
+            kline_base_interval: The configured storage interval.
+            requested_interval: The caller's desired output interval.
+
+        Returns:
+            The sparse one-minute Kline declaration.
+        """
+        return sparse
+
+    result = RetrievalEngine(
+        tmp_path, source=GapSource(), dataset_resolver=resolver
+    ).get_results("BTCUSDT", START, END, gap_policy="keep")
+
+    assert isinstance(result, Result)
+    assert len(result.data) == 3
+    assert result.gaps == []
+    assert result.problems == []
+    assert result.complete

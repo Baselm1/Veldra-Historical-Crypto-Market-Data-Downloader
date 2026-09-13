@@ -564,7 +564,11 @@ def manifest_spec(product: str, dataset: str) -> ManifestSpec:
 
 
 def get_dataset(
-    product: object, dataset: object, *, kline_base_interval: object = "1m"
+    product: object,
+    dataset: object,
+    *,
+    kline_base_interval: object = "1m",
+    requested_interval: object = None,
 ) -> DatasetSpec:
     """Return one implemented OKX canonical dataset declaration.
 
@@ -572,6 +576,7 @@ def get_dataset(
         product: Public Veldra OKX product.
         dataset: Public historical dataset.
         kline_base_interval: Configured cached Kline resolution.
+        requested_interval: Requested output interval, unused by OKX.
 
     Returns:
         Matching immutable dataset declaration.

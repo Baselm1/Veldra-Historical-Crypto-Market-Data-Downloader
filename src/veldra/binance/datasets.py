@@ -464,7 +464,11 @@ DATASETS: Mapping[tuple[str, str], DatasetSpec] = MappingProxyType(
 
 
 def get_dataset(
-    product: object, dataset: object, *, kline_base_interval: object = "1m"
+    product: object,
+    dataset: object,
+    *,
+    kline_base_interval: object = "1m",
+    requested_interval: object = None,
 ) -> DatasetSpec:
     """Return the specification for a supported product and dataset.
 
@@ -472,6 +476,7 @@ def get_dataset(
         product: The parsed source product identifier.
         dataset: The parsed dataset identifier.
         kline_base_interval: The configured Spot Kline archive resolution.
+        requested_interval: The requested output interval, unused by Binance.
 
     Returns:
         The matching dataset specification.

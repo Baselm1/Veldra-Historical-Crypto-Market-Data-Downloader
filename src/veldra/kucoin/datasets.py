@@ -323,7 +323,11 @@ def supports(product: str, dataset: str) -> bool:
 
 
 def get_dataset(
-    product: object, dataset: object, *, kline_base_interval: object = "1m"
+    product: object,
+    dataset: object,
+    *,
+    kline_base_interval: object = "1m",
+    requested_interval: object = None,
 ) -> DatasetSpec:
     """Return one implemented KuCoin dataset declaration.
 
@@ -331,6 +335,7 @@ def get_dataset(
         product: The public KuCoin product name.
         dataset: The canonical dataset name.
         kline_base_interval: The configured Kline storage interval.
+        requested_interval: The requested output interval, unused by KuCoin.
 
     Returns:
         The matching immutable dataset declaration.

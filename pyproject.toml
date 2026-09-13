@@ -24,6 +24,7 @@ dev = [
     "pytest>=9,<10",
     "pytest-cov>=7,<8",
     "pytest-xdist>=3,<4",
+    "pylint>=4,<5",
     "radon>=6,<7",
 ]
 
@@ -52,6 +53,15 @@ addopts = [
 python_version = "3.14"
 strict = true
 warn_unused_ignores = true
+
+[tool.pylint.main]
+fail-under = 9.0
+
+[tool.pylint.messages_control]
+disable = [
+    "invalid-sequence-index",
+    "no-member",
+]
 
 [[tool.mypy.overrides]]
 module = ["pandas", "pandas.*", "pyarrow", "pyarrow.*"]

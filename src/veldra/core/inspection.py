@@ -566,6 +566,7 @@ def _dataset(
         selected_product,
         selected_dataset,
         kline_base_interval=downloader.kline_base_interval,
+        requested_interval=interval,
     )
     return selected_product, specification, specification.resolve_interval(interval)
 

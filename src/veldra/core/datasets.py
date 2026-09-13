@@ -11,6 +11,7 @@ from veldra.core.request import ColumnSelection
 type Columns = tuple[str, ...]
 type CsvHeader = Literal["absent", "present"]
 type ArchiveSymbolAttribute = Literal["symbol", "pair"]
+type GapSemantics = Literal["continuous", "sparse"]
 LOGGER = logging.getLogger(__name__)
 
 
@@ -18,9 +19,14 @@ class DatasetResolver(Protocol):
     """Look up an exchange-owned schema for a validated request."""
 
     def __call__(
-        self, product: object, dataset: object, *, kline_base_interval: object = "1m"
+        self,
+        product: object,
+        dataset: object,
+        *,
+        kline_base_interval: object = "1m",
+        requested_interval: object = None,
     ) -> "DatasetSpec":
-        """Return the schema for product, dataset and configured storage interval."""
+        """Return the schema for one logical request and output interval."""
         ...
 
 
@@ -91,6 +97,22 @@ def _validate_kline_capabilities(
     """
     if base_interval is None and (supports_resampling or supports_gap_policy):
         raise ValueError("raw datasets cannot support kline-only capabilities")
+
+
+def _validate_gap_semantics(value: GapSemantics, supports_gap_policy: bool) -> None:
+    """Reject unknown or inapplicable candle-gap semantics.
+
+    Args:
+        value: The meaning assigned to absent source candles.
+        supports_gap_policy: Whether the dataset can inspect and fill gaps.
+
+    Raises:
+        ValueError: If sparse semantics are invalid or apply to raw data.
+    """
+    if value not in {"continuous", "sparse"}:
+        raise ValueError("dataset gap semantics must be continuous or sparse")
+    if value == "sparse" and not supports_gap_policy:
+        raise ValueError("sparse gap semantics require gap policy support")
 
 
 def _validate_resample_columns(
@@ -281,6 +303,7 @@ class DatasetSpec:
     schema_version: int = 1
     supports_resampling: bool = False
     supports_gap_policy: bool = False
+    gap_semantics: GapSemantics = "continuous"
     requires_contract_size: bool = False
     resample_sum_columns: Columns = ()
     ordering_columns: Columns = ()
@@ -310,6 +333,7 @@ class DatasetSpec:
             self.supports_resampling,
             self.supports_gap_policy,
         )
+        _validate_gap_semantics(self.gap_semantics, self.supports_gap_policy)
         _validate_resample_columns(
             self.stored_columns,
             self.time_column,
@@ -435,16 +459,16 @@ class DatasetSpec:
             return self.base_interval
         if not isinstance(value, str):
             raise TypeError("interval must be a string")
+        if value in self.output_intervals:
+            return value
         if value.endswith("s") and value[:-1].isdigit():
             raise ValueError(
                 f"interval '{value}' is finer than stored {self.base_interval} data"
             )
-        if value not in self.output_intervals:
-            supported = ", ".join(self.output_intervals)
-            raise ValueError(
-                f"unsupported interval '{value}'; supported intervals: {supported}"
-            )
-        return value
+        supported = ", ".join(self.output_intervals)
+        raise ValueError(
+            f"unsupported interval '{value}'; supported intervals: {supported}"
+        )
 
     def resolve_gap_policy(self, value: str | None) -> str | None:
         """Apply dataset-specific missing-candle policy support.

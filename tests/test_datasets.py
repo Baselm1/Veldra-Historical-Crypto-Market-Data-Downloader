@@ -1,5 +1,6 @@
 """Test the declarative Binance Spot kline dataset contract."""
 
+from dataclasses import replace
 from datetime import timedelta
 
 import pytest
@@ -250,6 +251,27 @@ def test_capabilities_apply_dataset_specific_interval_and_gap_defaults() -> None
         snapshot.resolve_interval("1m")
     with pytest.raises(ValueError, match="does not accept gap_policy"):
         snapshot.resolve_gap_policy("forward")
+
+
+def test_one_second_storage_accepts_its_native_interval() -> None:
+    """Confirm a one-second physical schema can expose one-second candles."""
+    specification = replace(
+        spot_klines(),
+        base_interval="1s",
+        output_intervals=("1s",),
+    )
+
+    assert specification.resolve_interval(None) == "1s"
+    assert specification.resolve_interval("1s") == "1s"
+
+
+def test_sparse_gap_semantics_require_gap_policy_support() -> None:
+    """Confirm expected sparse candles remain an explicit Kline capability."""
+    specification = replace(spot_klines(), gap_semantics="sparse")
+
+    assert specification.gap_semantics == "sparse"
+    with pytest.raises(ValueError, match="gap semantics"):
+        minimal_snapshot(gap_semantics="sparse")
 
 
 @pytest.mark.parametrize(

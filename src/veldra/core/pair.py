@@ -629,22 +629,35 @@ def _query_result(
     if dataset.supports_gap_policy:
         if gap_policy is None:
             raise ValueError("candle dataset requires a resolved gap policy")
-        result.gaps = missing_ranges(
-            connection,
-            gap_paths,
-            dataset,
-            used_range[0],
-            used_range[1],
+        inspect_gaps = dataset.gap_semantics == "continuous" or gap_policy != "keep"
+        result.gaps = (
+            missing_ranges(
+                connection,
+                gap_paths,
+                dataset,
+                used_range[0],
+                used_range[1],
+            )
+            if inspect_gaps
+            else []
         )
         if result.gaps:
             missing = sum(gap.count for gap in result.gaps)
-            result.problems.append(
-                Message(
-                    "missing_candles",
-                    f"{source_code} omitted {missing} candle(s) across "
-                    f"{len(result.gaps)} internal gap(s).",
-                )
+            message = Message(
+                (
+                    "sparse_candles"
+                    if dataset.gap_semantics == "sparse"
+                    else "missing_candles"
+                ),
+                f"{source_code} omitted {missing} candle(s) across "
+                f"{len(result.gaps)} internal gap(s).",
             )
+            target = (
+                result.warnings
+                if dataset.gap_semantics == "sparse"
+                else result.problems
+            )
+            target.append(message)
             reporter.warning(
                 f"{result.pair}: {missing:,} missing candle(s) across "
                 f"{len(result.gaps):,} internal gap(s); policy {gap_policy}"

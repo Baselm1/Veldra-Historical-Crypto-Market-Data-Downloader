@@ -59,15 +59,39 @@ def _grid(start: datetime, end: datetime, dataset: DatasetSpec) -> tuple[int, in
     Returns:
         The first grid point, exclusive stop, and interval size.
     """
-    if dataset.base_interval != "1m":
-        raise ValueError(
-            "missing-candle handling currently requires a 1m base interval"
-        )
-    step = 60_000_000
+    step = _base_step(dataset)
     start_us, end_us = _microseconds(start), _microseconds(end)
     first = ((start_us + step - 1) // step) * step
     stop = ((end_us + step - 1) // step) * step
     return first, stop, step
+
+
+def _base_step(dataset: DatasetSpec) -> int:
+    """Return one fixed stored candle interval in microseconds.
+
+    Args:
+        dataset: The schema declaring the stored base interval.
+
+    Returns:
+        The positive fixed interval width in microseconds.
+
+    Raises:
+        ValueError: If the base interval is missing or calendar-dependent.
+    """
+    value = dataset.base_interval
+    if value is None or value.endswith("mo"):
+        raise ValueError("missing-candle handling requires a fixed base interval")
+    units = {"s": 1_000_000, "m": 60_000_000, "h": 3_600_000_000, "d": 86_400_000_000}
+    try:
+        number = int(value[:-1])
+        unit = units[value[-1]]
+    except (KeyError, ValueError) as error:
+        raise ValueError(
+            "missing-candle handling requires a fixed base interval"
+        ) from error
+    if number < 1:
+        raise ValueError("missing-candle handling requires a fixed base interval")
+    return number * unit
 
 
 def missing_ranges(
@@ -225,7 +249,7 @@ def _metadata_proves_continuity(
     )
     if not all(valid):
         return False
-    step = 60_000_000
+    step = _base_step(dataset)
     first = _microseconds(first_timestamp)
     last = _microseconds(last_timestamp)
     span = last - first
@@ -582,7 +606,13 @@ def _bucket_expression(interval: str) -> str:
         if not interval.endswith("mo")
         else (int(interval[:-2]), "mo")
     )
-    units = {"m": "minutes", "h": "hours", "d": "days", "mo": "months"}
+    units = {
+        "s": "seconds",
+        "m": "minutes",
+        "h": "hours",
+        "d": "days",
+        "mo": "months",
+    }
     width = f"{number} {units[suffix]}"
     return (
         f"time_bucket(INTERVAL '{width}', open_time, "

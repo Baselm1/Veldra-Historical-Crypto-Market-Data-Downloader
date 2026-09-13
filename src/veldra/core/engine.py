@@ -490,6 +490,7 @@ class RetrievalEngine:
             request.product,
             request.dataset,
             kline_base_interval=self.kline_base_interval,
+            requested_interval=request.interval,
         )
         request = request.resolve_dataset(specification)
         if request.product not in self.source.products:
