@@ -1,47 +1,50 @@
 # Veldra
 
-Veldra is a high-throughput Python API for downloading and using historical
-cryptocurrency market data. Ask for a market and time range; Veldra discovers
-the archives, verifies their source checksums, caches normalized Parquet files,
-queries the exact rows with DuckDB, and returns ready-to-use pandas DataFrames.
+Veldra is a Python library for retrieving historical cryptocurrency market
+data from multiple exchanges. It handles public archives and rate-limited
+APIs, validates source integrity when verification metadata is available,
+caches normalized Parquet files, queries exact ranges with DuckDB, and returns
+ready-to-use pandas DataFrames.
 
 It is designed for research, backtesting, and machine-learning datasets—not
 live market streaming.
 
 ## Supported exchanges
 
-| Exchange | Status | Implemented products |
-| --- | --- | --- |
-| Binance | ✅ Supported | Spot, USD-M perpetuals, COIN-M perpetuals |
-| HTX | ✅ Supported | Spot, USDT-margined swaps, coin-margined swaps |
-| KuCoin | ✅ Supported | Spot, linear perpetuals, inverse perpetuals |
-| OKX | ✅ Supported | Spot, swaps, Futures, Options, margin history |
-| Upbit | ⏳ Planned | — |
-| Bybit | ⏳ Planned | — |
-| Gate.io | ⏳ Planned | — |
+| Exchange | Status | Historical access | Documentation |
+| --- | :---: | --- | --- |
+| Binance | ✅ | Public archives | [Binance guide](docs/binance.md) |
+| HTX | ✅ | Public archives | [HTX guide](docs/htx.md) |
+| KuCoin | ✅ | Public archives | [KuCoin guide](docs/kucoin.md) |
+| OKX | ✅ | Archives and public REST APIs | [OKX guide](docs/okx.md) |
+| Bitget | ⏳ | Planned | — |
+| Bybit | ⏳ | Planned | — |
+| Gate.io | ⏳ | Planned | — |
+| Upbit | ⏳ | Planned | — |
 
-See the [Binance](docs/binance.md), [HTX](docs/htx.md),
-[KuCoin](docs/kucoin.md), and [OKX](docs/okx.md) guides for implemented
-datasets and methods.
+Products, datasets, intervals, and source-specific behavior are documented in
+each exchange guide.
 
 ## Why Veldra?
 
-| Capability | Veldra | Official archive helpers |
+| Capability | Veldra | Raw exchange sources and official tools |
 | --- | :---: | :---: |
 | Returns exact requested ranges as DataFrames | ✅ | ❌ |
-| Concurrent multi-pair retrieval | ✅ | Limited |
-| Automatic checksum verification | ✅ | ❌ |
+| Concurrent or rate-aware multi-pair retrieval | ✅ | Source-dependent |
+| Integrity validation when published | ✅ | Manual or source-dependent |
 | Normalized Parquet cache | ✅ | ❌ |
-| DuckDB filtering and Kline resampling | ✅ | ❌ |
+| DuckDB filtering and supported Kline resampling | ✅ | ❌ |
 | Structured warnings, gaps, and pair suggestions | ✅ | ❌ |
 | Repeat queries without network access | ✅ | ❌ |
-| One API shape across exchanges | ✅ | ❌ |
+| Consistent exchange-specific facades | ✅ | ❌ |
 
-In a cold one-year Binance Spot `1m` benchmark, Veldra completed the full
-download-to-DataFrame pipeline about **17× faster** than Binance's sequential
-Python daily-file downloader. Results vary by range, archive cadence, dataset,
-network, and cache state; single-file requests can favor the smaller official
-helper. The benchmark and scope are described in
+Veldra accelerates archive retrieval through concurrent downloads and uses the
+maximum safe throughput for rate-limited APIs. Observed improvements range
+from roughly **2–3×** for Binance monthly archives to approximately **17×** for
+large daily-archive workloads. Veldra also validates available integrity
+metadata, normalizes the data, caches it as Parquet, and returns query-ready
+DataFrames. Results depend on the exchange, dataset, requested range, and
+network conditions. The Binance benchmark and its scope are described in
 [the Binance guide](docs/binance.md#performance).
 
 ## Install
@@ -60,6 +63,15 @@ Activate the virtual environment before the final command if `python` does not
 already point to it.
 
 ## Quick start
+
+Each exchange has its own facade with consistent conventions and
+exchange-specific datasets:
+
+```python
+from veldra import Binance, HTX, KuCoin, OKX
+```
+
+For example:
 
 ```python
 from veldra import Binance
@@ -91,7 +103,8 @@ frames = binance.get_trades(
 ```
 
 Progress output is enabled by default. Pass `progress=False` to any exchange
-facade for a silent library call.
+facade for a silent library call. See [Getting started](docs/getting-started.md)
+for shared behavior and each exchange guide for its supported methods.
 
 ## Documentation
 
