@@ -36,6 +36,28 @@ Upbit publishes no Futures product in this historical archive. Current REST
 order-book snapshots and recent-only REST candle/trade history are intentionally
 outside this archive-backed integration.
 
+## Important notes
+
+> [!IMPORTANT]
+> Upbit names markets as `QUOTE-BASE`, rather than `BASE-QUOTE`. Therefore,
+> `USDT-BTC` means Bitcoin priced in USDT, while `BTC-USDT` means USDT priced
+> in Bitcoin. Veldra accepts the semantic compact form `BTCUSDT` and resolves
+> it to native `USDT-BTC`; an exact native symbol is always preserved.
+
+> [!NOTE]
+> A market shown as `CAUTION` is still active. Veldra applies that label when
+> Upbit's market API reports `market_event.warning`; Veldra does not infer the
+> warning itself. The label does not mean that trading is halted. Always consult
+> Upbit for the current warning details.
+
+> [!NOTE]
+> `daily` describes how Upbit partitions archive files, not the candle width.
+> Veldra stores daily `1m` archives and can aggregate their rows into larger
+> candles. Three-day buckets use fixed UTC boundaries, weeks begin on Monday
+> UTC, and months follow calendar boundaries. If a request begins inside a
+> bucket, the first returned candle is partial and retains its canonical bucket
+> opening time.
+
 ## Create the facade
 
 ```python
@@ -49,8 +71,9 @@ upbit = Upbit(
 ```
 
 Construction is lazy and performs no network or filesystem I/O. Use
-`earliest_date="all"` to permit history before Veldra's configured 2020
-boundary; each market's actual archive listing still limits its usable range.
+`earliest_date="all"` to permit complete source history, or provide an explicit
+date to override `config.toml`. Omitting `earliest_date` uses the configured
+boundary. Each market's actual archive listing still limits its usable range.
 
 ## Retrieve Klines
 
@@ -62,11 +85,6 @@ btc = upbit.get_klines(
     interval="1h",
 )
 ```
-
-Upbit's native symbols are quote-first. `USDT-BTC` means Bitcoin priced in
-Tether, so Veldra resolves semantic `BTCUSDT` to native `USDT-BTC`. An exact
-native `BTC-USDT` request remains Tether priced in Bitcoin and is never silently
-reversed.
 
 An explicit `interval="1s"` uses Upbit's one-second archives:
 

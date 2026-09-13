@@ -1,5 +1,5 @@
 [history]
-# Use "all" to retain each pair's full Binance archive history.
+# Use "all" to permit every source's complete available archive history.
 earliest_date = "2020-01-01"
 
 [klines]
