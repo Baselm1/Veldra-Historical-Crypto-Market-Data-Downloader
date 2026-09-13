@@ -1,0 +1,1 @@
+"""Test shared core behavior."""

@@ -8,7 +8,7 @@ import pytest
 
 from veldra.core.datasets import DatasetSpec
 from veldra.binance.datasets import CM_METRICS, UM_METRICS
-from arrow_helpers import (
+from tests.binance.helpers import (
     DataValidationError,
     normalize_chunk,
     validate_chunk,

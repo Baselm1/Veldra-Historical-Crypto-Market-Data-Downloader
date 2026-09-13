@@ -11,7 +11,7 @@ from veldra.binance.datasets import (
     CM_MARK_PRICE_KLINES,
     UM_MARK_PRICE_KLINES,
 )
-from arrow_helpers import (
+from tests.binance.helpers import (
     DataValidationError,
     normalize_chunk,
     validate_chunk,

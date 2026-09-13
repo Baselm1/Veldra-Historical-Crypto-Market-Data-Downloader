@@ -10,7 +10,7 @@ import pytest
 
 from veldra.core.datasets import DatasetSpec
 from veldra.binance.datasets import SPOT_AGG_TRADES, SPOT_KLINES, SPOT_TRADES
-from arrow_helpers import normalize_chunk
+from tests.binance.helpers import normalize_chunk
 from veldra.core.query import ParquetInput, empty_frame, query_parquet
 
 

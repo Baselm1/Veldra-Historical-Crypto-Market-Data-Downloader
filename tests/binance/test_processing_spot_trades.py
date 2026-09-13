@@ -9,7 +9,7 @@ import pytest
 
 from veldra.core.datasets import DatasetSpec
 from veldra.binance.datasets import SPOT_AGG_TRADES, SPOT_TRADES
-from arrow_helpers import (
+from tests.binance.helpers import (
     DataValidationError,
     normalize_chunk,
     validate_chunk,

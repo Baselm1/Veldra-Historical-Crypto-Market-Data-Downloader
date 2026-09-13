@@ -10,7 +10,7 @@ import pandas as pd
 import pytest
 
 from veldra.binance.datasets import SPOT_KLINES
-from arrow_helpers import (
+from tests.binance.helpers import (
     DataValidationError,
     normalize_chunk,
     validate_chunk,

@@ -20,8 +20,8 @@ from veldra.core.ingest import ingest_archive
 from veldra.binance.connector import BinanceConnector
 from veldra.binance.datasets import DATASETS, SPOT_KLINES
 from veldra.binance.processing import normalize_chunk, validate_chunk
-from test_ingest import archive_bytes
-from test_spot_kline_pipeline import listing
+from tests.binance.test_ingest import archive_bytes
+from tests.binance.test_spot_kline_pipeline import listing
 
 KEY = ResourceKey("binance", "spot", "klines", "BTCUSDT", "1m")
 FIRST = date(2024, 1, 1)

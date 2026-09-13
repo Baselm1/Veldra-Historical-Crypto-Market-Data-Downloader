@@ -11,7 +11,7 @@ from veldra.binance.datasets import (
     CM_PREMIUM_INDEX_KLINES,
     UM_PREMIUM_INDEX_KLINES,
 )
-from arrow_helpers import normalize_chunk, validate_chunk
+from tests.binance.helpers import normalize_chunk, validate_chunk
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
