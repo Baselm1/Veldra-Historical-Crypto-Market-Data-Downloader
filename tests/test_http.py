@@ -616,6 +616,31 @@ def test_archive_checksum_reads_a_verified_sidecar() -> None:
     assert set(requests[0].extensions["timeout"].values()) == {7.0}
 
 
+def test_download_accepts_a_digest_only_sha256_sidecar(tmp_path: Path) -> None:
+    """Confirm sources may publish a bare SHA-256 digest without a filename.
+
+    Args:
+        tmp_path: The isolated download directory.
+    """
+    contents = b"upbit archive"
+    digest = hashlib.sha256(contents).hexdigest()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        """Return one digest-only sidecar and its matching archive."""
+        if request.url.path.endswith(".CHECKSUM"):
+            return httpx.Response(200, text=f"{digest}\n")
+        return httpx.Response(200, content=contents)
+
+    destination = tmp_path / "archive.zip"
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        actual = download(client, daily_resource(), destination, retries=0)
+        current = archive_checksum(client, daily_resource(), retries=0)
+
+    assert actual == digest
+    assert current == digest
+    assert destination.read_bytes() == contents
+
+
 def test_download_accepts_a_source_declared_md5_sidecar(tmp_path: Path) -> None:
     """Confirm KuCoin archives use MD5 while retaining verified bytes."""
     contents = b"kucoin archive"

@@ -222,11 +222,11 @@ def get(
 
 
 def _checksum(text: str, archive_url: str, algorithm: str = "sha256") -> str:
-    """Read a source digest for the exact archive URL filename.
+    """Read a digest-only or filename-bound archive checksum sidecar.
 
     Args:
         text: The checksum sidecar contents.
-        archive_url: The archive URL whose filename must match.
+        archive_url: The archive URL whose filename must match when declared.
         algorithm: The source checksum algorithm.
 
     Returns:
@@ -237,7 +237,10 @@ def _checksum(text: str, archive_url: str, algorithm: str = "sha256") -> str:
         length = lengths[algorithm]
     except KeyError as error:
         raise ValueError("unsupported archive checksum algorithm") from error
-    match = re.fullmatch(rf"([0-9a-fA-F]{{{length}}})[ \t]+\*?([^\r\n]+)", text.strip())
+    contents = text.strip()
+    if re.fullmatch(rf"[0-9a-fA-F]{{{length}}}", contents):
+        return contents.lower()
+    match = re.fullmatch(rf"([0-9a-fA-F]{{{length}}})[ \t]+\*?([^\r\n]+)", contents)
     filename = unquote(Path(urlsplit(archive_url).path).name)
     if match is None or match.group(2) != filename:
         raise ValueError(
