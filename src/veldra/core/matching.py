@@ -20,7 +20,14 @@ def market_aliases(market: Market) -> tuple[str, ...]:
         Unique nonempty identifiers in stable preference order.
     """
     aliases: list[str] = []
-    for value in (market.symbol, market.normalized_symbol, market.pair):
+    semantic = normalize_pair(market.normalized_symbol)
+    native = normalize_pair(market.symbol)
+    values = [market.normalized_symbol]
+    if native == semantic:
+        values.append(market.symbol)
+    if market.pair and (normalize_pair(market.pair) != native or native == semantic):
+        values.append(market.pair)
+    for value in values:
         if not value:
             continue
         normalized = normalize_pair(value)
@@ -39,11 +46,37 @@ def exact_markets(query: str, markets: Sequence[Market]) -> list[Market]:
     Returns:
         Native exact matches, or all matches through normalized aliases.
     """
-    native = [market for market in markets if market.symbol == query]
+    native = [market for market in markets if market.symbol.upper() == query.upper()]
     if native:
         return native
     normalized = normalize_pair(query)
-    return [market for market in markets if normalized in market_aliases(market)]
+    return [
+        market
+        for market in markets
+        if normalized == normalize_pair(market.normalized_symbol)
+        or _archive_alias_matches(normalized, market)
+    ]
+
+
+def _archive_alias_matches(query: str, market: Market) -> bool:
+    """Return whether a normalized query identifies an archive-only alias.
+
+    Args:
+        query: The normalized caller query.
+        market: The candidate source market.
+
+    Returns:
+        True for a distinct archive alias without reversing quote-first markets.
+    """
+    archive = market.pair
+    if not archive:
+        return False
+    archive_alias = normalize_pair(archive)
+    native_alias = normalize_pair(market.symbol)
+    semantic_alias = normalize_pair(market.normalized_symbol)
+    if archive_alias == native_alias and native_alias != semantic_alias:
+        return False
+    return query == archive_alias
 
 
 def _quote_matches(query: str, market: Market) -> bool:

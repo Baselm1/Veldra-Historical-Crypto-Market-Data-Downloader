@@ -41,6 +41,28 @@ def test_native_identity_wins_over_an_alias_collision() -> None:
     assert exact_markets("XBTUSDTM", [collision, native]) == [native]
 
 
+def test_quote_first_native_symbol_does_not_reverse_semantic_alias() -> None:
+    """Confirm separator removal cannot reverse a quote-first market."""
+    bitcoin = Market(
+        symbol="USDT-BTC",
+        normalized_symbol="BTCUSDT",
+        base_asset="BTC",
+        quote_asset="USDT",
+        pair="USDT-BTC",
+    )
+    tether = Market(
+        symbol="BTC-USDT",
+        normalized_symbol="USDTBTC",
+        base_asset="USDT",
+        quote_asset="BTC",
+        pair="BTC-USDT",
+    )
+
+    assert exact_markets("BTCUSDT", [bitcoin, tether]) == [bitcoin]
+    assert exact_markets("BTC-USDT", [bitcoin, tether]) == [tether]
+    assert exact_markets("btc-usdt", [bitcoin, tether]) == [tether]
+
+
 def test_rank_and_suggestions_score_every_market_alias() -> None:
     """Confirm archive-name typos find the market's public native symbol."""
     market = kucoin_market()

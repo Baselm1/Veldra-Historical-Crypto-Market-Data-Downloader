@@ -166,6 +166,14 @@ def test_structured_results_delegate_without_changing_shape(
     assert calls[0][2]["product"] == "spot"
     assert calls[0][2]["dataset"] == "trades"
 
+    service.get_results(
+        "KRW-BTC",
+        "2025-01-01",
+        "2025-01-02",
+        dataset="klines",
+    )
+    assert calls[1][2]["gap_policy"] == "keep"
+
 
 def test_non_kline_method_excludes_kline_options() -> None:
     """Confirm trade calls cannot accidentally receive Kline options."""

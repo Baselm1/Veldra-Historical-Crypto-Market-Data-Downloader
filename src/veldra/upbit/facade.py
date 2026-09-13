@@ -121,6 +121,9 @@ class Upbit:
         Returns:
             One structured result or an ordered result list.
         """
+        effective_gap_policy = (
+            "keep" if dataset == "klines" and gap_policy is None else gap_policy
+        )
         return self._downloader.get_results(
             pairs,
             start,
@@ -129,7 +132,7 @@ class Upbit:
             dataset=dataset,
             interval=interval,
             desired_columns=columns,
-            gap_policy=gap_policy,
+            gap_policy=effective_gap_policy,
             refresh=refresh,
             offline=offline,
             progress=self._progress,
