@@ -179,6 +179,25 @@ def _normalize_updates(table: Any, dataset: DatasetSpec) -> Any:
     return pa.table({column: values[column] for column in dataset.stored_columns})
 
 
+def _normalize_reference(table: Any, dataset: DatasetSpec) -> Any:
+    """Convert Gate mark-price or funding rows into canonical columns."""
+    if tuple(table.column_names) != dataset.source_columns:
+        raise DataValidationError("CSV does not match a Gate reference-data schema")
+    values = {
+        column: (
+            _epoch_seconds(table["timestamp"], column)
+            if column == dataset.time_column
+            else (
+                _integer(table[column], column)
+                if column in dataset.integer_columns
+                else _number(table[column], column)
+            )
+        )
+        for column in dataset.stored_columns
+    }
+    return pa.table({column: values[column] for column in dataset.stored_columns})
+
+
 def normalize_chunk(
     table: Any, dataset: DatasetSpec, contract_size: float | None = None
 ) -> Any:
@@ -203,6 +222,12 @@ def normalize_chunk(
         return _normalize_futures_trades(table, dataset)
     if dataset.product in {"spot", "um", "cm"} and dataset.name == "order_book_updates":
         return _normalize_updates(table, dataset)
+    if dataset.product in {"um", "cm"} and dataset.name in {
+        "mark_prices",
+        "funding_rates",
+        "funding_rate_updates",
+    }:
+        return _normalize_reference(table, dataset)
     raise ValueError(f"unsupported normalizer: {dataset.product}/{dataset.name}")
 
 
@@ -329,6 +354,17 @@ def _validate_updates(table: Any) -> None:
     )
 
 
+def _validate_reference(table: Any, dataset: DatasetSpec) -> None:
+    """Validate Gate mark-price and funding-specific values."""
+    if dataset.name in {"mark_prices", "funding_rate_updates"}:
+        for column in ("mark_price", "index_price"):
+            _reject(pc.less_equal(table[column], 0), f"{column} must be positive")
+    if dataset.name == "mark_prices":
+        _reject(pc.less_equal(table["last_price"], 0), "last_price must be positive")
+    if "update_count" in table.column_names:
+        _reject(pc.less(table["update_count"], 0), "update_count must be nonnegative")
+
+
 def validate_chunk(
     table: Any,
     dataset: DatasetSpec,
@@ -352,6 +388,9 @@ def validate_chunk(
         "klines",
         "trades",
         "order_book_updates",
+        "mark_prices",
+        "funding_rates",
+        "funding_rate_updates",
     }:
         raise ValueError(f"unsupported validator: {dataset.product}/{dataset.name}")
     _validate_schema(table, dataset)
@@ -361,6 +400,8 @@ def validate_chunk(
         _validate_ohlc(table)
     elif dataset.name == "trades":
         _validate_trades(table)
-    else:
+    elif dataset.name == "order_book_updates":
         _validate_updates(table)
+    else:
+        _validate_reference(table, dataset)
     return last
