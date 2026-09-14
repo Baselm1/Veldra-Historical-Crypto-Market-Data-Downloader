@@ -138,8 +138,15 @@ def test_spot_kline_schema_matches_the_daily_archive_and_cache() -> None:
     assert spec.csv_header_row is None
     assert spec.storage_interval == "1m"
     assert spec.output_columns == (*STORED_COLUMNS, "is_synthetic")
+    assert spec.archive_cadence == "daily"
     assert "ignore" not in spec.stored_columns
     assert "ignore" not in spec.output_columns
+
+
+def test_dataset_rejects_an_unknown_archive_cadence() -> None:
+    """Reject physical archive periods unsupported by the shared planner."""
+    with pytest.raises(ValueError, match="archive_cadence"):
+        minimal_snapshot(archive_cadence="weekly")
 
 
 def test_interval_less_snapshot_capabilities_are_declared_without_a_subclass() -> None:

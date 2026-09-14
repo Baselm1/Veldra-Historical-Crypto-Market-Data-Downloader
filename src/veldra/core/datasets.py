@@ -11,6 +11,7 @@ from veldra.core.request import ColumnSelection
 type Columns = tuple[str, ...]
 type CsvHeader = Literal["absent", "present"]
 type ArchiveSymbolAttribute = Literal["symbol", "pair"]
+type ArchiveCadence = Literal["daily", "monthly"]
 type GapSemantics = Literal["continuous", "sparse"]
 LOGGER = logging.getLogger(__name__)
 
@@ -269,6 +270,16 @@ def _validate_source_calendar(offset: object, publication_delay_days: object) ->
         raise ValueError("dataset publication_delay_days cannot be negative")
 
 
+def _validate_archive_cadence(value: object) -> None:
+    """Reject a source archive cadence the planner cannot represent.
+
+    Args:
+        value: The proposed physical archive cadence.
+    """
+    if value not in {"daily", "monthly"}:
+        raise ValueError("dataset archive_cadence must be 'daily' or 'monthly'")
+
+
 @dataclass(frozen=True)
 class CsvSchema:
     """Describe one accepted source CSV layout."""
@@ -318,6 +329,7 @@ class DatasetSpec:
     discovery_lookahead_days: int = 0
     archive_day_offset: timedelta = timedelta(0)
     publication_delay_days: int = 1
+    archive_cadence: ArchiveCadence = "daily"
 
     def __post_init__(self) -> None:
         """Validate the immutable capability declaration.
@@ -361,6 +373,7 @@ class DatasetSpec:
             self.archive_day_offset,
             self.publication_delay_days,
         )
+        _validate_archive_cadence(self.archive_cadence)
         schemas = self.csv_schemas
         identities = [(schema.columns, schema.header) for schema in schemas]
         if len(identities) != len(set(identities)):

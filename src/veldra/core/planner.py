@@ -36,9 +36,10 @@ def catalog_archives(
     catalog: Catalog, key: ResourceKey, first: date, last: date
 ) -> list[Resource]:
     """Return daily and monthly archive metadata overlapping inclusive dates."""
-    return catalog.resources(key, first, last) + catalog.resources(
-        replace(key, cadence="monthly"), first, last
-    )
+    resources = catalog.resources(key, first, last)
+    if key.cadence == "monthly":
+        return resources
+    return resources + catalog.resources(replace(key, cadence="monthly"), first, last)
 
 
 def catalog_archives_between(
@@ -55,7 +56,10 @@ def catalog_archives_between(
     Returns:
         Every overlapping daily and monthly archive.
     """
-    return catalog.resources_between(key, start, end) + catalog.resources_between(
+    resources = catalog.resources_between(key, start, end)
+    if key.cadence == "monthly":
+        return resources
+    return resources + catalog.resources_between(
         replace(key, cadence="monthly"), start, end
     )
 
@@ -99,6 +103,25 @@ def _months(first: date, last: date) -> list[tuple[date, date]]:
         end = cursor.replace(day=monthrange(cursor.year, cursor.month)[1])
         if cursor >= first and end <= last:
             months.append((cursor, end))
+        cursor = end + timedelta(days=1)
+    return months
+
+
+def _overlapping_months(first: date, last: date) -> list[tuple[date, date]]:
+    """Return every calendar month touched by inclusive requested dates.
+
+    Args:
+        first: The first requested calendar day.
+        last: The final requested calendar day.
+
+    Returns:
+        Complete calendar-month bounds overlapping the request.
+    """
+    months = []
+    cursor = first.replace(day=1)
+    while cursor <= last:
+        end = cursor.replace(day=monthrange(cursor.year, cursor.month)[1])
+        months.append((cursor, end))
         cursor = end + timedelta(days=1)
     return months
 
@@ -195,6 +218,14 @@ def plan_archives(
             offline=offline,
             tail_days=(scan_end - scan_start).days + 1 if monthly else tail_days,
             reporter=reporter,
+        )
+
+    if key.cadence == "monthly":
+        for month_start, month_end in _overlapping_months(first, last):
+            scan(key, month_start, month_end, monthly=True)
+        return select_archives(
+            catalog.resources_between(key, start, end),
+            dataset,
         )
 
     if key.dataset not in getattr(source, "monthly_datasets", ()):

@@ -146,6 +146,7 @@ def _resource_key(
         market.symbol,
         dataset.base_interval,
         archive_symbol=archive_symbol,
+        cadence=dataset.archive_cadence,
     )
 
 

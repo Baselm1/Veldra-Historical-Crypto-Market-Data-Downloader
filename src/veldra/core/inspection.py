@@ -602,6 +602,7 @@ def _key(
         market.symbol,
         specification.base_interval,
         archive_symbol,
+        cadence=specification.archive_cadence,
     )
 
 
@@ -853,13 +854,10 @@ def _availability(
         if coverage_range is not None
         else []
     )
-    scanned = _clip_ranges(
-        _merge_ranges(
-            catalog.discovery_ranges(key)
-            + catalog.discovery_ranges(replace(key, cadence="monthly"))
-        ),
-        coverage_range,
-    )
+    discovery_ranges = catalog.discovery_ranges(key)
+    if key.cadence != "monthly":
+        discovery_ranges += catalog.discovery_ranges(replace(key, cadence="monthly"))
+    scanned = _clip_ranges(_merge_ranges(discovery_ranges), coverage_range)
     local = _local_coverage(resources, dataset)
     available_days = covered_days(resources)
     ready_days, failed_days = set(local.ready_days), set(local.failed_days)

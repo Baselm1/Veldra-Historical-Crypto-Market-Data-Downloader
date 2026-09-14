@@ -138,6 +138,7 @@ def _klines(product: GateProduct, base_interval: Literal["10s", "1m"]) -> Datase
         gap_semantics="sparse",
         resample_sum_columns=(quantity,) if base_interval == "1m" else (),
         timestamp_columns=("open_time",),
+        archive_cadence="monthly",
     )
 
 
@@ -169,6 +170,7 @@ def _trades(product: GateProduct) -> DatasetSpec:
         integer_columns=("event_number",),
         string_columns=("side",),
         sort_source_rows=True,
+        archive_cadence="monthly",
     )
 
 
@@ -294,6 +296,7 @@ def _reference(product: Literal["um", "cm"], name: GateReferenceDataset) -> Data
         timestamp_columns=("event_time",),
         integer_columns=integers,
         sort_source_rows=True,
+        archive_cadence="monthly",
     )
 
 

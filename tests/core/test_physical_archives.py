@@ -6,9 +6,19 @@ from pathlib import Path
 import duckdb
 from veldra.core.catalog import Catalog
 from veldra.core.models import Resource, ResourceKey, IngestedResource
+from veldra.core.planner import _overlapping_months
 from veldra.core.subjects import DataSubject
 
 KEY = ResourceKey("binance", "spot", "klines", "BTCUSDT", "1m")
+
+
+def test_overlapping_months_cover_partial_requested_boundaries() -> None:
+    """Plan complete physical months for ranges beginning or ending mid-month."""
+    assert _overlapping_months(date(2024, 1, 15), date(2024, 3, 2)) == [
+        (date(2024, 1, 1), date(2024, 1, 31)),
+        (date(2024, 2, 1), date(2024, 2, 29)),
+        (date(2024, 3, 1), date(2024, 3, 31)),
+    ]
 
 
 def test_monthly_and_daily_archives_on_same_day_are_distinct(tmp_path: Path) -> None:
