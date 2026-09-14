@@ -13,6 +13,7 @@ import re
 from tempfile import TemporaryDirectory
 from typing import Any, Callable
 
+import duckdb
 import httpx
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -248,26 +249,14 @@ def _combine(
     destination: Path,
     dataset: DatasetSpec,
 ) -> IngestedResource:
-    """Append ordered hourly Parquet files into one atomic daily file."""
+    """Merge hourly Parquet files into one globally ordered atomic daily file."""
     partial = destination.with_name(f"{destination.name}.part")
     partial.unlink(missing_ok=True)
-    writer: pq.ParquetWriter | None = None
     try:
-        for path in paths:
-            table = pq.read_table(path)
-            if tuple(table.column_names) != dataset.stored_columns:
-                raise ArchiveError("hourly Gate Parquet schemas do not match")
-            if writer is None:
-                writer = pq.ParquetWriter(partial, table.schema, compression="zstd")
-            writer.write_table(table)
-        if writer is None:
-            raise ArchiveError("Gate order-book day contains no hourly files")
-        writer.close()
-        writer = None
+        _validate_hourly_schemas(paths, dataset)
+        _write_ordered_day(paths, partial, dataset.ordering_columns)
         partial.replace(destination)
     except BaseException:
-        if writer is not None:
-            writer.close()
         partial.unlink(missing_ok=True)
         raise
     stat = destination.stat()
@@ -284,6 +273,41 @@ def _combine(
         dataset.time_column,
         dataset.schema_version,
     )
+
+
+def _validate_hourly_schemas(paths: list[Path], dataset: DatasetSpec) -> None:
+    """Confirm every hourly Parquet uses the declared canonical columns.
+
+    Args:
+        paths: The temporary hourly Parquet files.
+        dataset: The order-book schema expected in every file.
+    """
+    if not paths:
+        raise ArchiveError("Gate order-book day contains no hourly files")
+    for path in paths:
+        columns = tuple(pq.ParquetFile(path).schema_arrow.names)
+        if columns != dataset.stored_columns:
+            raise ArchiveError("hourly Gate Parquet schemas do not match")
+
+
+def _write_ordered_day(
+    paths: list[Path], destination: Path, ordering_columns: tuple[str, ...]
+) -> None:
+    """Use DuckDB's external sort to write one chronological daily Parquet.
+
+    Args:
+        paths: The temporary hourly Parquet files.
+        destination: The temporary combined output path.
+        ordering_columns: The deterministic canonical sort columns.
+    """
+    ordering = ", ".join(f'"{column}"' for column in ordering_columns)
+    connection = duckdb.connect()
+    try:
+        connection.read_parquet([str(path) for path in paths]).order(
+            ordering
+        ).write_parquet(str(destination), compression="zstd")
+    finally:
+        connection.close()
 
 
 def _children(

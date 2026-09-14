@@ -121,3 +121,24 @@ def test_unknown_pair_is_isolated_in_structured_results(tmp_path: Path) -> None:
     assert result.data.empty
     assert result.errors[0].code == "unknown_pair"
     assert result.errors[0].suggestions == ("BTC_USDT",)
+
+
+def test_partial_resampling_edges_are_omitted_and_reported(tmp_path: Path) -> None:
+    """Confirm exact Gate ranges never expose incomplete coarse candles.
+
+    Args:
+        tmp_path: The isolated catalog and Parquet directory.
+    """
+    result = service(tmp_path, GateServer()).get_results(
+        "BTCUSDT",
+        "2025-01-01T00:01:00Z",
+        "2025-01-01T00:02:00Z",
+        product="spot",
+        dataset="klines",
+        interval="3m",
+    )
+
+    assert not isinstance(result, list)
+    assert result.data.empty
+    assert [warning.code for warning in result.warnings] == ["partial_buckets_trimmed"]
+    assert result.complete is True

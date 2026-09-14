@@ -209,6 +209,30 @@ def test_common_datasets_default_to_spot(
     assert calls[0][2]["product"] == "spot"
 
 
+def test_explicit_none_uses_the_same_kline_gap_policy_as_omission(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Confirm every Gate Kline entry point treats ``None`` as ``keep``.
+
+    Args:
+        tmp_path: The isolated configured data directory.
+        monkeypatch: The pytest helper used to replace retrieval.
+    """
+    service, calls = facade(tmp_path, monkeypatch)
+
+    service.get_klines("BTCUSDT", "2025-01-01", "2025-01-01", gap_policy=None)
+    service.get_results(
+        "BTCUSDT",
+        "2025-01-01",
+        "2025-01-01",
+        product="spot",
+        dataset="klines",
+        gap_policy=None,
+    )
+
+    assert [call[2]["gap_policy"] for call in calls] == ["keep", "keep"]
+
+
 @pytest.mark.parametrize(
     "method", ["get_mark_prices", "get_funding_rates", "get_funding_rate_updates"]
 )

@@ -157,6 +157,9 @@ class Gate:
         offline: bool = False,
     ) -> FrameOutput:
         """Delegate one typed request to the shared retrieval engine."""
+        effective_gap_policy = (
+            "keep" if dataset == "klines" and gap_policy is None else gap_policy
+        )
         return self._downloader.get_data(
             pairs,
             start,
@@ -165,7 +168,7 @@ class Gate:
             dataset=dataset,
             interval=interval,
             desired_columns=columns,
-            gap_policy=gap_policy,
+            gap_policy=effective_gap_policy,
             refresh=refresh,
             offline=offline,
             progress=self._progress,
@@ -180,7 +183,7 @@ class Gate:
         product: Product = "spot",
         interval: str | None = None,
         columns: ColumnSelection = None,
-        gap_policy: GapPolicy = "keep",
+        gap_policy: GapPolicy | None = "keep",
         refresh: bool = False,
         offline: bool = False,
     ) -> FrameOutput:

@@ -97,6 +97,49 @@ def test_hourly_updates_are_combined_into_one_ordered_daily_parquet(
     ]
 
 
+def test_overlapping_hour_boundaries_are_sorted_globally(tmp_path: Path) -> None:
+    """Confirm a later file may begin before the preceding hourly file ends.
+
+    Args:
+        tmp_path: The isolated cache directory.
+    """
+    payloads = {
+        "00": gzip.compress(b"1735693200.600000,2,set,100,2,10,0\n"),
+        "01": gzip.compress(b"1735693200.000000,1,make,101,3,11,1\n"),
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        """Serve two source hours whose timestamp coverage overlaps."""
+        payload = payloads.get(request.url.path[-9:-7])
+        if payload is None:
+            return httpx.Response(404)
+        digest = hashlib.md5(payload).hexdigest()
+        if request.method == "HEAD":
+            return httpx.Response(200, headers={"ETag": f'"{digest}"'})
+        return httpx.Response(200, content=payload, headers={"ETag": f'"{digest}"'})
+
+    destination = tmp_path / "updates.parquet"
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        ingest_order_book_day(
+            client,
+            Resource(
+                date(2025, 1, 1),
+                "https://example/spot/orderbooks/202501/BTC_USDT-2025010100.csv.gz",
+                None,
+                integrity=IntegritySpec("archive_only"),
+            ),
+            get_dataset("spot", "order_book_updates"),
+            destination,
+            timeout=5,
+            retries=0,
+            backoff=0,
+        )
+
+    frame = pd.read_parquet(destination)
+    assert frame.event_time.is_monotonic_increasing
+    assert frame.update_id.tolist() == [11, 10]
+
+
 def test_multipart_etags_fall_back_to_gzip_integrity(tmp_path: Path) -> None:
     """Accept valid Gzip bytes when large Gate objects lack a plain MD5 ETag."""
     payload = gzip.compress(b"1735689600,set,100,-2,10,0\n")
