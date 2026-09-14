@@ -94,7 +94,7 @@ FUTURES_UPDATE_SOURCE = (
     "begin_id",
     "merged_count",
 )
-SNAPSHOT_SOURCE = ("timestamp", "update", "id", "bids", "asks")
+SNAPSHOT_SOURCE = ("current", "update", "id", "bids", "asks")
 MARK_PRICE_SOURCE = ("timestamp", "index_price", "mark_price", "last_price")
 FUNDING_SOURCE = ("timestamp", "funding_rate")
 FUNDING_UPDATE_SOURCE = (
@@ -226,15 +226,15 @@ def _snapshots(product: GateProduct) -> DatasetSpec:
         name="order_book_snapshots",
         remote_name="orderbooks_slice",
         source_columns=SNAPSHOT_SOURCE,
-        stored_columns=("event_time", "event_number", "update_id", "bids", "asks"),
+        stored_columns=("event_time", "update_time", "update_id", "bids", "asks"),
         time_column="event_time",
         base_interval=None,
         output_intervals=(),
         aliases=MappingProxyType({}),
         max_concurrency=4,
-        ordering_columns=("event_time", "event_number"),
-        timestamp_columns=("event_time",),
-        integer_columns=("event_number", "update_id"),
+        ordering_columns=("event_time", "update_id"),
+        timestamp_columns=("event_time", "update_time"),
+        integer_columns=("update_id",),
         object_columns=("bids", "asks"),
         sort_source_rows=True,
     )
