@@ -3,6 +3,7 @@
 import logging
 
 from .binance import Binance
+from .gate import Gate
 from .htx import HTX
 from .kucoin import KuCoin
 from .okx import CacheReport, OKX
@@ -20,6 +21,7 @@ logging.getLogger(__name__).addHandler(logging.NullHandler())
 
 __all__: tuple[str, ...] = (
     "Binance",
+    "Gate",
     "HTX",
     "KuCoin",
     "OKX",

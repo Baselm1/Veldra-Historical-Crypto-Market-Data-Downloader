@@ -257,15 +257,15 @@ def _revalidate_cached_resource(
 
     Args:
         source: The source strategy that owns the archive.
-        client: The HTTPX client used for the sidecar request.
+        client: The HTTPX client used for the integrity metadata request.
         resource: The cataloged archive and local cache metadata.
 
     Returns:
         Whether the local partition remains usable and an optional warning.
     """
-    if resource.integrity_spec.mode != "sidecar":
+    if resource.integrity_spec.mode not in {"sidecar", "response_header"}:
         LOGGER.debug(
-            "Cached archive cannot be sidecar-revalidated: day=%s mode=%s",
+            "Cached archive cannot be source-revalidated: day=%s mode=%s",
             resource.day,
             resource.integrity_spec.mode,
         )
@@ -312,7 +312,7 @@ def _revalidate_cached_resources(
 
     Args:
         source: The source strategy that owns the archives.
-        client: The HTTPX client used for checksum sidecars.
+        client: The HTTPX client used for source integrity metadata.
         cached: Valid local resource paths to inspect.
         worker_count: The bounded concurrent checksum request count.
         executor: An optional request-wide cache executor.

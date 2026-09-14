@@ -263,7 +263,9 @@ class Catalog:
                 coverage_end TIMESTAMP,
                 archive_symbol VARCHAR,
                 url VARCHAR NOT NULL,
-                checksum_url VARCHAR NOT NULL,
+                checksum_url VARCHAR,
+                integrity_mode VARCHAR,
+                integrity_expected VARCHAR,
                 status VARCHAR NOT NULL DEFAULT 'discovered',
                 archive_checksum VARCHAR,
                 checksum_algorithm VARCHAR NOT NULL DEFAULT 'sha256',
@@ -404,8 +406,13 @@ class Catalog:
             "ALTER TABLE resources ADD COLUMN IF NOT EXISTS schema_version INTEGER",
             "ALTER TABLE resources ADD COLUMN IF NOT EXISTS archive_checksum VARCHAR",
             "ALTER TABLE resources ADD COLUMN IF NOT EXISTS checksum_algorithm VARCHAR",
+            "ALTER TABLE resources ADD COLUMN IF NOT EXISTS integrity_mode VARCHAR",
+            "ALTER TABLE resources ADD COLUMN IF NOT EXISTS integrity_expected VARCHAR",
         ):
             self.connection.execute(statement)
+        self.connection.execute(
+            "ALTER TABLE resources ALTER COLUMN checksum_url DROP NOT NULL"
+        )
         resource_columns = {
             row[1]
             for row in self.connection.execute(
@@ -1233,7 +1240,8 @@ class Catalog:
                    parquet_path, parquet_size, parquet_mtime_ns, row_count,
                    first_timestamp, last_timestamp, archive_symbol, timestamp_column,
                    schema_version, error, last_attempt_at, end_day, cadence,
-                   coverage_start, coverage_end, checksum_algorithm
+                   coverage_start, coverage_end, checksum_algorithm,
+                   integrity_mode, integrity_expected
             FROM resources
             ORDER BY source, product, dataset, symbol, interval, cadence, day
             """).fetchall()
@@ -1735,22 +1743,31 @@ class Catalog:
             raise ValueError("resource cadence does not match its catalog key")
         key_values = _key_values(key)
         scanned_at = _database_timestamp(datetime.now(UTC))
-        rows = [
-            (
-                *key_values,
-                resource.day,
-                resource.end_day,
-                _database_timestamp(resource.coverage[0]),
-                _database_timestamp(resource.coverage[1]),
-                resource.archive_symbol,
-                resource.url,
-                resource.checksum_url,
-                resource.checksum_algorithm,
-                resource.timestamp_column,
-                resource.schema_version,
+        rows: list[tuple[Any, ...]] = []
+        for resource in resources:
+            integrity = resource.integrity
+            algorithm = (
+                integrity.algorithm
+                if integrity is not None and integrity.algorithm is not None
+                else resource.checksum_algorithm
             )
-            for resource in resources
-        ]
+            rows.append(
+                (
+                    *key_values,
+                    resource.day,
+                    resource.end_day,
+                    _database_timestamp(resource.coverage[0]),
+                    _database_timestamp(resource.coverage[1]),
+                    resource.archive_symbol,
+                    resource.url,
+                    resource.checksum_url,
+                    algorithm,
+                    integrity.mode if integrity is not None else None,
+                    integrity.expected if integrity is not None else None,
+                    resource.timestamp_column,
+                    resource.schema_version,
+                )
+            )
         frame = _arrow_rows(
             rows,
             columns=(
@@ -1768,6 +1785,8 @@ class Catalog:
                 "url",
                 "checksum_url",
                 "checksum_algorithm",
+                "integrity_mode",
+                "integrity_expected",
                 "timestamp_column",
                 "schema_version",
             ),
@@ -1802,6 +1821,10 @@ class Catalog:
                               incoming.schema_version
                           OR stored.checksum_algorithm IS DISTINCT FROM
                               incoming.checksum_algorithm
+                          OR stored.integrity_mode IS DISTINCT FROM
+                              incoming.integrity_mode
+                          OR stored.integrity_expected IS DISTINCT FROM
+                              incoming.integrity_expected
                           OR stored.timestamp_column IS DISTINCT FROM
                               incoming.timestamp_column
                       )
@@ -1810,11 +1833,13 @@ class Catalog:
                     INSERT INTO resources (
                         source, product, dataset, symbol, interval, cadence, day, end_day,
                         coverage_start, coverage_end, archive_symbol, url, checksum_url,
-                        checksum_algorithm, timestamp_column, schema_version
+                        checksum_algorithm, integrity_mode, integrity_expected,
+                        timestamp_column, schema_version
                     )
                     SELECT source, product, dataset, symbol, interval, cadence, day, end_day,
                            coverage_start, coverage_end, archive_symbol, url, checksum_url,
-                           checksum_algorithm, timestamp_column, schema_version
+                           checksum_algorithm, integrity_mode, integrity_expected,
+                           timestamp_column, schema_version
                     FROM incoming_resources
                     ON CONFLICT (
                         source, product, dataset, symbol, interval, cadence, day
@@ -1825,6 +1850,8 @@ class Catalog:
                         url = excluded.url,
                         checksum_url = excluded.checksum_url,
                         checksum_algorithm = excluded.checksum_algorithm,
+                        integrity_mode = excluded.integrity_mode,
+                        integrity_expected = excluded.integrity_expected,
                         archive_symbol = excluded.archive_symbol,
                         timestamp_column = excluded.timestamp_column,
                         schema_version = excluded.schema_version
@@ -1873,7 +1900,8 @@ class Catalog:
                    parquet_path, parquet_size, parquet_mtime_ns, row_count,
                    first_timestamp, last_timestamp, archive_symbol, timestamp_column,
                    schema_version, error, last_attempt_at, end_day, cadence,
-                   coverage_start, coverage_end, checksum_algorithm
+                   coverage_start, coverage_end, checksum_algorithm,
+                   integrity_mode, integrity_expected
             FROM resources
             WHERE source = ? AND product = ? AND dataset = ?
               AND symbol = ? AND interval = ? AND cadence = ?
@@ -1907,7 +1935,8 @@ class Catalog:
                    parquet_path, parquet_size, parquet_mtime_ns, row_count,
                    first_timestamp, last_timestamp, archive_symbol, timestamp_column,
                    schema_version, error, last_attempt_at, end_day, cadence,
-                   coverage_start, coverage_end, checksum_algorithm
+                   coverage_start, coverage_end, checksum_algorithm,
+                   integrity_mode, integrity_expected
             FROM resources
             WHERE source = ? AND product = ? AND dataset = ?
               AND symbol = ? AND interval = ? AND cadence = ?
@@ -1942,6 +1971,17 @@ class Catalog:
             datetime.min.time(),
             UTC,
         )
+        mode = cast(IntegrityMode | None, row[21])
+        integrity = (
+            IntegritySpec(
+                mode,
+                algorithm=row[20],
+                expected=row[22],
+                sidecar_url=row[2] if mode == "sidecar" else None,
+            )
+            if mode is not None
+            else None
+        )
         return Resource(
             day=row[0],
             url=row[1],
@@ -1966,6 +2006,7 @@ class Catalog:
             ),
             coverage_end=None if coverage_end == default_end else coverage_end,
             checksum_algorithm=row[20],
+            integrity=integrity,
         )
 
     def mark_ready(
@@ -2099,6 +2140,7 @@ class Catalog:
                            stored.error, stored.last_attempt_at, stored.end_day,
                            stored.cadence, stored.coverage_start,
                            stored.coverage_end, stored.checksum_algorithm
+                           , stored.integrity_mode, stored.integrity_expected
                     FROM resources AS stored
                     JOIN incoming_resource_outcomes AS incoming
                       ON stored.day = incoming.day

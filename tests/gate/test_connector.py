@@ -115,6 +115,15 @@ def test_daily_spot_kline_resources_use_compact_dates_and_etags() -> None:
     assert resources[0].coverage[1] - resources[0].coverage[0] == timedelta(days=1)
 
 
+def test_checksum_refresh_reads_the_current_etag() -> None:
+    """Confirm refresh reads Gate instead of trusting cataloged ETag metadata."""
+    key = ResourceKey("gate", "spot", "klines", "BTC_USDT", "1m")
+    connector = GateConnector(retries=0)
+    with client() as http:
+        resource = connector.resources(http, key, date(2025, 1, 1), date(2025, 1, 1))[0]
+        assert connector.checksum(http, resource) == "0123456789abcdef0123456789abcdef"
+
+
 def test_monthly_futures_resources_cover_the_complete_source_month() -> None:
     """Represent one Futures archive as a full physical calendar month."""
     key = ResourceKey("gate", "um", "klines", "BTC_USDT", "1m", cadence="monthly")

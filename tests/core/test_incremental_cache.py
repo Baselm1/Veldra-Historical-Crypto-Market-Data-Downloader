@@ -23,6 +23,7 @@ from veldra.core.discovery import (
 )
 from veldra.core.models import (
     IngestedResource,
+    IntegritySpec,
     Market,
     Resource,
     ResourceKey,
@@ -688,6 +689,40 @@ def test_refresh_rebuilds_a_cached_partition_when_the_archive_checksum_changes(
 
     assert source.checksum_calls == [item.day]
     assert source.ingest_calls == [item.day, item.day]
+    assert len(coverage.paths) == 1
+    assert coverage.problems == []
+
+
+def test_refresh_revalidates_response_header_integrity(tmp_path: Path) -> None:
+    """Confirm ETag-backed sources participate in explicit refreshes.
+
+    Args:
+        tmp_path: The isolated cache directory.
+    """
+    source = DurableSource()
+    store = catalog()
+    item = replace(
+        resource(date(2025, 1, 1)),
+        checksum_url=None,
+        integrity=IntegritySpec("response_header", "md5", expected="a" * 32),
+    )
+    store.save_discovery(KEY, item.day, item.day, [item])
+    cache_resources(source, store, httpx.Client(), KEY, SPOT_KLINES, [item], tmp_path)
+    ready = store.resources(KEY, item.day, item.day)
+
+    coverage = cache_resources(
+        source,
+        store,
+        httpx.Client(),
+        KEY,
+        SPOT_KLINES,
+        ready,
+        tmp_path,
+        refresh=True,
+    )
+
+    assert source.checksum_calls == [item.day]
+    assert source.ingest_calls == [item.day]
     assert len(coverage.paths) == 1
     assert coverage.problems == []
 

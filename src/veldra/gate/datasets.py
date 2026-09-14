@@ -20,7 +20,7 @@ type GateReferenceDataset = Literal[
     "mark_prices", "funding_rates", "funding_rate_updates"
 ]
 
-PRODUCTS: tuple[GateProduct, ...] = ("spot", "um", "cm")
+PRODUCTS: tuple[str, ...] = ("spot", "um", "cm")
 OUTPUT_INTERVALS: tuple[str, ...] = (
     "1m",
     "3m",
@@ -138,6 +138,7 @@ def _klines(product: GateProduct, base_interval: Literal["10s", "1m"]) -> Datase
         gap_semantics="sparse",
         resample_sum_columns=(quantity,) if base_interval == "1m" else (),
         timestamp_columns=("open_time",),
+        sort_source_rows=True,
         archive_cadence="daily" if spot else "monthly",
     )
 

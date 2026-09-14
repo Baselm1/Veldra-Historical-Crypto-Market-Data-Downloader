@@ -88,9 +88,6 @@ class GateConnector:
         Returns:
             The lowercase MD5 value published by Gate.
         """
-        expected = resource.integrity_spec.expected
-        if expected is not None:
-            return expected
         digest = self._etag(self._head(client, resource.url))
         if digest is None:
             raise ValueError("Gate archive does not publish a plain MD5 ETag")
