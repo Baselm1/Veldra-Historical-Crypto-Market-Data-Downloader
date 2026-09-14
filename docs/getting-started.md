@@ -163,6 +163,16 @@ day.
 Synthetic rows are identified by `is_synthetic`. A result with source gaps
 remains incomplete even when a fill policy makes the DataFrame regular.
 
+Some exchanges deliberately publish sparse candles when no trades occur. For
+datasets declared sparse, `gap_policy="keep"` preserves those rows and
+`complete=True` means every published source resource was retrieved; it does
+not promise one row for every possible timestamp.
+
+Resampled results contain only complete UTC-aligned buckets wholly inside the
+requested range. Partial buckets at either edge are omitted and reported with
+the `partial_buckets_trimmed` warning. For example, a `00:30` through `01:30`
+request contains no complete one-hour candle.
+
 ## Inspect markets and availability
 
 ```python
@@ -213,3 +223,7 @@ Use `earliest_date = "all"` to permit each pair's full available archive
 history. The source's actual listing date still bounds every request. Klines
 are currently stored at `1m`; higher supported intervals are produced by
 DuckDB when queried.
+
+Use one writable Veldra process per `data_dir`. Calls within that process may
+download many resources concurrently, but separate writable processes should
+use different cache roots because DuckDB does not support multi-process writes.

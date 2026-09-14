@@ -80,7 +80,7 @@ def test_futures_resampling_sums_the_declared_product_quantities(
         [path],
         dataset,
         datetime(2024, 1, 1, tzinfo=UTC),
-        datetime(2024, 1, 1, 0, 2, tzinfo=UTC),
+        datetime(2024, 1, 1, 0, 3, tzinfo=UTC),
         dataset.resolve_columns(None),
         interval="3m",
         gap_policy="keep",

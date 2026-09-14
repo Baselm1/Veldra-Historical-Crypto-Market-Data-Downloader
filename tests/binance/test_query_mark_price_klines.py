@@ -71,7 +71,7 @@ def test_mark_price_resampling_uses_only_prices_and_samples(
         [path],
         dataset,
         datetime(2024, 1, 1, tzinfo=UTC),
-        datetime(2024, 1, 1, 0, 2, tzinfo=UTC),
+        datetime(2024, 1, 1, 0, 3, tzinfo=UTC),
         dataset.resolve_columns(None),
         interval="3m",
         gap_policy="keep",

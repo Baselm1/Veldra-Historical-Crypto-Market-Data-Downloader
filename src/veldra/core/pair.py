@@ -35,6 +35,7 @@ from veldra.core.query import (
     empty_frame,
     missing_ranges,
     query_parquet,
+    resampling_trims_edges,
     suspect_gap_paths,
     empty_archive_days,
 )
@@ -685,6 +686,18 @@ def _query_result(
         gap_policy=query_gap_policy,
         interval=request.interval,
     )
+    if (
+        request.interval is not None
+        and request.interval != dataset.base_interval
+        and resampling_trims_edges(*used_range, request.interval)
+    ):
+        message = Message(
+            "partial_buckets_trimmed",
+            f"Partial {request.interval} candle(s) at the requested range edges "
+            "were omitted.",
+        )
+        result.warnings.append(message)
+        reporter.warning(f"{result.pair}: {message.message}")
 
 
 def _finish(result: Result, reporter: Reporter, started: float) -> Result:

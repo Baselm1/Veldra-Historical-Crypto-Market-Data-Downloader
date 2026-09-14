@@ -9,7 +9,7 @@ import pandas as pd
 import pytest
 
 from veldra.binance.datasets import SPOT_KLINES
-from veldra.core.query import query_parquet
+from veldra.core.query import query_parquet, resampling_trims_edges
 
 
 @pytest.fixture
@@ -158,10 +158,10 @@ def test_five_minute_resampling_uses_correct_ohlcv_rules(
     assert not result["is_synthetic"].any()
 
 
-def test_partial_edge_buckets_use_only_rows_inside_the_request(
+def test_partial_edge_buckets_are_excluded_from_exact_ranges(
     connection: duckdb.DuckDBPyConnection, tmp_path: Path
 ) -> None:
-    """Confirm edge buckets aggregate the exact requested timestamp slice.
+    """Confirm a query never returns incomplete or out-of-range buckets.
 
     Args:
         connection: The isolated DuckDB connection.
@@ -177,10 +177,64 @@ def test_partial_edge_buckets_use_only_rows_inside_the_request(
         "5m",
     )
 
-    assert result["open_time"].dt.minute.tolist() == [0, 5]
-    assert result["open"].tolist() == [102.0, 105.0]
-    assert result["close"].tolist() == [105.0, 108.0]
-    assert result["volume"].tolist() == [30.0, 30.0]
+    assert result.empty
+
+
+def test_complete_bucket_inside_unaligned_range_is_retained(
+    connection: duckdb.DuckDBPyConnection, tmp_path: Path
+) -> None:
+    """Confirm exact queries retain complete interior aggregation buckets.
+
+    Args:
+        connection: The isolated DuckDB connection.
+        tmp_path: The isolated fixture directory.
+    """
+    path = parquet(tmp_path, minutes(15))
+
+    result = query(
+        connection,
+        path,
+        datetime(2024, 1, 1, 0, 2, tzinfo=UTC),
+        datetime(2024, 1, 1, 0, 11, tzinfo=UTC),
+        "5m",
+    )
+
+    assert result["open_time"].tolist() == [pd.Timestamp("2024-01-01 00:05:00Z")]
+    assert result["open"].tolist() == [105.0]
+    assert result["close"].tolist() == [110.0]
+    assert result["volume"].tolist() == [50.0]
+
+
+@pytest.mark.parametrize(
+    ("start", "end", "interval", "expected"),
+    [
+        ("2024-01-01T00:00:00Z", "2024-01-01T01:00:00Z", "1h", False),
+        ("2024-01-01T00:30:00Z", "2024-01-01T01:30:00Z", "1h", True),
+        ("2024-01-01T00:00:00Z", "2024-01-08T00:00:00Z", "1w", False),
+        ("2024-01-02T00:00:00Z", "2024-01-08T00:00:00Z", "1w", True),
+        ("2024-01-01T00:00:00Z", "2024-02-01T00:00:00Z", "1mo", False),
+        ("2024-01-02T00:00:00Z", "2024-02-01T00:00:00Z", "1mo", True),
+    ],
+)
+def test_partial_resampling_edges_are_detected(
+    start: str, end: str, interval: str, expected: bool
+) -> None:
+    """Confirm fixed and calendar bucket boundaries are recognized.
+
+    Args:
+        start: The inclusive ISO request timestamp.
+        end: The exclusive ISO request timestamp.
+        interval: The output interval being checked.
+        expected: Whether a partial edge should be reported.
+    """
+    assert (
+        resampling_trims_edges(
+            pd.Timestamp(start).to_pydatetime(),
+            pd.Timestamp(end).to_pydatetime(),
+            interval,
+        )
+        is expected
+    )
 
 
 def test_week_buckets_start_on_monday(
@@ -201,8 +255,8 @@ def test_week_buckets_start_on_monday(
     result = query(
         connection,
         path,
-        datetime(2024, 1, 7, tzinfo=UTC),
-        datetime(2024, 1, 9, tzinfo=UTC),
+        datetime(2024, 1, 1, tzinfo=UTC),
+        datetime(2024, 1, 15, tzinfo=UTC),
         "1w",
     )
 
@@ -231,8 +285,8 @@ def test_month_buckets_follow_calendar_boundaries(
     result = query(
         connection,
         path,
-        datetime(2024, 1, 31, tzinfo=UTC),
-        datetime(2024, 2, 2, tzinfo=UTC),
+        datetime(2024, 1, 1, tzinfo=UTC),
+        datetime(2024, 3, 1, tzinfo=UTC),
         "1mo",
     )
 
@@ -263,13 +317,39 @@ def test_every_fixed_output_interval_can_be_queried(
     result = query(
         connection,
         path,
-        datetime(2024, 1, 1, tzinfo=UTC),
-        datetime(2024, 1, 1, 0, 10, tzinfo=UTC),
+        datetime(2023, 12, 31, tzinfo=UTC),
+        datetime(2024, 1, 7, tzinfo=UTC),
         interval,
     )
 
     assert not result.empty
     assert result["open_time"].is_monotonic_increasing
+
+
+@pytest.mark.parametrize("interval", ["1h", "3d", "1w", "1mo"])
+def test_ranges_without_a_complete_output_bucket_return_no_rows(
+    connection: duckdb.DuckDBPyConnection,
+    tmp_path: Path,
+    interval: str,
+) -> None:
+    """Confirm coarse requests never manufacture partial edge candles.
+
+    Args:
+        connection: The isolated DuckDB connection.
+        tmp_path: The isolated fixture directory.
+        interval: The coarse output interval being checked.
+    """
+    path = parquet(tmp_path, minutes(120))
+
+    result = query(
+        connection,
+        path,
+        datetime(2024, 1, 1, 0, 30, tzinfo=UTC),
+        datetime(2024, 1, 1, 1, 30, tzinfo=UTC),
+        interval,
+    )
+
+    assert result.empty
 
 
 def test_synthetic_marker_and_values_propagate_through_resampling(

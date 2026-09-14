@@ -496,7 +496,9 @@ class DatasetSpec:
             ValueError: If a raw dataset receives a candle-only policy.
         """
         if self.supports_gap_policy:
-            return "forward" if value is None else value
+            if value is None:
+                return "keep" if self.gap_semantics == "sparse" else "forward"
+            return value
         if value is not None:
             raise ValueError(f"{self.product}/{self.name} does not accept gap_policy")
         return None

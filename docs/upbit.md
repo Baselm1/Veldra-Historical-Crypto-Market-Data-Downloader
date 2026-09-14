@@ -54,9 +54,9 @@ outside this archive-backed integration.
 > `daily` describes how Upbit partitions archive files, not the candle width.
 > Veldra stores daily `1m` archives and can aggregate their rows into larger
 > candles. Three-day buckets use fixed UTC boundaries, weeks begin on Monday
-> UTC, and months follow calendar boundaries. If a request begins inside a
-> bucket, the first returned candle is partial and retains its canonical bucket
-> opening time.
+> UTC, and months follow calendar boundaries. Veldra omits partial buckets at
+> request edges, so every returned candle lies wholly inside the requested
+> range. Upbit's natural source sparsity is still preserved.
 
 ## Create the facade
 

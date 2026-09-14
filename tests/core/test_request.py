@@ -1,5 +1,6 @@
 """Test source-independent downloader request validation."""
 
+from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 
 import pandas as pd
@@ -114,6 +115,21 @@ def test_request_resolution_applies_kline_defaults_after_dataset_lookup() -> Non
     }
 
 
+def test_request_resolution_preserves_naturally_sparse_candles_by_default() -> None:
+    """Confirm an omitted policy never fabricates rows for sparse sources."""
+    request = Request.parse(
+        "BTCUSDT",
+        "2024-01-01",
+        "2024-01-01",
+        gap_policy=None,
+    )
+    sparse = replace(get_dataset("spot", "klines"), gap_semantics="sparse")
+
+    resolved = request.resolve_dataset(sparse)
+
+    assert resolved.gap_policy == "keep"
+
+
 def test_request_resolution_rejects_options_unsupported_by_raw_data() -> None:
     """Confirm a raw dataset rejects interval and gap-policy inputs."""
     raw = DatasetSpec(
@@ -214,7 +230,23 @@ def test_invalid_pair_containers_are_rejected(pairs: object) -> None:
 
 @pytest.mark.parametrize(
     "pairs",
-    [[], "", "  ", "---", [""], ["---"], [None], [1], [True], ["BTCUSDT", []]],
+    [
+        [],
+        "",
+        "  ",
+        "---",
+        "BTC__USDT",
+        "../BTC_USDT",
+        "BTC...USDT",
+        "BTC_USDT\x00",
+        "BTC\\USDT",
+        [""],
+        ["---"],
+        [None],
+        [1],
+        [True],
+        ["BTCUSDT", []],
+    ],
 )
 def test_empty_and_invalid_pair_entries_are_rejected(pairs: object) -> None:
     """Confirm that every requested pair is a non-empty string.
@@ -224,6 +256,13 @@ def test_empty_and_invalid_pair_entries_are_rejected(pairs: object) -> None:
     """
     with pytest.raises((TypeError, ValueError)):
         parse_request(pairs=pairs)
+
+
+def test_safe_mixed_separators_support_native_exchange_symbols() -> None:
+    """Confirm strict validation accepts real OKX Futures identifiers."""
+    request = parse_request(pairs="0G-USD_UM_XPERP-310905")
+
+    assert request.pairs == ("0G-USD_UM_XPERP-310905",)
 
 
 @pytest.mark.parametrize("field", ["starting_date", "end_date"])

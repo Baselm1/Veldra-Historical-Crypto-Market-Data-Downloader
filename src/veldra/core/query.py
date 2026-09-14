@@ -35,6 +35,97 @@ class ParquetInput:
 type QueryInput = Path | ParquetInput
 
 
+def _resampling_bounds(
+    start: datetime, end: datetime, interval: str
+) -> tuple[datetime, datetime]:
+    """Return the first and final complete UTC resampling boundaries.
+
+    Args:
+        start: The inclusive requested UTC timestamp.
+        end: The exclusive requested UTC timestamp.
+        interval: The requested resampling interval.
+
+    Returns:
+        The first possible bucket opening and final possible bucket end.
+    """
+    start_utc = start.astimezone(UTC)
+    end_utc = end.astimezone(UTC)
+    if interval == "1mo":
+        start_floor = start_utc.replace(
+            day=1, hour=0, minute=0, second=0, microsecond=0
+        )
+        first = (
+            start_floor
+            if start_utc == start_floor
+            else (
+                start_floor.replace(year=start_floor.year + 1, month=1)
+                if start_floor.month == 12
+                else start_floor.replace(month=start_floor.month + 1)
+            )
+        )
+        final = end_utc.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        return first, final
+    if interval == "1w":
+        start_floor = (start_utc - timedelta(days=start_utc.weekday())).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+        first = (
+            start_floor
+            if start_utc == start_floor
+            else start_floor + timedelta(weeks=1)
+        )
+        final = (end_utc - timedelta(days=end_utc.weekday())).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+        return first, final
+    number = int(interval[:-1])
+    unit = {
+        "s": timedelta(seconds=1),
+        "m": timedelta(minutes=1),
+        "h": timedelta(hours=1),
+        "d": timedelta(days=1),
+    }[interval[-1]]
+    width = number * unit
+    start_offset = start_utc - EPOCH
+    end_offset = end_utc - EPOCH
+    start_floor = EPOCH + (start_offset // width) * width
+    first = start_floor if start_utc == start_floor else start_floor + width
+    final = EPOCH + (end_offset // width) * width
+    return first, final
+
+
+def resampling_has_complete_bucket(
+    start: datetime, end: datetime, interval: str
+) -> bool:
+    """Return whether a request contains one complete output candle.
+
+    Args:
+        start: The inclusive requested UTC timestamp.
+        end: The exclusive requested UTC timestamp.
+        interval: The requested resampling interval.
+
+    Returns:
+        True when at least one aligned bucket fits inside the exact range.
+    """
+    first, final = _resampling_bounds(start, end, interval)
+    return first < final
+
+
+def resampling_trims_edges(start: datetime, end: datetime, interval: str) -> bool:
+    """Return whether exact-range resampling omits partial edge buckets.
+
+    Args:
+        start: The inclusive requested UTC timestamp.
+        end: The exclusive requested UTC timestamp.
+        interval: The requested resampling interval.
+
+    Returns:
+        Whether either requested boundary cuts through an output bucket.
+    """
+    first, final = _resampling_bounds(start, end, interval)
+    return first != start.astimezone(UTC) or final != end.astimezone(UTC)
+
+
 def _microseconds(value: datetime) -> int:
     """Return exact microseconds since the UTC epoch.
 
@@ -588,7 +679,7 @@ def _raw_query(
     return sql, [*parameters, start, end]
 
 
-def _bucket_expression(interval: str) -> str:
+def bucket_expression(interval: str) -> str:
     """Return the UTC-aligned DuckDB expression for an output interval.
 
     Args:
@@ -618,6 +709,24 @@ def _bucket_expression(interval: str) -> str:
         f"time_bucket(INTERVAL '{width}', open_time, "
         "TIMESTAMPTZ '1970-01-01 00:00:00+00')"
     )
+
+
+def bucket_end_expression(interval: str) -> str:
+    """Return the exclusive end of a resampled candle bucket.
+
+    Args:
+        interval: The supported resampling interval.
+
+    Returns:
+        SQL that advances ``open_time`` by one output interval.
+    """
+    if interval == "1w":
+        return "open_time + INTERVAL '1 week'"
+    if interval == "1mo":
+        return "open_time + INTERVAL '1 month'"
+    number = int(interval[:-1])
+    units = {"s": "seconds", "m": "minutes", "h": "hours", "d": "days"}
+    return f"open_time + INTERVAL '{number} {units[interval[-1]]}'"
 
 
 def _aggregate(expression: str, gap_policy: str, *, integer: bool = False) -> str:
@@ -655,7 +764,7 @@ def _resampled_fields(
     fields: list[str] = []
     for column in dataset.stored_columns:
         if column == dataset.time_column:
-            expression = f"{_bucket_expression(interval)} AS {_identifier(column)}"
+            expression = f"{bucket_expression(interval)} AS {_identifier(column)}"
         elif column == "open":
             expression = f"{_aggregate('arg_min(open, open_time)', gap_policy)} AS open"
         elif column == "high":
@@ -686,7 +795,9 @@ def _resampled_query(
     interval: str,
     gap_policy: str,
     columns: Mapping[str, str],
-) -> str:
+    start: datetime,
+    end: datetime,
+) -> tuple[str, list[object]]:
     """Wrap a canonical candle query with OHLCV aggregation and projection.
 
     Args:
@@ -695,17 +806,22 @@ def _resampled_query(
         interval: The supported output interval.
         gap_policy: The missing-candle policy applied to base rows.
         columns: Canonical columns mapped to output labels.
+        start: The inclusive requested timestamp.
+        end: The exclusive requested timestamp.
 
     Returns:
-        DuckDB SQL returning projected resampled candles.
+        DuckDB SQL and parameters returning complete resampled candles.
     """
     fields = _resampled_fields(dataset, interval, gap_policy)
     projection = _projection(columns, synthetic_column=True)
-    return (
+    sql = (
         f"WITH base AS ({source_sql}), resampled AS ("
         f"SELECT {', '.join(fields)} FROM base GROUP BY 1) "
-        f"SELECT {projection} FROM resampled ORDER BY open_time"
+        f"SELECT {projection} FROM resampled "
+        f"WHERE open_time >= ? AND {bucket_end_expression(interval)} <= ? "
+        "ORDER BY open_time"
     )
+    return sql, [start, end]
 
 
 def _normalize_result_times(
@@ -780,7 +896,9 @@ def _result_query(
     interval: str | None,
     gap_policy: str | None,
     columns: Mapping[str, str],
-) -> str:
+    start: datetime,
+    end: datetime,
+) -> tuple[str, list[object]]:
     """Project raw or resampled rows according to dataset capabilities.
 
     Args:
@@ -789,17 +907,35 @@ def _result_query(
         interval: The resolved output interval, or ``None`` for raw events.
         gap_policy: The resolved candle policy, if applicable.
         columns: Canonical columns mapped to caller-facing labels.
+        start: The inclusive requested timestamp.
+        end: The exclusive requested timestamp.
 
     Returns:
-        SQL returning the final ordered public projection.
+        SQL and parameters returning the final ordered public projection.
     """
     if interval is None:
-        return f"SELECT {_projection(columns)} FROM ({source_sql}) ORDER BY {_ordering(dataset)}"
+        return (
+            f"SELECT {_projection(columns)} FROM ({source_sql}) "
+            f"ORDER BY {_ordering(dataset)}",
+            [],
+        )
     if interval == dataset.base_interval:
         projection = _projection(columns, synthetic_column=True)
-        return f"SELECT {projection} FROM ({source_sql}) ORDER BY {_ordering(dataset)}"
+        return (
+            f"SELECT {projection} FROM ({source_sql}) "
+            f"ORDER BY {_ordering(dataset)}",
+            [],
+        )
     assert gap_policy is not None
-    return _resampled_query(source_sql, dataset, interval, gap_policy, columns)
+    return _resampled_query(
+        source_sql,
+        dataset,
+        interval,
+        gap_policy,
+        columns,
+        start,
+        end,
+    )
 
 
 def query_parquet(
@@ -843,8 +979,16 @@ def query_parquet(
         return empty_frame(dataset, columns)
 
     source_sql, parameters = _source_query(dataset, paths, start, end, policy)
-    sql = _result_query(source_sql, dataset, output_interval, policy, columns)
-    frame = connection.execute(sql, parameters).df()
+    sql, result_parameters = _result_query(
+        source_sql,
+        dataset,
+        output_interval,
+        policy,
+        columns,
+        start,
+        end,
+    )
+    frame = connection.execute(sql, [*parameters, *result_parameters]).df()
     _normalize_result_times(frame, dataset, columns)
     LOGGER.info(
         "Parquet query complete: product=%s dataset=%s paths=%d range=[%s, %s) "

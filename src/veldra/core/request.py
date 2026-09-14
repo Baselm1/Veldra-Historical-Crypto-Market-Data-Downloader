@@ -26,6 +26,7 @@ DATE_PATTERN = re.compile(r"\d{4}-\d{2}-\d{2}")
 IDENTIFIER_PATTERN = re.compile(r"[a-z][a-z0-9_]*")
 LOGGER = logging.getLogger(__name__)
 INTERVAL_PATTERN = re.compile(r"[1-9]\d*(?:mo|[smhdw])")
+PAIR_PATTERN = re.compile(r"[A-Za-z0-9]+(?:[-_/][A-Za-z0-9]+)*")
 
 
 def normalize_pair(value: str) -> str:
@@ -38,6 +39,23 @@ def normalize_pair(value: str) -> str:
         The normalized pair used to compare different spellings.
     """
     return normalize_subject(value)
+
+
+def _validate_pair_subjects(subjects: tuple[DataSubject, ...]) -> None:
+    """Reject malformed caller-facing instrument spellings.
+
+    Args:
+        subjects: The parsed request subjects to validate.
+    """
+    for subject in subjects:
+        if subject.kind not in {"instrument", "instrument_family"}:
+            continue
+        value = subject.value.strip()
+        if PAIR_PATTERN.fullmatch(value) is None:
+            raise ValueError(
+                "pair values must contain nonempty ASCII letter/digit segments "
+                "separated only by '-', '_', or '/'"
+            )
 
 
 def _text_timestamp(value: str) -> date | datetime:
@@ -124,6 +142,7 @@ def parse_pairs(pairs: object) -> tuple[tuple[str, ...], bool]:
     except (TypeError, ValueError) as error:
         message = str(error).replace("subjects", "pairs").replace("subject", "pair")
         raise type(error)(message) from error
+    _validate_pair_subjects(subjects)
     return tuple(subject.value for subject in subjects), single
 
 
@@ -359,6 +378,7 @@ class Request:
             A validated source-independent request.
         """
         parsed_subjects, single = parse_subjects(pairs, subject_kind)
+        _validate_pair_subjects(parsed_subjects)
         start, end = parse_range(starting_date, end_date)
         parsed_product = parse_identifier(product, name="product")
         parsed_dataset = parse_identifier(dataset, name="dataset")

@@ -11,6 +11,7 @@ import pytest
 from veldra.core.catalog import Catalog, open_catalog
 from veldra.core.models import (
     IngestedResource,
+    IntegritySpec,
     Market,
     Resource,
     ResourceKey,
@@ -263,6 +264,62 @@ def test_open_catalog_creates_parent_directories_and_persists(tmp_path: Path) ->
     assert path.is_file()
     with open_catalog(path) as second:
         assert second.markets("binance", "spot") == [market]
+
+
+def test_archive_only_integrity_survives_catalog_reopening(tmp_path: Path) -> None:
+    """Confirm logical archives retain an algorithm-free integrity policy.
+
+    Args:
+        tmp_path: The temporary directory containing the persistent catalog.
+    """
+    path = tmp_path / "catalog.duckdb"
+    key = ResourceKey("gate", "spot", "order_book_updates", "BTC_USDT", None)
+    item = Resource(
+        date(2025, 1, 1),
+        "https://example.test/BTC_USDT-20250101",
+        None,
+        integrity=IntegritySpec("archive_only"),
+    )
+
+    with open_catalog(path) as first:
+        first.save_discovery(key, item.day, item.day, [item])
+
+    with open_catalog(path) as second:
+        assert second.resources(key, item.day, item.day) == [item]
+
+
+def test_catalog_repairs_archive_only_rows_with_legacy_algorithms(
+    tmp_path: Path,
+) -> None:
+    """Confirm reopening heals catalogs poisoned by the old fallback algorithm.
+
+    Args:
+        tmp_path: The temporary directory containing the persistent catalog.
+    """
+    path = tmp_path / "catalog.duckdb"
+    key = ResourceKey("gate", "cm", "order_book_snapshots", "BTC_USD", None)
+    item = Resource(
+        date(2025, 1, 1),
+        "https://example.test/BTC_USD-20250101",
+        None,
+        integrity=IntegritySpec("archive_only"),
+    )
+
+    with open_catalog(path) as first:
+        first.save_discovery(key, item.day, item.day, [item])
+        first.connection.execute(
+            "UPDATE resources SET checksum_algorithm = 'sha256' "
+            "WHERE source = 'gate' AND product = 'cm'"
+        )
+
+    with open_catalog(path) as second:
+        stored = second.resources(key, item.day, item.day)
+        algorithm = second.connection.execute(
+            "SELECT checksum_algorithm FROM resources WHERE source = 'gate'"
+        ).fetchone()
+
+    assert stored == [item]
+    assert algorithm == (None,)
 
 
 def test_market_snapshot_is_sorted_updated_and_isolated(catalog: Catalog) -> None:

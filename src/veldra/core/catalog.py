@@ -268,7 +268,7 @@ class Catalog:
                 integrity_expected VARCHAR,
                 status VARCHAR NOT NULL DEFAULT 'discovered',
                 archive_checksum VARCHAR,
-                checksum_algorithm VARCHAR NOT NULL DEFAULT 'sha256',
+                checksum_algorithm VARCHAR,
                 parquet_path VARCHAR,
                 parquet_size BIGINT,
                 parquet_mtime_ns BIGINT,
@@ -426,15 +426,19 @@ class Catalog:
             )
             self.connection.execute("ALTER TABLE resources DROP COLUMN archive_sha256")
         self.connection.execute(
+            "ALTER TABLE resources ALTER COLUMN checksum_algorithm DROP DEFAULT"
+        )
+        self.connection.execute(
+            "ALTER TABLE resources ALTER COLUMN checksum_algorithm DROP NOT NULL"
+        )
+        self.connection.execute(
+            "UPDATE resources SET checksum_algorithm = NULL "
+            "WHERE integrity_mode = 'archive_only'"
+        )
+        self.connection.execute(
             "UPDATE resources SET checksum_algorithm = 'sha256' "
-            "WHERE checksum_algorithm IS NULL"
-        )
-        self.connection.execute(
-            "ALTER TABLE resources ALTER COLUMN checksum_algorithm "
-            "SET DEFAULT 'sha256'"
-        )
-        self.connection.execute(
-            "ALTER TABLE resources ALTER COLUMN checksum_algorithm SET NOT NULL"
+            "WHERE checksum_algorithm IS NULL "
+            "AND integrity_mode IS DISTINCT FROM 'archive_only'"
         )
         self.connection.execute(
             "UPDATE markets SET active = (status = 'TRADING') "
@@ -1748,7 +1752,7 @@ class Catalog:
             integrity = resource.integrity
             algorithm = (
                 integrity.algorithm
-                if integrity is not None and integrity.algorithm is not None
+                if integrity is not None
                 else resource.checksum_algorithm
             )
             rows.append(
@@ -1975,7 +1979,7 @@ class Catalog:
         integrity = (
             IntegritySpec(
                 mode,
-                algorithm=row[20],
+                algorithm=None if mode == "archive_only" else row[20],
                 expected=row[22],
                 sidecar_url=row[2] if mode == "sidecar" else None,
             )
@@ -2005,7 +2009,7 @@ class Catalog:
                 None if coverage_start == default_start else coverage_start
             ),
             coverage_end=None if coverage_end == default_end else coverage_end,
-            checksum_algorithm=row[20],
+            checksum_algorithm=row[20] or "sha256",
             integrity=integrity,
         )
 

@@ -318,12 +318,12 @@ def test_daily_archives_resample_to_canonical_coarse_intervals(
         isinstance(frame, pd.DataFrame) for frame in (daily, three_day, weekly, monthly)
     )
     assert len(daily) == 31
-    assert len(three_day) == 11
-    assert len(weekly) == 5
+    assert len(three_day) == 9
+    assert len(weekly) == 3
     assert len(monthly) == 1
     assert daily["base_volume"].tolist() == [5.0] * 31
-    assert three_day["open_time"].iloc[0] == pd.Timestamp("2024-12-31T00:00:00Z")
-    assert weekly["open_time"].iloc[0] == pd.Timestamp("2024-12-30T00:00:00Z")
+    assert three_day["open_time"].iloc[0] == pd.Timestamp("2025-01-03T00:00:00Z")
+    assert weekly["open_time"].iloc[0] == pd.Timestamp("2025-01-06T00:00:00Z")
     assert monthly["open_time"].tolist() == [pd.Timestamp("2025-01-01T00:00:00Z")]
     assert monthly["base_volume"].tolist() == [155.0]
     assert monthly["quote_volume"].tolist() == [15841.0]
