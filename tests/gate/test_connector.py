@@ -74,6 +74,24 @@ def test_spot_markets_preserve_native_and_normalized_symbols() -> None:
     assert markets[0].onboard_time == datetime(2021, 1, 1, tzinfo=UTC)
 
 
+def test_unsupported_market_symbols_are_skipped() -> None:
+    """Ignore symbols that cannot map to Gate's archive-safe directories."""
+    row = {
+        "id": "老子_USDT",
+        "base": "老子",
+        "quote": "USDT",
+        "trade_status": "tradable",
+    }
+
+    assert GateConnector._market(row, "spot") is None
+    assert (
+        GateConnector._volumes(
+            [{"currency_pair": "老子_USDT", "quote_volume": 1}], "currency_pair"
+        )
+        == {}
+    )
+
+
 def test_futures_markets_preserve_contract_units() -> None:
     """Parse active USDT perpetuals and their exact contract multiplier."""
     connector = GateConnector(retries=0)
@@ -148,6 +166,19 @@ def test_first_resource_uses_the_market_onboarding_hint() -> None:
 
     assert first is not None
     assert first.day == date(2025, 1, 1)
+
+
+def test_source_bounds_never_probe_before_gate_publication() -> None:
+    """Use Gate's documented dataset starts ahead of older market listings."""
+    connector = GateConnector(retries=0)
+    connector._onboard_dates[("spot", "BTC_USDT")] = date(2017, 1, 1)
+
+    assert connector._source_start(
+        ResourceKey("gate", "spot", "klines", "BTC_USDT", "1m")
+    ) == date(2023, 1, 1)
+    assert connector._source_start(
+        ResourceKey("gate", "spot", "order_book_updates", "BTC_USDT", None)
+    ) == date(2021, 8, 1)
 
 
 @pytest.mark.parametrize(

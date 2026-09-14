@@ -326,12 +326,15 @@ class GateConnector:
 
     def _source_start(self, key: ResourceKey) -> date:
         """Return the best inexpensive lower-bound hint for one market."""
+        published_start = (
+            date(2021, 8, 1)
+            if key.dataset in {"order_book_updates", "order_book_snapshots"}
+            else date(2023, 1, 1)
+        )
         hint = self._onboard_dates.get((key.product, key.symbol))
         if hint is not None:
-            return hint
-        if key.dataset in {"order_book_updates", "order_book_snapshots"}:
-            return date(2021, 8, 1)
-        return date(2018, 1, 1) if key.product == "spot" else date(2021, 1, 1)
+            return max(hint, published_start)
+        return published_start
 
     @staticmethod
     def _rows(payload: object, kind: str) -> list[object]:
@@ -346,7 +349,9 @@ class GateConnector:
         if not isinstance(value, dict):
             raise ValueError("Gate market endpoint contains an invalid market")
         if product == "spot":
-            symbol = GateConnector._required_symbol(value.get("id"))
+            symbol = GateConnector._market_symbol(value.get("id"))
+            if symbol is None:
+                return None
             base = GateConnector._required_asset(value.get("base"))
             quote = GateConnector._required_asset(value.get("quote"))
             status = GateConnector._required_text(value.get("trade_status"))
@@ -354,7 +359,9 @@ class GateConnector:
             active = status == "tradable"
             contract_size = None
         else:
-            symbol = GateConnector._required_symbol(value.get("name"))
+            symbol = GateConnector._market_symbol(value.get("name"))
+            if symbol is None:
+                return None
             base, quote = symbol.split("_", maxsplit=1)
             status = GateConnector._required_text(value.get("status"))
             onboard = GateConnector._source_time(
@@ -385,7 +392,9 @@ class GateConnector:
         for value in rows:
             if not isinstance(value, dict):
                 raise ValueError("Gate ticker endpoint contains an invalid market")
-            symbol = GateConnector._required_symbol(value.get(symbol_field))
+            symbol = GateConnector._market_symbol(value.get(symbol_field))
+            if symbol is None:
+                continue
             raw = value.get("quote_volume", value.get("volume_24h_quote"))
             if isinstance(raw, bool) or not isinstance(raw, (str, int, float)):
                 raise ValueError("Gate ticker endpoint contains an invalid market")
@@ -418,6 +427,14 @@ class GateConnector:
         if _SAFE_SYMBOL.fullmatch(symbol) is None or "_" not in symbol:
             raise ValueError("Gate endpoint contains an invalid market symbol")
         return symbol
+
+    @staticmethod
+    def _market_symbol(value: object) -> str | None:
+        """Return a safe market symbol or skip an unsupported archive name."""
+        if not isinstance(value, str):
+            raise ValueError("Gate endpoint contains an invalid market symbol")
+        symbol = value.strip().upper()
+        return symbol if _SAFE_SYMBOL.fullmatch(symbol) and "_" in symbol else None
 
     @staticmethod
     def _required_asset(value: object) -> str:
