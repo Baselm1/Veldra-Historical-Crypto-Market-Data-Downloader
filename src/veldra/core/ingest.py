@@ -1,16 +1,18 @@
-"""Convert verified source ZIP archives into atomic Parquet files."""
+"""Convert verified source archives into atomic Parquet files."""
 
 import csv as text_csv
+from collections.abc import Callable, Iterable, Iterator
+from datetime import date, datetime
+import gzip
+import io
 import logging
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from typing import Any
 from urllib.parse import unquote, urlsplit
 import zipfile
 
 import httpx
-from collections.abc import Callable, Iterable, Iterator
-from datetime import date, datetime
-from typing import Any
 import pyarrow.csv as csv
 import pyarrow as pa
 import pyarrow.compute as pc
@@ -36,21 +38,52 @@ class ArchiveError(DataValidationError):
     """Report an unsafe or malformed source archive."""
 
 
-def _source_schema(
-    archive: zipfile.ZipFile, member: zipfile.ZipInfo, dataset: DatasetSpec
-) -> CsvSchema:
-    """Select a declared CSV schema from the archive's first row.
+class _LimitedRawReader(io.RawIOBase):
+    """Stop a decompressed binary stream after a configured byte limit."""
+
+    def __init__(self, source: Any, limit: int) -> None:
+        """Wrap one source stream with an expanded-byte limit.
+
+        Args:
+            source: The readable decompressed source stream.
+            limit: The largest number of bytes callers may read.
+        """
+        super().__init__()
+        self._source = source
+        self._limit = limit
+        self._read = 0
+
+    def readable(self) -> bool:
+        """Return whether this wrapper supports reading."""
+        return True
+
+    def readinto(self, buffer: Any) -> int:
+        """Read bytes into a caller-provided buffer without exceeding the limit.
+
+        Args:
+            buffer: The writable buffer receiving decompressed bytes.
+
+        Returns:
+            The number of bytes copied into the buffer.
+        """
+        data = self._source.read(len(buffer))
+        self._read += len(data)
+        if self._read > self._limit:
+            raise ArchiveError("uncompressed CSV size exceeds configured limit")
+        buffer[: len(data)] = data
+        return len(data)
+
+
+def _schema_from_first_line(first_line: bytes, dataset: DatasetSpec) -> CsvSchema:
+    """Select a declared CSV schema from one encoded first row.
 
     Args:
-        archive: The verified ZIP archive.
-        member: The verified single CSV member.
+        first_line: The first encoded row in the CSV source.
         dataset: The dataset declaring accepted source layouts.
 
     Returns:
         The structurally matching source CSV schema.
     """
-    with archive.open(member, "r") as source:
-        first_line = source.readline()
     try:
         fields = next(text_csv.reader([first_line.decode("utf-8-sig")]))
     except (UnicodeDecodeError, StopIteration, text_csv.Error) as error:
@@ -70,6 +103,24 @@ def _source_schema(
     if absent:
         return absent[0]
     raise ArchiveError("CSV does not match the expected source columns or field count")
+
+
+def _source_schema(
+    archive: zipfile.ZipFile, member: zipfile.ZipInfo, dataset: DatasetSpec
+) -> CsvSchema:
+    """Select a declared CSV schema from the archive's first row.
+
+    Args:
+        archive: The verified ZIP archive.
+        member: The verified single CSV member.
+        dataset: The dataset declaring accepted source layouts.
+
+    Returns:
+        The structurally matching source CSV schema.
+    """
+    with archive.open(member, "r") as source:
+        first_line = source.readline()
+    return _schema_from_first_line(first_line, dataset)
 
 
 def _timestamp_bounds(table: Any, column: str) -> tuple[datetime, datetime]:
@@ -173,6 +224,41 @@ def _write_chunks(
             if dataset.sort_source_rows:
                 return _write_sorted(tables, resource, dataset, partial, validator)
             return _write_ordered(tables, resource, dataset, partial, validator)
+    except pa.ArrowException as error:
+        raise ArchiveError(f"invalid or empty CSV: {error}") from error
+
+
+def _write_csv_stream(
+    source: Any,
+    schema: CsvSchema,
+    resource: Resource,
+    dataset: DatasetSpec,
+    partial: Path,
+    chunk_rows: int,
+    normalizer: Normalizer,
+    validator: Validator,
+) -> tuple[int, datetime, datetime]:
+    """Normalize one opened CSV stream into an atomic Parquet partial.
+
+    Args:
+        source: The open decompressed CSV stream.
+        schema: The selected source schema.
+        resource: Physical source archive and date bounds.
+        dataset: Column and type declaration.
+        partial: Temporary Parquet destination.
+        chunk_rows: Maximum rows passed to validation at once.
+        normalizer: Exchange-specific Arrow conversion function.
+        validator: Exchange-specific Arrow validation function.
+
+    Returns:
+        Row count and first/last UTC timestamps.
+    """
+    try:
+        reader = _csv_reader(source, schema, chunk_rows)
+        tables = _normalized_tables(reader, dataset, resource, chunk_rows, normalizer)
+        if dataset.sort_source_rows:
+            return _write_sorted(tables, resource, dataset, partial, validator)
+        return _write_ordered(tables, resource, dataset, partial, validator)
     except pa.ArrowException as error:
         raise ArchiveError(f"invalid or empty CSV: {error}") from error
 
@@ -425,6 +511,112 @@ def ingest_archive(
         partial.unlink(missing_ok=True)
         LOGGER.exception(
             "Archive ingestion failed: day=%s url=%s destination=%s",
+            resource.day,
+            resource.url,
+            destination,
+        )
+        raise
+
+
+def ingest_gzip_archive(
+    client: httpx.Client,
+    resource: Resource,
+    dataset: DatasetSpec,
+    destination: Path,
+    *,
+    normalizer: Normalizer,
+    validator: Validator,
+    timeout: float = 30.0,
+    retries: int = 3,
+    backoff: float = 0.5,
+    chunk_rows: int = 200_000,
+    max_archive_bytes: int = 2 * 1024 * 1024 * 1024,
+    max_csv_bytes: int = 8 * 1024 * 1024 * 1024,
+) -> IngestedResource:
+    """Download and convert one verified Gzip CSV archive.
+
+    Args:
+        client: The HTTPX client used to download source files.
+        resource: The archive URL, coverage, and integrity policy.
+        dataset: The schema used to interpret source rows.
+        destination: The final Parquet path.
+        normalizer: Exchange-specific Arrow conversion function.
+        validator: Exchange-specific Arrow validation function.
+        timeout: The timeout for each HTTP request in seconds.
+        retries: The retries allowed after the first attempt.
+        backoff: The initial exponential retry delay in seconds.
+        chunk_rows: The number of CSV rows normalized at once.
+        max_archive_bytes: The largest accepted compressed archive.
+        max_csv_bytes: The largest accepted decompressed CSV.
+
+    Returns:
+        Source integrity, Parquet metadata, row count, and timestamp bounds.
+    """
+    chunk_rows = _positive_integer(chunk_rows, "chunk_rows")
+    max_archive_bytes = _positive_integer(max_archive_bytes, "max_archive_bytes")
+    max_csv_bytes = _positive_integer(max_csv_bytes, "max_csv_bytes")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    partial = destination.with_name(f"{destination.name}.part")
+    partial.unlink(missing_ok=True)
+    try:
+        with TemporaryDirectory(prefix="veldra-market-data-") as directory:
+            archive_path = Path(directory) / "source.csv.gz"
+            archive_checksum = download(
+                client,
+                resource,
+                archive_path,
+                timeout=timeout,
+                retries=retries,
+                backoff=backoff,
+                max_bytes=max_archive_bytes,
+            )
+            try:
+                with gzip.open(archive_path, "rb") as compressed:
+                    with io.BufferedReader(
+                        _LimitedRawReader(compressed, max_csv_bytes)
+                    ) as source:
+                        schema = _schema_from_first_line(source.readline(), dataset)
+                with gzip.open(archive_path, "rb") as compressed:
+                    with io.BufferedReader(
+                        _LimitedRawReader(compressed, max_csv_bytes)
+                    ) as source:
+                        rows, first, last = _write_csv_stream(
+                            source,
+                            schema,
+                            resource,
+                            dataset,
+                            partial,
+                            chunk_rows,
+                            normalizer,
+                            validator,
+                        )
+            except (gzip.BadGzipFile, EOFError, OSError) as error:
+                raise ArchiveError("source file is not a valid Gzip archive") from error
+
+        partial.replace(destination)
+        stat = destination.stat()
+        metadata = IngestedResource(
+            archive_checksum=archive_checksum,
+            parquet_size=stat.st_size,
+            parquet_mtime_ns=stat.st_mtime_ns,
+            row_count=rows,
+            first_timestamp=first,
+            last_timestamp=last,
+            timestamp_column=dataset.time_column,
+            schema_version=dataset.schema_version,
+        )
+        LOGGER.info(
+            "Gzip archive ingestion complete: day=%s rows=%d bytes=%d path=%s",
+            resource.day,
+            rows,
+            stat.st_size,
+            destination,
+        )
+        return metadata
+    except BaseException:
+        partial.unlink(missing_ok=True)
+        LOGGER.exception(
+            "Gzip archive ingestion failed: day=%s url=%s destination=%s",
             resource.day,
             resource.url,
             destination,
