@@ -192,7 +192,6 @@ def _updates(product: GateProduct) -> DatasetSpec:
         source_columns=SPOT_UPDATE_SOURCE if spot else FUTURES_UPDATE_SOURCE,
         stored_columns=(
             "event_time",
-            "event_number",
             "update_id",
             "side",
             "action",
@@ -205,9 +204,9 @@ def _updates(product: GateProduct) -> DatasetSpec:
         output_intervals=(),
         aliases=MappingProxyType({}),
         max_concurrency=4,
-        ordering_columns=("event_time", "update_id", "event_number"),
+        ordering_columns=("event_time", "update_id", "side", "price"),
         timestamp_columns=("event_time",),
-        integer_columns=("event_number", "update_id", "merged_count"),
+        integer_columns=("update_id", "merged_count"),
         string_columns=("side", "action"),
         sort_source_rows=True,
     )

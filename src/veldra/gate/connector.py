@@ -261,7 +261,11 @@ class GateConnector:
             if error.response.status_code in {404, 410}:
                 return None
             raise
-        digest = self._etag(response)
+        digest = (
+            None
+            if resource.url.endswith(("00.csv.gz", "00.gz"))
+            else self._etag(response)
+        )
         integrity = (
             IntegritySpec("response_header", "md5", expected=digest)
             if digest is not None

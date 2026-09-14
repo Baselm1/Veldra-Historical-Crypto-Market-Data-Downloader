@@ -135,6 +135,50 @@ def _normalize_futures_trades(table: Any, dataset: DatasetSpec) -> Any:
     return pa.table({column: values[column] for column in dataset.stored_columns})
 
 
+def _update_action(values: Any) -> Any:
+    """Normalize one required Gate depth action to lowercase text."""
+    result = pc.utf8_lower(pc.utf8_trim_whitespace(pc.cast(values, pa.string())))
+    if result.null_count:
+        raise DataValidationError("invalid order-book action")
+    _reject(pc.equal(result, ""), "invalid order-book action")
+    return result
+
+
+def _normalize_updates(table: Any, dataset: DatasetSpec) -> Any:
+    """Convert Spot or Futures depth changes into one canonical level row."""
+    if tuple(table.column_names) != dataset.source_columns:
+        raise DataValidationError("CSV does not match a Gate order-book schema")
+    spot = dataset.product == "spot"
+    raw_quantity = _number(
+        table["amount" if spot else "size"],
+        "base_quantity" if spot else "contract_quantity",
+    )
+    if spot:
+        native_side = _integer(table["side"], "side")
+        _reject(
+            pc.invert(pc.is_in(native_side, value_set=pa.array([1, 2]))),
+            "order-book side must be 1 or 2",
+        )
+        side = pc.if_else(pc.equal(native_side, 2), "bid", "ask")
+        quantity = raw_quantity
+        quantity_name = "base_quantity"
+    else:
+        _reject(pc.equal(raw_quantity, 0), "order-book quantity cannot be zero")
+        side = pc.if_else(pc.greater(raw_quantity, 0), "bid", "ask")
+        quantity = pc.abs(raw_quantity)
+        quantity_name = "contract_quantity"
+    values = {
+        "event_time": _epoch_seconds(table["timestamp"], "event_time"),
+        "update_id": _integer(table["begin_id"], "update_id"),
+        "side": side,
+        "action": _update_action(table["action"]),
+        "price": _number(table["price"], "price"),
+        quantity_name: quantity,
+        "merged_count": _integer(table["merged_count"], "merged_count"),
+    }
+    return pa.table({column: values[column] for column in dataset.stored_columns})
+
+
 def normalize_chunk(
     table: Any, dataset: DatasetSpec, contract_size: float | None = None
 ) -> Any:
@@ -157,6 +201,8 @@ def normalize_chunk(
         return _normalize_futures_klines(table, dataset)
     if dataset.product in {"um", "cm"} and dataset.name == "trades":
         return _normalize_futures_trades(table, dataset)
+    if dataset.product in {"spot", "um", "cm"} and dataset.name == "order_book_updates":
+        return _normalize_updates(table, dataset)
     raise ValueError(f"unsupported normalizer: {dataset.product}/{dataset.name}")
 
 
@@ -259,6 +305,30 @@ def _validate_trades(table: Any) -> None:
     )
 
 
+def _validate_updates(table: Any) -> None:
+    """Validate Gate depth identifiers, prices, quantities, sides, and actions."""
+    _reject(pc.less(table["update_id"], 0), "update_id must be nonnegative")
+    _reject(pc.less(table["merged_count"], 0), "merged_count must be nonnegative")
+    _reject(pc.less_equal(table["price"], 0), "order-book price must be positive")
+    quantity = next(
+        column for column in table.column_names if column.endswith("quantity")
+    )
+    _reject(pc.less_equal(table[quantity], 0), "order-book quantity must be positive")
+    _reject(
+        pc.invert(pc.is_in(table["side"], value_set=pa.array(["bid", "ask"]))),
+        "order-book side must be bid or ask",
+    )
+    _reject(
+        pc.invert(
+            pc.is_in(
+                table["action"],
+                value_set=pa.array(["set", "make", "take"]),
+            )
+        ),
+        "order-book action is unsupported",
+    )
+
+
 def validate_chunk(
     table: Any,
     dataset: DatasetSpec,
@@ -281,6 +351,7 @@ def validate_chunk(
     if dataset.product not in {"spot", "um", "cm"} or dataset.name not in {
         "klines",
         "trades",
+        "order_book_updates",
     }:
         raise ValueError(f"unsupported validator: {dataset.product}/{dataset.name}")
     _validate_schema(table, dataset)
@@ -288,6 +359,8 @@ def validate_chunk(
     last = _validate_times(table, dataset, day, previous_timestamp, end_day)
     if dataset.name == "klines":
         _validate_ohlc(table)
-    else:
+    elif dataset.name == "trades":
         _validate_trades(table)
+    else:
+        _validate_updates(table)
     return last
