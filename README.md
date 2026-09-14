@@ -14,13 +14,13 @@ live market streaming.
 | Exchange | Status | Historical access | Documentation |
 | --- | :---: | --- | --- |
 | Binance | ✅ | Public archives | [Binance guide](docs/binance.md) |
+| Gate.io | ✅ | Public archives | [Gate guide](docs/gate.md) |
 | HTX | ✅ | Public archives | [HTX guide](docs/htx.md) |
 | KuCoin | ✅ | Public archives | [KuCoin guide](docs/kucoin.md) |
 | OKX | ✅ | Archives and public REST APIs | [OKX guide](docs/okx.md) |
+| Upbit | ✅ | Public archives | [Upbit guide](docs/upbit.md) |
 | Bitget | ⏳ | Planned | — |
 | Bybit | ⏳ | Planned | — |
-| Gate.io | ⏳ | Planned | — |
-| Upbit | ✅ | Public archives | [Upbit guide](docs/upbit.md) |
 
 Products, datasets, intervals, and source-specific behavior are documented in
 each exchange guide.
@@ -68,7 +68,7 @@ Each exchange has its own facade with consistent conventions and
 exchange-specific datasets:
 
 ```python
-from veldra import Binance, HTX, KuCoin, OKX, Upbit
+from veldra import Binance, Gate, HTX, KuCoin, OKX, Upbit
 ```
 
 For example:
@@ -110,6 +110,7 @@ for shared behavior and each exchange guide for its supported methods.
 
 - [Getting started](docs/getting-started.md)
 - [Binance API and datasets](docs/binance.md)
+- [Gate API and datasets](docs/gate.md)
 - [HTX API and datasets](docs/htx.md)
 - [KuCoin API and datasets](docs/kucoin.md)
 - [OKX API and datasets](docs/okx.md)
