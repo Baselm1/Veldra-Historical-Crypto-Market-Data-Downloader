@@ -19,6 +19,7 @@ from veldra.core.download import (
     download,
     get,
     retry_delay,
+    head,
 )
 from veldra.core.models import IntegritySpec, Resource
 
@@ -184,6 +185,31 @@ def test_get_sends_params_and_timeout() -> None:
     assert response.json() == {"ok": True}
     assert requests[0].url.params["prefix"] == "data/spot"
     assert set(requests[0].extensions["timeout"].values()) == {12.5}
+
+
+def test_head_reuses_retry_and_timeout_behavior() -> None:
+    """Confirm metadata probes retry temporary failures without response bodies."""
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        """Return one temporary failure followed by archive metadata."""
+        requests.append(request)
+        if len(requests) == 1:
+            return httpx.Response(503)
+        return httpx.Response(
+            200, headers={"ETag": '"0123456789abcdef0123456789abcdef"'}
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        response = head(
+            client,
+            "https://data.example/archive.csv.gz",
+            retries=1,
+            backoff=0,
+        )
+
+    assert response.status_code == 200
+    assert [request.method for request in requests] == ["HEAD", "HEAD"]
 
 
 @pytest.mark.parametrize("failure", ["transport", "408", "429", "500", "503"])

@@ -63,7 +63,8 @@ def test_gate_quantity_columns_preserve_native_units() -> None:
 
 def test_monthly_and_hourly_sources_declare_their_logical_cadence() -> None:
     """Confirm monthly datasets differ from daily order-book materializations."""
-    assert get_dataset("spot", "klines").archive_cadence == "monthly"
+    assert get_dataset("spot", "klines").archive_cadence == "daily"
+    assert get_dataset("um", "klines").archive_cadence == "monthly"
     assert get_dataset("spot", "trades").archive_cadence == "monthly"
     assert get_dataset("um", "funding_rates").archive_cadence == "monthly"
     assert get_dataset("um", "order_book_updates").archive_cadence == "daily"

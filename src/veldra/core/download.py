@@ -221,6 +221,37 @@ def get(
     return _retry(request, retries=retries, backoff=backoff)
 
 
+def head(
+    client: httpx.Client,
+    url: str,
+    *,
+    timeout: float = 30.0,
+    retries: int = 3,
+    backoff: float = 0.5,
+) -> httpx.Response:
+    """Make a retrying HEAD request for remote archive metadata.
+
+    Args:
+        client: The HTTPX client used for the request.
+        url: The URL whose metadata is requested.
+        timeout: The timeout for each attempt in seconds.
+        retries: The retries allowed after the first attempt.
+        backoff: The initial exponential retry delay in seconds.
+
+    Returns:
+        A successful response without downloading the response body.
+    """
+    _validate_settings(timeout, retries, backoff)
+
+    def request() -> httpx.Response:
+        """Make one archive metadata request attempt."""
+        response = client.head(url, timeout=timeout)
+        response.raise_for_status()
+        return response
+
+    return _retry(request, retries=retries, backoff=backoff)
+
+
 def _checksum(text: str, archive_url: str, algorithm: str = "sha256") -> str:
     """Read a digest-only or filename-bound archive checksum sidecar.
 

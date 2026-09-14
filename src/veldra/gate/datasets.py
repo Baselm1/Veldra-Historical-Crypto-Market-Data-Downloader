@@ -138,7 +138,7 @@ def _klines(product: GateProduct, base_interval: Literal["10s", "1m"]) -> Datase
         gap_semantics="sparse",
         resample_sum_columns=(quantity,) if base_interval == "1m" else (),
         timestamp_columns=("open_time",),
-        archive_cadence="monthly",
+        archive_cadence="daily" if spot else "monthly",
     )
 
 
