@@ -333,6 +333,32 @@ def test_public_spot_klines_cache_query_and_offline_reuse(tmp_path: Path) -> Non
     assert fixture.files == 2
 
 
+def test_partial_only_resampling_is_a_complete_empty_okx_result(tmp_path: Path) -> None:
+    """Confirm exact sub-bucket requests are not mislabeled as missing data."""
+    fixture = OKXFixture()
+    service = OKX(
+        tmp_path,
+        earliest_date="all",
+        retries=0,
+        progress=False,
+        transport=httpx.MockTransport(fixture),
+    )
+    start = datetime(2025, 1, 1, 0, 1, tzinfo=UTC)
+    end = datetime(2025, 1, 1, 0, 2, tzinfo=UTC)
+
+    frame = service.get_klines("BTC-USDT", start, end, interval="5m", gap_policy="keep")
+
+    assert isinstance(frame, pd.DataFrame)
+    assert frame.empty
+    report = frame.attrs["download"]
+    assert report["complete"] is True
+    assert report["used_range"] == [start.isoformat(), end.isoformat()]
+    assert [warning["code"] for warning in report["warnings"]] == [
+        "partial_buckets_trimmed"
+    ]
+    assert report["problems"] == []
+
+
 def test_public_multi_request_is_ordered_and_unknown_pair_isolated(
     tmp_path: Path,
 ) -> None:

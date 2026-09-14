@@ -27,7 +27,13 @@ from veldra.core.models import (
     Result,
 )
 from veldra.core.providers import MaterializedArchive
-from veldra.core.query import ParquetInput, empty_frame, query_parquet
+from veldra.core.query import (
+    ParquetInput,
+    empty_frame,
+    query_parquet,
+    resampling_has_complete_bucket,
+    resampling_trims_edges,
+)
 from veldra.core.reporting import Reporter
 from veldra.core.request import Request, parse_range, parse_timestamp
 from veldra.core.subjects import DataSubject
@@ -632,23 +638,100 @@ class OKXService:
             LOGGER.exception("OKX Parquet query failed: pair=%s", market.symbol)
             result.errors.append(Message("query_failed", str(error)))
             return result
+        self._finish_pair_result(
+            result,
+            tuple(partitions),
+            original_pair,
+            start,
+            request.end,
+            dataset,
+            request.interval,
+        )
+        return result
+
+    @staticmethod
+    def _finish_pair_result(
+        result: Result,
+        partitions: tuple[LogicalPartition, ...],
+        original_pair: str,
+        start: datetime,
+        end: datetime,
+        dataset: DatasetSpec,
+        interval: str | None,
+    ) -> None:
+        """Attach availability and completeness to an instrument result.
+
+        Args:
+            result: Mutable structured result.
+            partitions: Instrument partitions used by the query.
+            original_pair: Caller spelling used in empty-data diagnostics.
+            start: Effective inclusive query start.
+            end: Exclusive query end.
+            dataset: Dataset declaring the stored base interval.
+            interval: Resolved output interval, if applicable.
+        """
         if partitions:
             result.available_range = (
                 min(item.coverage_start for item in partitions),
                 max(item.coverage_end for item in partitions),
             )
-        if not result.data.empty:
-            result.used_range = (start, request.end)
-            if "is_synthetic" in result.data and result.data["is_synthetic"].any():
-                count = int(result.data["is_synthetic"].sum())
-                result.problems.append(
-                    Message("missing_candles", f"Filled {count} missing OKX candle(s).")
-                )
+        partial_only = (
+            interval is not None
+            and interval != dataset.base_interval
+            and not resampling_has_complete_bucket(start, end, interval)
+        )
+        if not result.data.empty or (partitions and partial_only):
+            result.used_range = (start, end)
+            OKXService._record_synthetic_candles(result)
         elif not result.problems:
             result.problems.append(
                 Message("no_data", f"No OKX data was found for '{original_pair}'.")
             )
-        return result
+        OKXService._add_partial_bucket_warning(result, dataset, start, end, interval)
+
+    @staticmethod
+    def _record_synthetic_candles(result: Result) -> None:
+        """Record generated OKX candle rows as a completeness problem.
+
+        Args:
+            result: Mutable structured result containing queried rows.
+        """
+        if "is_synthetic" in result.data and result.data["is_synthetic"].any():
+            count = int(result.data["is_synthetic"].sum())
+            result.problems.append(
+                Message("missing_candles", f"Filled {count} missing OKX candle(s).")
+            )
+
+    @staticmethod
+    def _add_partial_bucket_warning(
+        result: Result,
+        dataset: DatasetSpec,
+        start: datetime,
+        end: datetime,
+        interval: str | None,
+    ) -> None:
+        """Report exact-range edge candles omitted during resampling.
+
+        Args:
+            result: Mutable retrieval result.
+            dataset: Dataset declaring the stored base interval.
+            start: Effective inclusive request start.
+            end: Exclusive request end.
+            interval: Resolved output interval, if applicable.
+        """
+        if (
+            result.used_range is not None
+            and interval is not None
+            and interval != dataset.base_interval
+            and resampling_trims_edges(start, end, interval)
+        ):
+            result.warnings.append(
+                Message(
+                    "partial_buckets_trimmed",
+                    f"Partial {interval} candle(s) at the requested range edges "
+                    "were omitted.",
+                )
+            )
 
     def get_results(
         self,
@@ -1018,7 +1101,13 @@ class OKXService:
                     )
         self._filter_chain_style(result.data, cached.markets, contract_style)
         self._finish_chain_result(
-            result, cached.partitions, native_family, start_time, request.end
+            result,
+            cached.partitions,
+            native_family,
+            start_time,
+            request.end,
+            specification,
+            request.interval,
         )
         return result
 
@@ -1229,6 +1318,8 @@ class OKXService:
         family: str,
         start: datetime,
         end: datetime,
+        dataset: DatasetSpec,
+        interval: str | None,
     ) -> None:
         """Attach availability and empty-data information to a chain result.
 
@@ -1238,8 +1329,15 @@ class OKXService:
             family: Native family used in user-facing errors.
             start: Effective inclusive query start.
             end: Exclusive query end.
+            dataset: Dataset declaring the stored base interval.
+            interval: Resolved output interval, if applicable.
         """
-        if not result.data.empty:
+        partial_only = (
+            interval is not None
+            and interval != dataset.base_interval
+            and not resampling_has_complete_bucket(start, end, interval)
+        )
+        if not result.data.empty or (partitions and partial_only):
             result.used_range = (start, end)
         elif not result.problems:
             result.problems.append(
@@ -1250,6 +1348,7 @@ class OKXService:
                 min(item.coverage_start for item in partitions),
                 max(item.coverage_end for item in partitions),
             )
+        OKXService._add_partial_bucket_warning(result, dataset, start, end, interval)
 
     def cache_all(
         self,

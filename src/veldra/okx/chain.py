@@ -11,6 +11,7 @@ import duckdb
 import pandas as pd
 
 from veldra.core.datasets import DatasetSpec
+from veldra.core.query import bucket_end_expression, bucket_expression
 
 
 @dataclass(frozen=True)
@@ -94,20 +95,6 @@ def _identifier(value: str) -> str:
     return '"' + value.replace('"', '""') + '"'
 
 
-def _bucket(interval: str) -> str:
-    """Return a UTC-aligned DuckDB Kline bucket expression."""
-    if interval == "1w":
-        return "timezone('UTC', date_trunc('week', timezone('UTC', open_time)))"
-    if interval == "1mo":
-        return "timezone('UTC', date_trunc('month', timezone('UTC', open_time)))"
-    number, suffix = int(interval[:-1]), interval[-1]
-    unit = {"m": "minutes", "h": "hours", "d": "days"}[suffix]
-    return (
-        f"time_bucket(INTERVAL '{number} {unit}', open_time, "
-        "TIMESTAMPTZ '1970-01-01 00:00:00+00')"
-    )
-
-
 def _projection(columns: Mapping[str, str], *, synthetic: bool) -> str:
     """Return the caller projection with a mandatory contract identity."""
     values = ["instrument_id"]
@@ -123,7 +110,7 @@ def _projection(columns: Mapping[str, str], *, synthetic: bool) -> str:
 
 def _resampled_fields(dataset: DatasetSpec, interval: str) -> list[str]:
     """Return family-grouped OHLC and additive Kline expressions."""
-    fields = ["instrument_id", f"{_bucket(interval)} AS open_time"]
+    fields = ["instrument_id", f"{bucket_expression(interval)} AS open_time"]
     for column in dataset.stored_columns:
         if column == "open_time":
             continue
@@ -194,17 +181,23 @@ def query_chain(
         fields = ", ".join(_resampled_fields(dataset, resolved))
         source = (
             f"SELECT {fields} FROM ({base}) "
-            f"GROUP BY instrument_id, {_bucket(resolved)}"
+            f"GROUP BY instrument_id, {bucket_expression(resolved)}"
+        )
+        source = (
+            f"SELECT * FROM ({source}) WHERE open_time >= ? "
+            f"AND {bucket_end_expression(resolved)} <= ?"
         )
         projection = _projection(columns, synthetic=True)
+        result_parameters: list[object] = [start, end]
     else:
         source = base
         projection = _projection(columns, synthetic=False)
+        result_parameters = []
     secondary = ", trade_id" if "trade_id" in dataset.stored_columns else ""
     frame = connection.execute(
         f"SELECT {projection} FROM ({source}) "
         f"ORDER BY instrument_id, {_identifier(dataset.time_column)}{secondary}",
-        [unique, start, end, *filter_parameters],
+        [unique, start, end, *filter_parameters, *result_parameters],
     ).df()
     for source_name, label in columns.items():
         if source_name in dataset.timestamp_columns:

@@ -145,13 +145,49 @@ def test_expired_exact_contract_and_whole_chain_share_one_file(tmp_path: Path) -
         start,
         end,
         product="inverse_futures",
-        interval="1h",
+        interval="1m",
         offline=True,
     )
-    assert len(chain) == 2
-    assert chain["instrument_id"].tolist() == ["BTC-USD-250103", "BTC-USD-250131"]
-    assert chain["contract_volume"].tolist() == [5.0, 5.0]
+    assert len(chain) == 4
+    assert chain["instrument_id"].tolist() == [
+        "BTC-USD-250103",
+        "BTC-USD-250103",
+        "BTC-USD-250131",
+        "BTC-USD-250131",
+    ]
+    assert chain["contract_volume"].tolist() == [2.0, 3.0, 2.0, 3.0]
     assert fixture.files == 1
+
+
+def test_chain_resampling_omits_partial_edge_buckets(tmp_path: Path) -> None:
+    """Confirm family queries retain only complete exact-range candles."""
+    fixture = FuturesFixture()
+    api = OKX(
+        tmp_path,
+        earliest_date="all",
+        retries=0,
+        progress=False,
+        transport=httpx.MockTransport(fixture),
+    )
+    start = datetime(2025, 1, 1, 0, 1, tzinfo=UTC)
+    end = datetime(2025, 1, 1, 0, 2, tzinfo=UTC)
+
+    chain = api.get_futures_chain_klines(
+        "BTC-USD",
+        start,
+        end,
+        product="inverse_futures",
+        interval="5m",
+    )
+
+    assert chain.empty
+    report = chain.attrs["download"]
+    assert report["complete"] is True
+    assert report["used_range"] == [start.isoformat(), end.isoformat()]
+    assert [warning["code"] for warning in report["warnings"]] == [
+        "partial_buckets_trimmed"
+    ]
+    assert report["problems"] == []
 
 
 def test_chain_style_filter_and_product_family_validation(tmp_path: Path) -> None:
