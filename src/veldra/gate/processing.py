@@ -105,6 +105,36 @@ def _normalize_spot_trades(table: Any, dataset: DatasetSpec) -> Any:
     return pa.table({column: values[column] for column in dataset.stored_columns})
 
 
+def _normalize_futures_klines(table: Any, dataset: DatasetSpec) -> Any:
+    """Convert Gate perpetual Klines while preserving contract volume."""
+    if tuple(table.column_names) != dataset.source_columns:
+        raise DataValidationError("CSV does not match a Gate Futures Kline schema")
+    values = {
+        "open_time": _epoch_seconds(table["timestamp"], "open_time"),
+        "open": _number(table["open"], "open"),
+        "high": _number(table["high"], "high"),
+        "low": _number(table["low"], "low"),
+        "close": _number(table["close"], "close"),
+        "contract_volume": _number(table["size"], "contract_volume"),
+    }
+    return pa.table({column: values[column] for column in dataset.stored_columns})
+
+
+def _normalize_futures_trades(table: Any, dataset: DatasetSpec) -> Any:
+    """Convert signed Gate perpetual fills into quantity and side columns."""
+    if tuple(table.column_names) != dataset.source_columns:
+        raise DataValidationError("CSV does not match a Gate Futures trade schema")
+    signed = _number(table["size"], "contract_quantity")
+    values = {
+        "event_time": _epoch_seconds(table["timestamp"], "event_time"),
+        "event_number": _integer(table["deal_id"], "event_number"),
+        "price": _number(table["price"], "price"),
+        "contract_quantity": pc.abs(signed),
+        "side": pc.if_else(pc.greater(signed, 0), "buy", "sell"),
+    }
+    return pa.table({column: values[column] for column in dataset.stored_columns})
+
+
 def normalize_chunk(
     table: Any, dataset: DatasetSpec, contract_size: float | None = None
 ) -> Any:
@@ -123,6 +153,10 @@ def normalize_chunk(
         return _normalize_spot_klines(table, dataset)
     if dataset.product == "spot" and dataset.name == "trades":
         return _normalize_spot_trades(table, dataset)
+    if dataset.product in {"um", "cm"} and dataset.name == "klines":
+        return _normalize_futures_klines(table, dataset)
+    if dataset.product in {"um", "cm"} and dataset.name == "trades":
+        return _normalize_futures_trades(table, dataset)
     raise ValueError(f"unsupported normalizer: {dataset.product}/{dataset.name}")
 
 
@@ -154,6 +188,14 @@ def _validate_values(table: Any, dataset: DatasetSpec) -> None:
             _reject(pc.invert(pc.is_finite(values)), "numeric values must be finite")
 
 
+def _ordered(values: Any, *, strict: bool) -> bool:
+    """Return whether Arrow timestamps follow the required ordering."""
+    compare = pc.less_equal if strict else pc.less
+    return not pc.any(
+        compare(values.slice(1), values.slice(0, len(values) - 1))
+    ).as_py()
+
+
 def _validate_times(
     table: Any,
     dataset: DatasetSpec,
@@ -163,8 +205,7 @@ def _validate_times(
 ) -> datetime:
     """Validate source coverage, ordering, and Kline alignment."""
     values = table[dataset.time_column]
-    compare = pc.less_equal if dataset.supports_resampling else pc.less
-    if pc.any(compare(values.slice(1), values.slice(0, len(values) - 1))).as_py():
+    if not _ordered(values, strict=dataset.supports_resampling):
         raise DataValidationError(f"{dataset.time_column} must be increasing")
     first = cast(datetime, values[0].as_py())
     last = cast(datetime, values[-1].as_py())
@@ -177,16 +218,20 @@ def _validate_times(
     end = datetime.combine((end_day or day) + timedelta(days=1), time.min, UTC)
     if first < start or last >= end:
         raise DataValidationError("timestamps fall outside the Gate resource period")
-    if dataset.supports_resampling:
+    if dataset.base_interval is not None:
         unit = "second" if dataset.base_interval == "10s" else "minute"
+        multiple = 10 if dataset.base_interval == "10s" else 1
         _reject(
-            pc.not_equal(values, pc.floor_temporal(values, unit=unit)),
-            f"open_time is not aligned to one {unit}",
+            pc.not_equal(
+                values,
+                pc.floor_temporal(values, multiple=multiple, unit=unit),
+            ),
+            f"open_time is not aligned to {dataset.base_interval}",
         )
     return last
 
 
-def _validate_ohlc(table: Any, dataset: DatasetSpec) -> None:
+def _validate_ohlc(table: Any) -> None:
     """Validate positive prices and nonnegative declared Kline quantities."""
     for column in ("open", "high", "low", "close"):
         _reject(pc.less_equal(table[column], 0), "price values must be positive")
@@ -194,8 +239,9 @@ def _validate_ohlc(table: Any, dataset: DatasetSpec) -> None:
         _reject(pc.less(table["high"], table[column]), "high is below an OHLC price")
     for column in ("open", "high", "close"):
         _reject(pc.greater(table["low"], table[column]), "low is above an OHLC price")
-    for column in dataset.resample_sum_columns:
-        _reject(pc.less(table[column], 0), "volume values must be nonnegative")
+    for column in table.column_names:
+        if column.endswith("volume"):
+            _reject(pc.less(table[column], 0), "volume values must be nonnegative")
 
 
 def _validate_trades(table: Any) -> None:
@@ -232,13 +278,16 @@ def validate_chunk(
     Returns:
         The final UTC timestamp in the table.
     """
-    if dataset.product != "spot" or dataset.name not in {"klines", "trades"}:
+    if dataset.product not in {"spot", "um", "cm"} or dataset.name not in {
+        "klines",
+        "trades",
+    }:
         raise ValueError(f"unsupported validator: {dataset.product}/{dataset.name}")
     _validate_schema(table, dataset)
     _validate_values(table, dataset)
     last = _validate_times(table, dataset, day, previous_timestamp, end_day)
     if dataset.name == "klines":
-        _validate_ohlc(table, dataset)
+        _validate_ohlc(table)
     else:
         _validate_trades(table)
     return last
