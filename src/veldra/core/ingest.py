@@ -157,7 +157,10 @@ def _positive_integer(value: object, name: str) -> int:
 
 
 def _member(
-    archive: zipfile.ZipFile, resource: Resource, max_bytes: int
+    archive: zipfile.ZipFile,
+    resource: Resource,
+    max_bytes: int,
+    allow_name_prefix: bool = False,
 ) -> zipfile.ZipInfo:
     """Return the single safe expected CSV member from an archive.
 
@@ -165,6 +168,7 @@ def _member(
         archive: The opened source ZIP file.
         resource: The source resource that determines the expected filename.
         max_bytes: The largest accepted uncompressed member.
+        allow_name_prefix: Whether a safe source prefix may precede the expected name.
 
     Returns:
         The validated CSV member metadata.
@@ -172,13 +176,17 @@ def _member(
     members = archive.infolist()
     archive_name = unquote(Path(urlsplit(resource.url).path).name)
     expected = archive_name.removesuffix(".zip") + ".csv"
+    actual = members[0].filename if members else ""
+    name_matches = actual == expected or (
+        allow_name_prefix and actual.endswith(f"_{expected}")
+    )
     if (
         len(members) != 1
         or members[0].is_dir()
-        or members[0].filename != expected
-        or "/" in members[0].filename
-        or "\\" in members[0].filename
-        or not members[0].filename.endswith(".csv")
+        or not name_matches
+        or "/" in actual
+        or "\\" in actual
+        or not actual.endswith(".csv")
     ):
         raise ArchiveError("ZIP must contain only the exact expected CSV file")
     member = members[0]
@@ -422,6 +430,7 @@ def ingest_archive(
     chunk_rows: int = 200_000,
     max_archive_bytes: int = 2 * 1024 * 1024 * 1024,
     max_csv_bytes: int = 8 * 1024 * 1024 * 1024,
+    allow_member_name_prefix: bool = False,
 ) -> IngestedResource:
     """Download and convert one verified daily archive.
 
@@ -438,6 +447,7 @@ def ingest_archive(
         chunk_rows: The number of CSV rows normalized at once.
         max_archive_bytes: The largest accepted compressed archive.
         max_csv_bytes: The largest accepted uncompressed CSV member.
+        allow_member_name_prefix: Whether a safe prefix may precede the archive stem.
 
     Returns:
         Hashes, file metadata, row count, and timestamp bounds.
@@ -470,7 +480,12 @@ def ingest_archive(
             )
             try:
                 with zipfile.ZipFile(archive_path) as archive:
-                    member = _member(archive, resource, max_csv_bytes)
+                    member = _member(
+                        archive,
+                        resource,
+                        max_csv_bytes,
+                        allow_member_name_prefix,
+                    )
                     rows, first, last = _write_chunks(
                         archive,
                         member,

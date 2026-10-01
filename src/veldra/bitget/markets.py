@@ -200,8 +200,12 @@ def markets(client: MarketClient, product: str) -> list[Market]:
     Returns:
         Current markets sorted by native symbol.
     """
+    rows = client.get_instruments(category(product))
     found = [
-        parse_market(row, product) for row in client.get_instruments(category(product))
+        parse_market(row, product)
+        for row in rows
+        if isinstance(row.get("symbol"), str)
+        and _SAFE_SYMBOL.fullmatch(str(row["symbol"]).upper()) is not None
     ]
     symbols = [market.symbol for market in found]
     if len(symbols) != len(set(symbols)):

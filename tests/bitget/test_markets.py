@@ -147,6 +147,21 @@ def test_market_and_volume_helpers_delegate_to_native_categories() -> None:
     assert quote_volumes(client, "spot") == {"BTCUSDT": 12.5}
 
 
+def test_market_helper_skips_non_ascii_source_symbols() -> None:
+    """Localized instruments cannot break an otherwise valid snapshot."""
+
+    class LocalizedClient(StubClient):
+        """Include one localized market beside a valid market."""
+
+        def get_instruments(self, native: str) -> list[dict[str, object]]:
+            """Return one safe and one localized source symbol."""
+            assert native == "SPOT"
+            return [instrument(), instrument(symbol="BTC测试USDT")]
+
+    client = LocalizedClient(duplicate=False)
+    assert [market.symbol for market in markets(client, "spot")] == ["BTCUSDT"]
+
+
 @pytest.mark.parametrize(
     "rows",
     [

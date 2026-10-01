@@ -68,7 +68,7 @@ def _epoch_milliseconds(values: Any, column: str) -> Any:
 def _source_columns(table: Any, dataset: DatasetSpec) -> set[str]:
     """Return visible source columns after validating the hidden row number."""
     names = set(table.column_names)
-    if "__row_number" not in names:
+    if "__row_number" not in names and dataset.name != "trades":
         raise DataValidationError("Bitget workbook has no physical row number")
     visible = names - {"__row_number"}
     accepted = {frozenset(schema.columns) for schema in dataset.csv_schemas}
