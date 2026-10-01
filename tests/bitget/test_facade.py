@@ -43,6 +43,31 @@ def test_reference_helpers_use_exact_validated_range(tmp_path: Path) -> None:
     service.close()
 
 
+@pytest.mark.parametrize(
+    ("method", "pair", "product", "error"),
+    [
+        ("get_reference_klines", 1, "usdt_futures", TypeError),
+        ("get_reference_klines", " ", "usdt_futures", ValueError),
+        ("get_reference_klines", "BTCUSDT", "spot", ValueError),
+        ("get_funding_rates", [], "usdt_futures", ValueError),
+        ("get_funding_rates", "BTCUSDT", "options", ValueError),
+    ],
+)
+def test_reference_helpers_reject_invalid_inputs_before_network(
+    tmp_path: Path,
+    method: str,
+    pair: object,
+    product: str,
+    error: type[Exception],
+) -> None:
+    """Malformed symbols and products never become remote API errors."""
+    service = Bitget(tmp_path, progress=False)
+    operation = getattr(service, method)
+    with pytest.raises(error):
+        operation(pair, "2025-01-01", "2025-01-02", product=product)
+    service.close()
+
+
 def test_range_rejects_reversed_timestamps() -> None:
     """Reference calls cannot send ambiguous or reversed bounds."""
     with pytest.raises(ValueError, match="before"):

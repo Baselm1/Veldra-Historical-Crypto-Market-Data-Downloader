@@ -10,6 +10,7 @@ from veldra.bitget.datasets import (
     FUTURES_PRODUCTS,
     OUTPUT_INTERVALS,
     PRODUCTS,
+    REFERENCE_INTERVALS,
     get_dataset,
     supports,
 )
@@ -56,6 +57,14 @@ def test_reference_data_is_futures_only(product: str, dataset: str) -> None:
     """Confirm reference prices and funding are declared for Futures only."""
     assert get_dataset(product, dataset).product == product
     assert not supports("spot", dataset)
+
+
+def test_reference_klines_declare_only_native_rest_intervals() -> None:
+    """Direct REST reference calls do not promise unimplemented resampling."""
+    declaration = get_dataset("usdt_futures", "mark_price_klines")
+    assert declaration.output_intervals == REFERENCE_INTERVALS
+    assert "2h" not in declaration.output_intervals
+    assert declaration.supports_resampling is False
 
 
 def test_quantity_units_follow_product_semantics() -> None:

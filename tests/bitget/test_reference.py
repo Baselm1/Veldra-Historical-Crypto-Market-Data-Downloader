@@ -1,7 +1,7 @@
 """Test Bitget reference-market history."""
 
 from collections.abc import Mapping
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -15,13 +15,13 @@ class Client:
     def __init__(self, values: list[object]) -> None:
         """Store queued response data."""
         self.values = values
-        self.calls: list[tuple[str, Mapping[str, str]]] = []
+        self.calls: list[tuple[str, str, Mapping[str, str]]] = []
 
     def request(
-        self, _method: str, _url: str, *, policy_key: str, params: Mapping[str, str]
+        self, _method: str, url: str, *, policy_key: str, params: Mapping[str, str]
     ) -> object:
         """Return the next queued data value."""
-        self.calls.append((policy_key, params))
+        self.calls.append((url, policy_key, params))
         return self.values.pop(0)
 
 
@@ -47,7 +47,7 @@ def test_candle_frame_is_canonical_sorted_and_deduplicated() -> None:
 
 def test_reference_service_sends_candle_type_and_exact_bounds() -> None:
     """Reference types and half-open bounds map to the unified endpoint."""
-    client = Client([[["1735689600000", "1", "2", ".5", "1.5", "3", "5"]], []])
+    client = Client([[["1735689600000", "1", "2", ".5", "1.5", "3", "5"]]])
     service = BitgetReferenceService(client)  # type: ignore[arg-type]
     start = datetime(2025, 1, 1, tzinfo=UTC)
     result = service.candles(
@@ -56,11 +56,30 @@ def test_reference_service_sends_candle_type_and_exact_bounds() -> None:
         "mark_price_klines",
         "1m",
         start,
-        start.replace(day=2),
+        start + timedelta(minutes=100),
     )
     assert len(result) == 1
-    assert client.calls[0][1]["type"] == "mark"
-    assert client.calls[0][0] == "history_candles"
+    assert client.calls[0][0].endswith("/api/v3/market/history-candles")
+    assert client.calls[0][2]["type"] == "mark"
+    assert client.calls[0][2]["limit"] == "100"
+    assert client.calls[0][1] == "history_candles"
+
+
+def test_reference_service_pages_one_minute_history_in_hundred_row_windows() -> None:
+    """A full one-minute day uses bounded historical endpoint requests."""
+    client = Client([[] for _ in range(15)])
+    service = BitgetReferenceService(client)  # type: ignore[arg-type]
+    start = datetime(2025, 1, 1, tzinfo=UTC)
+    result = service.candles(
+        "BTCUSDT",
+        "usdt_futures",
+        "index_price_klines",
+        "1m",
+        start,
+        start + timedelta(days=1),
+    )
+    assert result.empty
+    assert len(client.calls) == 15
 
 
 def test_funding_pages_until_short_page_and_filters_range() -> None:

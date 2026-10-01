@@ -102,6 +102,19 @@ def test_nonretryable_http_errors_propagate(status: int) -> None:
             client.get_instruments("SPOT")
 
 
+def test_http_error_envelopes_preserve_source_details() -> None:
+    """Decode Bitget's useful error body before raising an HTTP wrapper."""
+    payload = {"code": "25100", "msg": "Trading pair does not exist", "data": None}
+    with mock_client(
+        httpx.MockTransport(lambda request: httpx.Response(400, json=payload))
+    ) as http:
+        client = BitgetClient(client=http, limiter=Limiter(), retries=0)
+        with pytest.raises(BitgetResponseError) as caught:
+            client.get_instruments("SPOT")
+    assert caught.value.code == "25100"
+    assert caught.value.message == "Trading pair does not exist"
+
+
 @pytest.mark.parametrize(
     "payload",
     [

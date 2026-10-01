@@ -142,11 +142,12 @@ class BitgetReferenceService:
         source_interval, duration = native
         found: list[object] = []
         cursor = start
+        page_span = min(duration * 100, timedelta(days=90))
         while cursor < end:
-            page_end = min(end, cursor + duration * 1_000)
+            page_end = min(end, cursor + page_span)
             data = self.client.request(
                 "GET",
-                f"{REST_URL}/api/v3/market/candles",
+                f"{REST_URL}/api/v3/market/history-candles",
                 policy_key="history_candles",
                 params={
                     "category": category(product),
@@ -155,7 +156,7 @@ class BitgetReferenceService:
                     "type": candle_type,
                     "startTime": str(int(cursor.timestamp() * 1_000)),
                     "endTime": str(int(page_end.timestamp() * 1_000) - 1),
-                    "limit": "1000",
+                    "limit": "100",
                 },
             )
             found.extend(_rows(data, "candle"))

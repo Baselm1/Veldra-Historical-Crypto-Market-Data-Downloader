@@ -212,6 +212,28 @@ class BitgetClient:
         declared = None if response is None else response.headers.get("Retry-After")
         return maximum if declared is not None else self._jitter(maximum)
 
+    @classmethod
+    def _response_value(cls, response: httpx.Response) -> object:
+        """Return data while preserving useful source errors on HTTP failures.
+
+        Args:
+            response: Completed Bitget response.
+
+        Returns:
+            The validated response data.
+        """
+        try:
+            value = cls._envelope(response)
+        except BitgetResponseError as error:
+            if response.is_error and error.code in {
+                "invalid_json",
+                "invalid_envelope",
+            }:
+                response.raise_for_status()
+            raise
+        response.raise_for_status()
+        return value
+
     def request(
         self,
         method: str,
@@ -244,8 +266,7 @@ class BitgetClient:
                     json=json_body,
                     timeout=self.timeout,
                 )
-                response.raise_for_status()
-                return self._envelope(response)
+                return self._response_value(response)
             except BitgetResponseError as error:
                 caught: Exception = error
                 retryable = error.retryable

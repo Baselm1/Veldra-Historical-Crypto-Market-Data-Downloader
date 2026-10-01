@@ -44,6 +44,18 @@ OUTPUT_INTERVALS: tuple[str, ...] = (
     "1w",
     "1mo",
 )
+REFERENCE_INTERVALS: tuple[str, ...] = (
+    "1m",
+    "3m",
+    "5m",
+    "15m",
+    "30m",
+    "1h",
+    "4h",
+    "6h",
+    "12h",
+    "1d",
+)
 
 ARCHIVE_DATASETS = frozenset(
     {"klines", "trades", "best_book_snapshots", "order_book_snapshots"}
@@ -287,13 +299,12 @@ def _reference_klines(product: BitgetProduct, name: str) -> DatasetSpec:
         ),
         time_column="open_time",
         base_interval="1m",
-        output_intervals=OUTPUT_INTERVALS,
+        output_intervals=REFERENCE_INTERVALS,
         aliases=MappingProxyType({"volume": "base_volume"}),
         max_concurrency=8,
-        supports_resampling=True,
+        supports_resampling=False,
         supports_gap_policy=True,
         gap_semantics="sparse",
-        resample_sum_columns=("base_volume", "quote_volume"),
         timestamp_columns=("open_time",),
         sort_source_rows=True,
     )

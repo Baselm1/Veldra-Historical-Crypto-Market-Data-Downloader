@@ -16,6 +16,7 @@ from veldra.core.inspection import find_markets as _find_markets
 from veldra.core.inspection import get_markets as _get_markets
 from veldra.core.models import Market
 from veldra.core.request import parse_timestamp
+from veldra.core.request import parse_pairs
 
 type DateInput = str | date | datetime
 type PairInput = str | list[str]
@@ -40,6 +41,24 @@ def _range(start: DateInput, end: DateInput) -> tuple[datetime, datetime]:
     if first >= last:
         raise ValueError("start must be before end")
     return first, last
+
+
+def _reference_pair(value: object) -> str:
+    """Return one safe native Bitget reference-market symbol.
+
+    Args:
+        value: Caller-supplied Futures symbol.
+
+    Returns:
+        The validated uppercase native symbol.
+    """
+    pairs, single = parse_pairs(value)
+    if not single:
+        raise TypeError("pair must be a string")
+    symbol = pairs[0].upper()
+    if not symbol.isascii() or not symbol.isalnum():
+        raise ValueError("pair must contain only ASCII letters and digits")
+    return symbol
 
 
 class Bitget:
@@ -224,9 +243,11 @@ class Bitget:
         interval: str = "1m",
     ) -> pd.DataFrame:
         """Return Bitget Futures mark, index, or premium candles."""
+        declaration = get_dataset(product, dataset)
+        declaration.resolve_interval(interval)
         first, last = _range(start, end)
         return self._reference.candles(
-            pair.strip().upper(), product, dataset, interval, first, last
+            _reference_pair(pair), product, dataset, interval, first, last
         )
 
     def get_funding_rates(
@@ -238,8 +259,9 @@ class Bitget:
         product: FuturesProduct = "usdt_futures",
     ) -> pd.DataFrame:
         """Return Bitget Futures funding settlements."""
+        get_dataset(product, "funding_rates")
         first, last = _range(start, end)
-        return self._reference.funding(pair.strip().upper(), product, first, last)
+        return self._reference.funding(_reference_pair(pair), product, first, last)
 
     def get_markets(
         self,
