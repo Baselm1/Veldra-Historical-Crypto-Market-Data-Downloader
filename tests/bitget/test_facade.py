@@ -1,6 +1,6 @@
 """Test the public Bitget facade contract."""
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -20,6 +20,18 @@ def test_facade_constructs_without_network(tmp_path: Path) -> None:
     service.close()
 
 
+def test_facade_exposes_configuration_and_context_management(tmp_path: Path) -> None:
+    """The facade reports its configuration and closes as a context manager."""
+    service = Bitget(tmp_path, earliest_date="2024-01-01", max_workers=7)
+    service._reference_client.close = Mock()  # type: ignore[method-assign]
+    with service as entered:
+        assert entered is service
+        assert service.earliest_date == date(2024, 1, 1)
+        assert service.kline_base_interval == "1m"
+        assert service.max_workers == 7
+    service._reference_client.close.assert_called_once_with()
+
+
 def test_archive_helpers_delegate_declared_dataset(tmp_path: Path) -> None:
     """Typed helpers retain products, intervals, and dataset identities."""
     service = Bitget(tmp_path, progress=False)
@@ -37,11 +49,52 @@ def test_archive_helpers_delegate_declared_dataset(tmp_path: Path) -> None:
 def test_reference_helpers_use_exact_validated_range(tmp_path: Path) -> None:
     """Reference helpers expand date ends before delegation."""
     service = Bitget(tmp_path, progress=False)
-    service._reference.candles = Mock(return_value=pd.DataFrame())  # type: ignore[method-assign]
+    service._reference.candles = Mock(  # type: ignore[method-assign]
+        return_value=pd.DataFrame(
+            {
+                "open_time": pd.Series(dtype="datetime64[us, UTC]"),
+                "open": pd.Series(dtype="float64"),
+                "high": pd.Series(dtype="float64"),
+                "low": pd.Series(dtype="float64"),
+                "close": pd.Series(dtype="float64"),
+                "base_volume": pd.Series(dtype="float64"),
+                "quote_volume": pd.Series(dtype="float64"),
+            }
+        )
+    )
     service.get_reference_klines("btcusdt", "2025-01-01", "2025-01-01")
     args = service._reference.candles.call_args.args
     assert args[0] == "BTCUSDT"
     assert args[-1] - args[-2] == pd.Timedelta(days=1)
+    service.close()
+
+
+def test_reference_helpers_reuse_a_stored_covering_range(tmp_path: Path) -> None:
+    """Repeated and narrower calls do not repeat Bitget REST requests."""
+    service = Bitget(tmp_path, progress=False)
+    row = pd.DataFrame(
+        {
+            "open_time": pd.to_datetime(["2025-01-01T00:00:00Z"]).astype(
+                "datetime64[us, UTC]"
+            ),
+            "open": [1.0],
+            "high": [2.0],
+            "low": [0.5],
+            "close": [1.5],
+            "base_volume": [0.0],
+            "quote_volume": [0.0],
+        }
+    )
+    service._reference.candles = Mock(return_value=row)  # type: ignore[method-assign]
+
+    service.get_mark_price_klines("BTCUSDT", "2025-01-01", "2025-01-01")
+    service.get_mark_price_klines(
+        "BTCUSDT",
+        datetime(2025, 1, 1, tzinfo=UTC),
+        datetime(2025, 1, 1, 1, tzinfo=UTC),
+    )
+
+    service._reference.candles.assert_called_once()
     service.close()
 
 
@@ -162,7 +215,7 @@ def test_reference_results_include_the_standard_download_report(tmp_path: Path) 
     assert result.attrs["download"]["dataset"] == "mark_price_klines"
 
     service._reference.candles = Mock(return_value=row.iloc[0:0])  # type: ignore[method-assign]
-    empty = service.get_mark_price_klines("BTCUSDT", "2025-01-01", "2025-01-01")
+    empty = service.get_mark_price_klines("ETHUSDT", "2025-01-01", "2025-01-01")
     assert empty.attrs["download"]["complete"] is False
     assert empty.attrs["download"]["errors"][0]["code"] == "range_unavailable"
     service.close()
