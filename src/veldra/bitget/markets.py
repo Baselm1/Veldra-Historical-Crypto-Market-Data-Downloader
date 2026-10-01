@@ -174,8 +174,14 @@ def parse_volumes(rows: Sequence[object]) -> dict[str, float]:
     for row in rows:
         if not isinstance(row, dict):
             raise ValueError("Bitget ticker endpoint contains an invalid market")
-        symbol = _symbol(row.get("symbol"))
-        raw = row.get("quoteVolume", row.get("usdtVolume"))
+        source_symbol = row.get("symbol")
+        if (
+            isinstance(source_symbol, str)
+            and _SAFE_SYMBOL.fullmatch(source_symbol.upper()) is None
+        ):
+            continue
+        symbol = _symbol(source_symbol)
+        raw = row.get("turnover24h", row.get("quoteVolume", row.get("usdtVolume")))
         if isinstance(raw, bool) or not isinstance(raw, (str, int, float)):
             raise ValueError("Bitget ticker endpoint contains an invalid volume")
         try:

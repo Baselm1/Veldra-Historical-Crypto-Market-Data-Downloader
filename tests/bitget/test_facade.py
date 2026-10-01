@@ -2,12 +2,13 @@
 
 from datetime import UTC, datetime
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import pandas as pd
 import pytest
 
 from veldra import Bitget
+from veldra.core.models import Availability
 from veldra.bitget.facade import _range
 
 
@@ -75,3 +76,66 @@ def test_range_rejects_reversed_timestamps() -> None:
             datetime(2025, 1, 2, tzinfo=UTC),
             datetime(2025, 1, 1, tzinfo=UTC),
         )
+
+
+def test_market_search_forwards_common_filters(tmp_path: Path) -> None:
+    """Bitget search accepts the same useful market filters as other facades."""
+    service = Bitget(tmp_path, progress=False)
+    with patch("veldra.bitget.facade._find_markets", return_value=[]) as find:
+        service.find_markets(
+            "btc", product=None, status="ONLINE", quote_asset="USDT", limit=3
+        )
+    assert find.call_args.kwargs["product"] is None
+    assert find.call_args.kwargs["status"] == "ONLINE"
+    assert find.call_args.kwargs["quote_asset"] == "USDT"
+    service.close()
+
+
+def test_availability_helpers_delegate_to_shared_inspection(tmp_path: Path) -> None:
+    """Bitget exposes cataloged and bounded remote coverage inspection."""
+    expected = Mock(spec=Availability)
+    service = Bitget(tmp_path, progress=False)
+    with patch(
+        "veldra.bitget.facade._get_availability", return_value=expected
+    ) as local:
+        assert (
+            service.get_availability(
+                "BTCUSDT", product="spot", dataset="klines", interval="1h"
+            )
+            is expected
+        )
+    assert local.call_args.kwargs["dataset"] == "klines"
+    with patch(
+        "veldra.bitget.facade._discover_availability", return_value=expected
+    ) as remote:
+        assert (
+            service.discover_availability(
+                "BTCUSDT",
+                "2025-01-01",
+                "2025-01-02",
+                product="spot",
+                dataset="klines",
+            )
+            is expected
+        )
+    assert remote.call_args.kwargs["progress"] is False
+    service.close()
+
+
+def test_named_reference_helpers_select_exact_datasets(tmp_path: Path) -> None:
+    """Dedicated reference methods retain explicit dataset identities."""
+    service = Bitget(tmp_path, progress=False)
+    service.get_reference_klines = Mock(return_value=pd.DataFrame())  # type: ignore[method-assign]
+    service.get_mark_price_klines("BTCUSDT", "2025-01-01", "2025-01-02")
+    assert service.get_reference_klines.call_args.kwargs["dataset"] == (
+        "mark_price_klines"
+    )
+    service.get_index_price_klines("BTCUSDT", "2025-01-01", "2025-01-02")
+    assert service.get_reference_klines.call_args.kwargs["dataset"] == (
+        "index_price_klines"
+    )
+    service.get_premium_index_klines("BTCUSDT", "2025-01-01", "2025-01-02")
+    assert service.get_reference_klines.call_args.kwargs["dataset"] == (
+        "premium_index_klines"
+    )
+    service.close()

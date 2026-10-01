@@ -49,9 +49,8 @@ from datetime import UTC, datetime, timedelta
 end = datetime.now(UTC)
 start = end - timedelta(days=1)
 
-mark = bitget.get_reference_klines(
-    "BTCUSDT", start, end,
-    product="usdt_futures", dataset="mark_price_klines",
+mark = bitget.get_mark_price_klines(
+    "BTCUSDT", start, end, product="usdt_futures"
 )
 funding = bitget.get_funding_rates(
     "BTCUSDT", end - timedelta(days=7), end, product="usdt_futures"
@@ -66,5 +65,7 @@ active = bitget.get_markets(
 )
 matches = bitget.find_markets("btcusdt", product="spot")
 ```
+
+Use `get_availability(...)` for coverage already in the local catalog and `discover_availability(...)` to scan a bounded archive range without downloading it.
 
 Call `bitget.close()` when the facade is no longer needed.

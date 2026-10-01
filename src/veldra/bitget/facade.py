@@ -12,9 +12,11 @@ from veldra.bitget.datasets import BitgetDataset, BitgetProduct, get_dataset
 from veldra.bitget.reference import BitgetReferenceService
 from veldra.core.download import _validate_settings
 from veldra.core.engine import RetrievalEngine
+from veldra.core.inspection import discover_availability as _discover_availability
 from veldra.core.inspection import find_markets as _find_markets
+from veldra.core.inspection import get_availability as _get_availability
 from veldra.core.inspection import get_markets as _get_markets
-from veldra.core.models import Market
+from veldra.core.models import Availability, Market
 from veldra.core.request import parse_timestamp
 from veldra.core.request import parse_pairs
 
@@ -263,6 +265,96 @@ class Bitget:
         first, last = _range(start, end)
         return self._reference.funding(_reference_pair(pair), product, first, last)
 
+    def get_mark_price_klines(
+        self,
+        pair: str,
+        start: DateInput,
+        end: DateInput,
+        *,
+        product: FuturesProduct = "usdt_futures",
+        interval: str = "1m",
+    ) -> pd.DataFrame:
+        """Return Bitget Futures mark-price candles.
+
+        Args:
+            pair: Native Futures market symbol.
+            start: Inclusive request start.
+            end: Inclusive date or exclusive timestamp end.
+            product: Futures settlement product.
+            interval: Native Bitget candle interval.
+
+        Returns:
+            Mark-price OHLC rows in UTC.
+        """
+        return self.get_reference_klines(
+            pair,
+            start,
+            end,
+            product=product,
+            dataset="mark_price_klines",
+            interval=interval,
+        )
+
+    def get_index_price_klines(
+        self,
+        pair: str,
+        start: DateInput,
+        end: DateInput,
+        *,
+        product: FuturesProduct = "usdt_futures",
+        interval: str = "1m",
+    ) -> pd.DataFrame:
+        """Return Bitget Futures index-price candles.
+
+        Args:
+            pair: Native Futures market symbol.
+            start: Inclusive request start.
+            end: Inclusive date or exclusive timestamp end.
+            product: Futures settlement product.
+            interval: Native Bitget candle interval.
+
+        Returns:
+            Index-price OHLC rows in UTC.
+        """
+        return self.get_reference_klines(
+            pair,
+            start,
+            end,
+            product=product,
+            dataset="index_price_klines",
+            interval=interval,
+        )
+
+    def get_premium_index_klines(
+        self,
+        pair: str,
+        start: DateInput,
+        end: DateInput,
+        *,
+        product: FuturesProduct = "usdt_futures",
+        interval: str = "1m",
+    ) -> pd.DataFrame:
+        """Return Bitget Futures premium-index candles.
+
+        Args:
+            pair: Native Futures market symbol.
+            start: Inclusive request start.
+            end: Inclusive date or exclusive timestamp end.
+            product: Futures settlement product.
+            interval: Native Bitget candle interval.
+
+        Returns:
+            Premium-index OHLC rows in UTC.
+        """
+        return self.get_reference_klines(
+            pair,
+            start,
+            end,
+            product=product,
+            dataset="premium_index_klines",
+            interval=interval,
+        )
+
     def get_markets(
         self,
         *,
@@ -291,7 +383,9 @@ class Bitget:
         self,
         query: str,
         *,
-        product: BitgetProduct = "spot",
+        product: BitgetProduct | None = None,
+        status: str | None = None,
+        quote_asset: str | None = None,
         limit: int = 10,
         refresh: bool = False,
         offline: bool = False,
@@ -301,11 +395,75 @@ class Bitget:
             self._downloader,
             query,
             product=product,
-            status=None,
-            quote_asset=None,
+            status=status,
+            quote_asset=quote_asset,
             limit=limit,
             refresh=refresh,
             offline=offline,
+            progress=self._progress,
+        )
+
+    def get_availability(
+        self,
+        pair: str,
+        *,
+        product: BitgetProduct,
+        dataset: BitgetDataset,
+        interval: str | None = None,
+    ) -> Availability:
+        """Return already-cataloged remote and local Bitget coverage.
+
+        Args:
+            pair: Native or normalized Bitget market.
+            product: Spot or one Futures settlement product.
+            dataset: Archive dataset to inspect.
+            interval: Optional Kline output interval.
+
+        Returns:
+            Known coverage without making a network request.
+        """
+        return _get_availability(
+            self._downloader,
+            pair,
+            product=product,
+            dataset=dataset,
+            interval=interval,
+        )
+
+    def discover_availability(
+        self,
+        pair: str,
+        start: DateInput,
+        end: DateInput,
+        *,
+        product: BitgetProduct,
+        dataset: BitgetDataset,
+        interval: str | None = None,
+        refresh: bool = False,
+    ) -> Availability:
+        """Discover bounded Bitget coverage without downloading archives.
+
+        Args:
+            pair: Native or normalized Bitget market.
+            start: Inclusive discovery start.
+            end: Inclusive date or exclusive timestamp discovery end.
+            product: Spot or one Futures settlement product.
+            dataset: Archive dataset to inspect.
+            interval: Optional Kline output interval.
+            refresh: Whether to rescan the complete bounded range.
+
+        Returns:
+            Updated remote and local coverage for the dataset.
+        """
+        return _discover_availability(
+            self._downloader,
+            pair,
+            start,
+            end,
+            product=product,
+            dataset=dataset,
+            interval=interval,
+            refresh=refresh,
             progress=self._progress,
         )
 

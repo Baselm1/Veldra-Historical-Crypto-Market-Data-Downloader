@@ -72,10 +72,10 @@ def test_active_statuses_are_case_insensitive(status: str) -> None:
 
 
 def test_quote_volumes_accept_spot_and_futures_fields() -> None:
-    """Read quote turnover from both public ticker shapes."""
+    """Read quote turnover from the current and legacy ticker shapes."""
     assert parse_volumes(
         [
-            {"symbol": "BTCUSDT", "quoteVolume": "12.5"},
+            {"symbol": "BTCUSDT", "turnover24h": "12.5"},
             {"symbol": "ETHUSDT", "usdtVolume": 99},
         ]
     ) == {"BTCUSDT": 12.5, "ETHUSDT": 99.0}
@@ -128,7 +128,7 @@ class StubClient:
     def get_tickers(self, native: str) -> list[dict[str, object]]:
         """Return one representative ticker."""
         assert native == "SPOT"
-        return [{"symbol": "BTCUSDT", "quoteVolume": "12.5"}]
+        return [{"symbol": "BTCUSDT", "turnover24h": "12.5"}]
 
 
 def test_duplicate_instruments_are_rejected() -> None:
@@ -162,14 +162,23 @@ def test_market_helper_skips_non_ascii_source_symbols() -> None:
     assert [market.symbol for market in markets(client, "spot")] == ["BTCUSDT"]
 
 
+def test_volume_helper_skips_non_ascii_source_symbols() -> None:
+    """Localized ticker aliases cannot break volume sorting."""
+    rows = [
+        {"symbol": "BTCUSDT", "turnover24h": "12.5"},
+        {"symbol": "\u9f99\u867eUSDT", "turnover24h": "99"},
+    ]
+    assert parse_volumes(rows) == {"BTCUSDT": 12.5}
+
+
 @pytest.mark.parametrize(
     "rows",
     [
         ["wrong"],
-        [{"symbol": "BTCUSDT", "quoteVolume": True}],
-        [{"symbol": "BTCUSDT", "quoteVolume": "invalid"}],
-        [{"symbol": "BTCUSDT", "quoteVolume": float("inf")}],
-        [{"symbol": "BTCUSDT", "quoteVolume": -1}],
+        [{"symbol": "BTCUSDT", "turnover24h": True}],
+        [{"symbol": "BTCUSDT", "turnover24h": "invalid"}],
+        [{"symbol": "BTCUSDT", "turnover24h": float("inf")}],
+        [{"symbol": "BTCUSDT", "turnover24h": -1}],
     ],
 )
 def test_invalid_ticker_rows_fail_closed(rows: list[object]) -> None:
