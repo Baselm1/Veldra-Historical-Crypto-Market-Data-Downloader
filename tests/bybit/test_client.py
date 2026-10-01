@@ -292,6 +292,83 @@ def test_rows_requires_object_collections() -> None:
         BybitClient.rows([["BTCUSDT"]], "instrument")
 
 
+def test_instruments_follow_unique_cursors() -> None:
+    """Collect every instrument page without repeating cursors."""
+    requests: list[httpx.Request] = []
+
+    def response(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        cursor = request.url.params.get("cursor")
+        result = {
+            "list": [{"symbol": "BTCUSDT" if cursor is None else "ETHUSDT"}],
+            "nextPageCursor": "next" if cursor is None else "",
+        }
+        return httpx.Response(200, json={"retCode": 0, "result": result})
+
+    with mock_client(httpx.MockTransport(response)) as http:
+        rows = BybitClient(client=http, limiter=Limiter()).get_instruments(
+            "linear", base_coin="BTC"
+        )
+    assert [row["symbol"] for row in rows] == ["BTCUSDT", "ETHUSDT"]
+    assert requests[0].url.params["limit"] == "1000"
+    assert requests[0].url.params["baseCoin"] == "BTC"
+    assert requests[1].url.params["cursor"] == "next"
+
+
+def test_repeated_instrument_cursor_is_rejected() -> None:
+    """Stop a malformed source cursor from creating an infinite loop."""
+    payload = {
+        "retCode": 0,
+        "result": {"list": [], "nextPageCursor": "same"},
+    }
+    with mock_client(
+        httpx.MockTransport(lambda request: httpx.Response(200, json=payload))
+    ) as http:
+        with pytest.raises(BybitResponseError, match="cursor repeated"):
+            BybitClient(client=http, limiter=Limiter()).get_instruments("linear")
+
+
+def test_tickers_require_one_uncursored_result_page() -> None:
+    """Validate ticker result rows and reject undocumented pagination."""
+    payload = {
+        "retCode": 0,
+        "result": {
+            "list": [{"symbol": "BTCUSDT"}],
+            "nextPageCursor": "unexpected",
+        },
+    }
+    with mock_client(
+        httpx.MockTransport(lambda request: httpx.Response(200, json=payload))
+    ) as http:
+        with pytest.raises(BybitResponseError, match="unexpectedly"):
+            BybitClient(client=http, limiter=Limiter()).get_tickers("spot")
+
+
+def test_option_base_coin_directory_returns_object_rows() -> None:
+    """Expose Bybit's dynamic Option-underlying directory."""
+    payload = {
+        "retCode": 0,
+        "result": {"list": [{"baseCoin": "BTC", "hasSymbol": 1}]},
+    }
+    with mock_client(
+        httpx.MockTransport(lambda request: httpx.Response(200, json=payload))
+    ) as http:
+        rows = BybitClient(client=http, limiter=Limiter()).get_option_base_coins()
+    assert rows == [{"baseCoin": "BTC", "hasSymbol": 1}]
+
+
+def test_invalid_pagination_inputs_and_result_shapes_fail_closed() -> None:
+    """Reject unsafe page bounds and malformed result objects."""
+    with pytest.raises(ValueError, match="max_pages"):
+        BybitClient(limiter=Limiter()).get_instruments("linear", max_pages=0)
+    payload = {"retCode": 0, "result": []}
+    with mock_client(
+        httpx.MockTransport(lambda request: httpx.Response(200, json=payload))
+    ) as http:
+        with pytest.raises(BybitResponseError, match="must be an object"):
+            BybitClient(client=http, limiter=Limiter()).get_tickers("spot")
+
+
 def test_error_can_be_rendered_from_json_encoded_body() -> None:
     """Retain deterministic source details from an encoded response."""
     payload = {"retCode": 10029, "retMsg": "symbol is invalid", "result": {}}

@@ -427,6 +427,108 @@ class BybitClient:
         )
 
     @staticmethod
+    def _result_page(
+        value: object, endpoint: str
+    ) -> tuple[list[dict[str, object]], str]:
+        """Validate one paginated V5 result object.
+
+        Args:
+            value: Source result returned by V5.
+            endpoint: Endpoint name used in validation errors.
+
+        Returns:
+            Object rows and the optional next-page cursor.
+        """
+        if not isinstance(value, dict):
+            raise BybitResponseError(
+                "invalid_data", f"{endpoint} result must be an object"
+            )
+        rows = BybitClient.rows(value.get("list"), endpoint)
+        cursor = value.get("nextPageCursor", "")
+        if not isinstance(cursor, str):
+            raise BybitResponseError(
+                "invalid_data", f"{endpoint} cursor must be a string"
+            )
+        return rows, cursor
+
+    def get_instruments(
+        self,
+        category: str,
+        *,
+        base_coin: str | None = None,
+        status: str | None = None,
+        max_pages: int = 20,
+    ) -> list[dict[str, object]]:
+        """Return current instruments across all V5 cursor pages.
+
+        Args:
+            category: Native Bybit instrument category.
+            base_coin: Optional Options underlying filter.
+            status: Optional native instrument status.
+            max_pages: Hard pagination safety bound.
+
+        Returns:
+            Current public instrument records.
+        """
+        if (
+            isinstance(max_pages, bool)
+            or not isinstance(max_pages, int)
+            or max_pages < 1
+        ):
+            raise ValueError("max_pages must be a positive integer")
+        params = {"category": category, "limit": "1000"}
+        if base_coin is not None:
+            params["baseCoin"] = base_coin
+        if status is not None:
+            params["status"] = status
+        found: list[dict[str, object]] = []
+        seen: set[str] = set()
+        for _page in range(max_pages):
+            value = self.v5("/v5/market/instruments-info", params)
+            rows, cursor = self._result_page(value, "instrument")
+            found.extend(rows)
+            if not cursor:
+                return found
+            if cursor in seen:
+                raise BybitResponseError("cursor_loop", "instrument cursor repeated")
+            seen.add(cursor)
+            params["cursor"] = cursor
+        raise BybitResponseError(
+            "page_limit", "instrument pagination exceeded its limit"
+        )
+
+    def get_tickers(self, category: str) -> list[dict[str, object]]:
+        """Return current tickers for one native Bybit category.
+
+        Args:
+            category: Native Bybit instrument category.
+
+        Returns:
+            Current public ticker records.
+        """
+        value = self.v5("/v5/market/tickers", {"category": category})
+        rows, cursor = self._result_page(value, "ticker")
+        if cursor:
+            raise BybitResponseError(
+                "invalid_data", "ticker endpoint unexpectedly returned a cursor"
+            )
+        return rows
+
+    def get_option_base_coins(self) -> list[dict[str, object]]:
+        """Return every Option underlying currently published by Bybit.
+
+        Returns:
+            Native Option base-coin records.
+        """
+        value = self.v5("/v5/market/option-base-coins")
+        rows, cursor = self._result_page(value, "Option base coin")
+        if cursor:
+            raise BybitResponseError(
+                "invalid_data", "Option base-coin endpoint returned a cursor"
+            )
+        return rows
+
+    @staticmethod
     def rows(value: object, endpoint: str) -> list[dict[str, object]]:
         """Require a list of object rows from one endpoint result.
 
