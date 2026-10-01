@@ -2,6 +2,7 @@
 
 from collections.abc import Mapping
 from dataclasses import replace
+from datetime import timedelta
 from types import MappingProxyType
 from typing import Literal
 
@@ -277,7 +278,7 @@ def _order_book(product: str) -> DatasetSpec:
         output_intervals=(),
         aliases=MappingProxyType({}),
         max_concurrency=workers,
-        ordering_columns=("event_time", "event_number"),
+        ordering_columns=("cross_sequence", "event_number"),
         timestamp_columns=("event_time", "engine_time"),
         integer_columns=(
             "event_number",
@@ -287,6 +288,10 @@ def _order_book(product: str) -> DatasetSpec:
         ),
         string_columns=("instrument", "action"),
         object_columns=("bids", "asks"),
+        # Bybit rolls a daily book file a few seconds after midnight.  The
+        # preceding file contains those deltas and ends with the next file's
+        # opening snapshot, so midnight queries must inspect both source days.
+        archive_day_offset=timedelta(minutes=-5),
     )
 
 

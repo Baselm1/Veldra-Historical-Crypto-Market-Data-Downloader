@@ -75,7 +75,10 @@ def _https_url(value: object) -> str:
     if not isinstance(value, str):
         raise ValueError("Bybit archive URL is invalid")
     parsed = urlsplit(value)
-    if parsed.scheme != "https" or not parsed.netloc.endswith("bybit.com"):
+    allowed = parsed.netloc.endswith("bybit.com") or parsed.netloc == (
+        "quote-saver.bycsi.com"
+    )
+    if parsed.scheme != "https" or not allowed:
         raise ValueError("Bybit archive URL is invalid")
     return value
 
@@ -124,12 +127,13 @@ def _archive(
     provider: str,
     remote_size: int | None,
     revision_id: str | None = None,
+    dataset: str = "trades",
 ) -> ArchiveObject:
     """Build one immutable physical trade-archive record."""
     key = ArchiveKey(
         "bybit",
         product,
-        "trades",
+        dataset,
         provider,
         subject.kind,
         subject.value,
@@ -296,4 +300,160 @@ class BybitTradeDiscovery:
             provider="public_archive",
             remote_size=_size(response.headers.get("Content-Length"), "Content-Length"),
             revision_id=revision,
+        )
+
+
+def _book_subject(product: str, subject: DataSubject) -> None:
+    """Validate an order-book archive's physical subject kind."""
+    expected = "instrument_family" if product == "options" else "instrument"
+    if subject.kind != expected:
+        raise ValueError(f"Bybit {product} order books require a {expected} subject")
+
+
+def _book_manifest_params(
+    product: str, subject: DataSubject, begin: date, end: date
+) -> dict[str, str]:
+    """Build one Spot or Option order-book manifest request."""
+    _book_subject(product, subject)
+    if product not in {"spot", "options"}:
+        raise ValueError("derivative order books use deterministic public URLs")
+    return {
+        "bizType": "option" if product == "options" else "spot",
+        "productId": "orderbook",
+        "symbols": symbol(subject.value),
+        "interval": "daily",
+        "periods": "",
+        "startDay": begin.isoformat(),
+        "endDay": end.isoformat(),
+    }
+
+
+def _parse_book_manifest_row(
+    row: Mapping[str, object],
+    product: str,
+    subject: DataSubject,
+    begin: date,
+    end: date,
+) -> ArchiveObject:
+    """Parse one order-book archive returned by the portal."""
+    native_product = "option" if product == "options" else "spot"
+    if row.get("bizType") != native_product or row.get("productId") != "orderbook":
+        raise ValueError("Bybit manifest returned the wrong dataset")
+    if row.get("interval") != "daily" or row.get("symbol") != subject.value:
+        raise ValueError("Bybit manifest returned the wrong archive scope")
+    day = _source_date(row.get("date"))
+    if day < begin or day > end:
+        raise ValueError("Bybit manifest returned a date outside the request")
+    url = _https_url(row.get("url"))
+    return _archive(
+        product=product,
+        subject=subject,
+        day=day,
+        filename=_filename(url, row.get("filename")),
+        url=url,
+        provider="portal",
+        remote_size=_size(row.get("size")),
+        dataset="order_book_updates",
+    )
+
+
+class BybitOrderBookDiscovery:
+    """Discover daily lossless order-book archives."""
+
+    def __init__(
+        self,
+        client: BybitClient,
+        *,
+        timeout: float = 30.0,
+        retries: int = 3,
+        backoff: float = 0.5,
+        max_workers: int = 8,
+    ) -> None:
+        """Retain shared clients and conservative large-file probe settings."""
+        if (
+            isinstance(max_workers, bool)
+            or not isinstance(max_workers, int)
+            or max_workers < 1
+        ):
+            raise ValueError("max_workers must be a positive integer")
+        self.client = client
+        self.timeout = timeout
+        self.retries = retries
+        self.backoff = backoff
+        self.max_workers = max_workers
+
+    def discover(
+        self,
+        product: str,
+        subject: DataSubject,
+        begin: date,
+        end: date,
+    ) -> list[ArchiveObject]:
+        """Return existing order-book archives for one physical subject."""
+        if product not in PRODUCTS:
+            raise ValueError(f"unsupported Bybit product {product!r}")
+        if begin > end:
+            raise ValueError("archive discovery begins after it ends")
+        _book_subject(product, subject)
+        if product in {"spot", "options"}:
+            return self._manifest(product, subject, begin, end)
+        days = [
+            begin + timedelta(days=offset) for offset in range((end - begin).days + 1)
+        ]
+        with ThreadPoolExecutor(max_workers=min(self.max_workers, len(days))) as pool:
+            found = list(
+                pool.map(lambda day: self._direct(product, subject, day), days)
+            )
+        return [item for item in found if item is not None]
+
+    def _manifest(
+        self, product: str, subject: DataSubject, begin: date, end: date
+    ) -> list[ArchiveObject]:
+        """Discover hidden Spot or family-scoped Option book archives."""
+        found: list[ArchiveObject] = []
+        for first, last in manifest_windows(begin, end):
+            result = self.client.manifest(
+                _book_manifest_params(product, subject, first, last)
+            )
+            found.extend(
+                _parse_book_manifest_row(row, product, subject, first, last)
+                for row in _manifest_rows(result)
+            )
+        unique = {item.key.archive_id: item for item in found}
+        if len(unique) != len(found):
+            raise ValueError("Bybit manifest returned a duplicate archive")
+        return sorted(unique.values(), key=lambda item: item.key.period_start)
+
+    def _direct(
+        self, product: str, subject: DataSubject, day: date
+    ) -> ArchiveObject | None:
+        """Probe one deterministic linear or inverse order-book URL."""
+        native = symbol(subject.value)
+        depth = 500 if day <= date(2025, 8, 20) else 200
+        filename = f"{day.isoformat()}_{native}_ob{depth}.data.zip"
+        url = f"https://quote-saver.bycsi.com/orderbook/{product}/{native}/{filename}"
+        try:
+            response = head(
+                self.client.client,
+                url,
+                timeout=self.timeout,
+                retries=self.retries,
+                backoff=self.backoff,
+            )
+        except httpx.HTTPStatusError as error:
+            if error.response.status_code in {404, 410}:
+                return None
+            raise
+        etag = response.headers.get("ETag")
+        revision = None if etag is None else etag.strip().strip('"') or None
+        return _archive(
+            product=product,
+            subject=subject,
+            day=day,
+            filename=filename,
+            url=url,
+            provider="quote_saver",
+            remote_size=_size(response.headers.get("Content-Length")),
+            revision_id=revision,
+            dataset="order_book_updates",
         )
