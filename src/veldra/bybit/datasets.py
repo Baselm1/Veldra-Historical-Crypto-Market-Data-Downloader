@@ -5,7 +5,7 @@ from dataclasses import replace
 from types import MappingProxyType
 from typing import Literal
 
-from veldra.core.datasets import DatasetSpec
+from veldra.core.datasets import CsvSchema, DatasetSpec
 
 type BybitProduct = Literal["spot", "linear", "inverse", "options"]
 type BybitDataset = Literal[
@@ -74,6 +74,7 @@ SUPPORTED_DATASETS: Mapping[str, frozenset[str]] = MappingProxyType(
 )
 
 _SPOT_TRADE_SOURCE = ("id", "timestamp", "price", "volume", "side", "rpi")
+_SPOT_TRADE_LEGACY_SOURCE = ("id", "timestamp", "price", "volume", "side")
 _DERIVATIVE_TRADE_SOURCE = (
     "timestamp",
     "symbol",
@@ -87,6 +88,7 @@ _DERIVATIVE_TRADE_SOURCE = (
     "foreignNotional",
     "RPI",
 )
+_DERIVATIVE_TRADE_LEGACY_SOURCE = _DERIVATIVE_TRADE_SOURCE[:-1]
 _OPTION_TRADE_SOURCE = (
     "trade_id",
     "trade_seq",
@@ -155,6 +157,8 @@ def _native_kline(product: str, name: str, *, reference: bool = False) -> Datase
 
 def _trades(product: str) -> DatasetSpec:
     """Return the product-specific public-trade declaration."""
+    schemas: tuple[CsvSchema, ...]
+    ordering: tuple[str, ...]
     if product == "spot":
         source: tuple[str, ...] = _SPOT_TRADE_SOURCE
         stored: tuple[str, ...] = (
@@ -169,6 +173,8 @@ def _trades(product: str) -> DatasetSpec:
         integers: tuple[str, ...] = ()
         strings: tuple[str, ...] = ("trade_id", "side")
         booleans: tuple[str, ...] = ("is_rpi",)
+        schemas = (CsvSchema(_SPOT_TRADE_LEGACY_SOURCE, "present"),)
+        ordering = ("event_time", "trade_id")
     elif product == "linear":
         source = _DERIVATIVE_TRADE_SOURCE
         stored = (
@@ -184,6 +190,8 @@ def _trades(product: str) -> DatasetSpec:
         integers = ()
         strings = ("trade_id", "side", "tick_direction")
         booleans = ("is_rpi",)
+        schemas = (CsvSchema(_DERIVATIVE_TRADE_LEGACY_SOURCE, "present"),)
+        ordering = ("event_time", "trade_id")
     elif product == "inverse":
         source = _DERIVATIVE_TRADE_SOURCE
         stored = (
@@ -200,6 +208,8 @@ def _trades(product: str) -> DatasetSpec:
         integers = ()
         strings = ("trade_id", "side", "tick_direction")
         booleans = ("is_rpi",)
+        schemas = (CsvSchema(_DERIVATIVE_TRADE_LEGACY_SOURCE, "present"),)
+        ordering = ("event_time", "trade_id")
     else:
         source = _OPTION_TRADE_SOURCE
         stored = (
@@ -218,6 +228,8 @@ def _trades(product: str) -> DatasetSpec:
         integers = ("trade_sequence",)
         strings = ("trade_id", "instrument", "side")
         booleans = ()
+        schemas = ()
+        ordering = ("event_time", "trade_sequence", "trade_id")
     return DatasetSpec(
         product=product,
         name="trades",
@@ -230,11 +242,12 @@ def _trades(product: str) -> DatasetSpec:
         aliases=MappingProxyType({}),
         max_concurrency=16 if product != "options" else 4,
         csv_header="present",
-        ordering_columns=("event_time", "trade_id"),
+        ordering_columns=ordering,
         timestamp_columns=("event_time",),
         integer_columns=integers,
         boolean_columns=booleans,
         string_columns=strings,
+        source_schemas=schemas,
         sort_source_rows=True,
     )
 

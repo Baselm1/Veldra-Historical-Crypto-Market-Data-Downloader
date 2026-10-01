@@ -175,7 +175,8 @@ def _member(
     """
     members = archive.infolist()
     archive_name = unquote(Path(urlsplit(resource.url).path).name)
-    expected = archive_name.removesuffix(".zip") + ".csv"
+    stem = archive_name.removesuffix(".zip")
+    expected = stem if stem.endswith(".csv") else f"{stem}.csv"
     actual = members[0].filename if members else ""
     name_matches = actual == expected or (
         allow_name_prefix and actual.endswith(f"_{expected}")
