@@ -232,11 +232,13 @@ def test_csv_zip_member_is_ingested_without_a_duplicated_suffix(
     """Accept Bybit's unusual filename.csv.zip Option archives."""
     dataset = get_dataset("options", "trades")
     filename = "2026-09-20_BTC_USDT.trades.csv.zip"
+    target = "BTC-20SEP26-81000-C-USDT"
     row = (
         "trade-a,75905525121,1789862410029,BTC-20SEP26-81000-C-USDT,"
         "Sell,325,0.01,0.1683,81254.12186745,322.98232785,0.1649\n"
     )
-    csv = ",".join(dataset.source_columns) + "\n" + row
+    other = row.replace("trade-a", "trade-b").replace("81000-C", "82000-C")
+    csv = ",".join(dataset.source_columns) + "\n" + row + other
     payload = io.BytesIO()
     with zipfile.ZipFile(payload, "w", zipfile.ZIP_DEFLATED) as archive:
         archive.writestr(filename.removesuffix(".zip"), csv)
@@ -244,6 +246,7 @@ def test_csv_zip_member_is_ingested_without_a_duplicated_suffix(
         date(2026, 9, 20),
         f"https://public.bybit.com/trade/option/BTC/{filename}",
         None,
+        archive_symbol=target,
         integrity=IntegritySpec("archive_only"),
     )
     destination = tmp_path / "option.parquet"
@@ -255,6 +258,28 @@ def test_csv_zip_member_is_ingested_without_a_duplicated_suffix(
         metadata = ingest_trades(client, resource, dataset, destination)
     assert metadata.row_count == 1
     assert pq.read_table(destination)["trade_id"].to_pylist() == ["trade-a"]
+
+
+def test_option_trade_ingestion_requires_a_logical_instrument(tmp_path: Path) -> None:
+    """Never materialize an unfiltered family-level Option trade archive."""
+    dataset = get_dataset("options", "trades")
+    csv = ",".join(dataset.source_columns) + "\n"
+    payload = io.BytesIO()
+    with zipfile.ZipFile(payload, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("source.csv", csv)
+    resource = Resource(
+        date(2026, 9, 20),
+        "https://public.bybit.com/source.csv.zip",
+        None,
+        integrity=IntegritySpec("archive_only"),
+    )
+    with httpx.Client(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, content=payload.getvalue())
+        )
+    ) as client:
+        with pytest.raises(ValueError, match="target instrument"):
+            ingest_trades(client, resource, dataset, tmp_path / "option.parquet")
 
 
 def test_gzip_trade_ingestion_sorts_source_rows_stably(tmp_path: Path) -> None:

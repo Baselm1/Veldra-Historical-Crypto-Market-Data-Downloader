@@ -293,18 +293,21 @@ def _write_events(
     *,
     chunk_rows: int,
     max_line_bytes: int,
+    target_instrument: str | None = None,
 ) -> tuple[int, datetime, datetime]:
     """Stream one JSONL member through validation into Parquet."""
     state = _WriterState(resource.day, partial, chunk_rows)
     try:
         with archive.open(member, "r") as source:
             for event_number, encoded in enumerate(source):
-                _push_event(
-                    state,
-                    _decode_event(
-                        encoded, event_number, member.filename, max_line_bytes
-                    ),
+                event = _decode_event(
+                    encoded, event_number, member.filename, max_line_bytes
                 )
+                if (
+                    target_instrument is None
+                    or event["instrument"] == target_instrument
+                ):
+                    _push_event(state, event)
         _queue_held(state)
         _flush(state)
     finally:
@@ -332,6 +335,8 @@ def ingest_order_book(
     """Download and stream one lossless Bybit order-book archive."""
     if dataset.name != "order_book_updates":
         raise ValueError("order-book ingestion requires order_book_updates")
+    if dataset.product == "options" and not resource.archive_symbol:
+        raise ValueError("Option archive requires a target instrument")
     for value, name in (
         (chunk_rows, "chunk_rows"),
         (max_archive_bytes, "max_archive_bytes"),
@@ -364,6 +369,11 @@ def ingest_order_book(
                         partial,
                         chunk_rows=chunk_rows,
                         max_line_bytes=max_line_bytes,
+                        target_instrument=(
+                            resource.archive_symbol
+                            if dataset.product == "options"
+                            else None
+                        ),
                     )
             except zipfile.BadZipFile as error:
                 raise ArchiveError("source file is not a valid ZIP archive") from error

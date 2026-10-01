@@ -46,6 +46,7 @@ class BybitRESTCache:
         product: str,
         fetch: FrameFetcher,
         interval: str | None = None,
+        variant: str | None = None,
         offline: bool = False,
         refresh: bool = False,
     ) -> pd.DataFrame:
@@ -53,8 +54,9 @@ class BybitRESTCache:
         if start.tzinfo is None or end.tzinfo is None or start >= end:
             raise ValueError("REST history requires a valid aware time range")
         spec = get_dataset(product, dataset, requested_interval=interval)
+        cache_interval = variant or interval
         candidates = self.catalog.partitions_between(
-            "bybit", product, dataset, subject, interval, start, end
+            "bybit", product, dataset, subject, cache_interval, start, end
         )
         cached = self._covering_partition(candidates, start, end)
         if cached is not None and (
@@ -75,7 +77,14 @@ class BybitRESTCache:
         frame = fetch()
         self._validate_frame(frame, spec.stored_columns, spec.time_column, start, end)
         partition = self._publish(
-            dataset, subject, product, interval, start, end, frame, spec.time_column
+            dataset,
+            subject,
+            product,
+            cache_interval,
+            start,
+            end,
+            frame,
+            spec.time_column,
         )
         return self._query(
             partition, spec.time_column, spec.ordering_columns, start, end

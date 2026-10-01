@@ -150,6 +150,44 @@ def test_streaming_ingestion_keeps_physical_event_order(tmp_path: Path) -> None:
     assert table["bids"].to_pylist()[0][0] == {"price": 100.0, "quantity": 2.0}
 
 
+def test_option_book_ingestion_retains_only_the_requested_instrument(
+    tmp_path: Path,
+) -> None:
+    """Filter one shared family archive into an exact logical Option book."""
+    target = "BTC-20SEP26-81000-C-USDT"
+    other = "BTC-20SEP26-82000-C-USDT"
+
+    def option_event(instrument: str, sequence: int) -> dict[str, object]:
+        event = _event(sequence=sequence)
+        event["topic"] = f"orderbook.25.{instrument}"
+        event["data"]["s"] = instrument  # type: ignore[index]
+        return event
+
+    name = "2025-01-01_BTC_USDT.ob25"
+    payload = _zip(name, [option_event(other, 1), option_event(target, 2)])
+    resource = Resource(
+        date(2025, 1, 1),
+        f"https://public.bybit.com/{name}.zip",
+        None,
+        archive_symbol=target,
+        integrity=IntegritySpec("archive_only"),
+    )
+    destination = tmp_path / "option-book.parquet"
+    with httpx.Client(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, content=payload)
+        )
+    ) as client:
+        metadata = ingest_order_book(
+            client,
+            resource,
+            get_dataset("options", "order_book_updates"),
+            destination,
+        )
+    assert metadata.row_count == 1
+    assert pq.read_table(destination)["instrument"].to_pylist() == [target]
+
+
 def test_streaming_ingestion_deduplicates_the_rollover_snapshot(
     tmp_path: Path,
 ) -> None:

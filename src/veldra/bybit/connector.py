@@ -1,5 +1,6 @@
 """Connect Bybit markets and daily public archives to Veldra core."""
 
+from dataclasses import replace
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 
@@ -106,7 +107,10 @@ class BybitConnector:
             found = BybitOrderBookDiscovery(api).discover(
                 key.product, subject, start_day, end_day
             )
-        return [self._resource(item) for item in found]
+        resources = [self._resource(item) for item in found]
+        if key.product == "options":
+            resources = [replace(item, archive_symbol=key.symbol) for item in resources]
+        return resources
 
     def first_resource(
         self,

@@ -197,6 +197,22 @@ def test_resources_route_to_the_declared_discovery(
     assert [resource.url for resource in resources] == [discovered.url]
 
 
+def test_option_resources_retain_the_logical_instrument(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Carry an exact Option selection into shared-family ingestion."""
+    probe = SimpleNamespace(discover=lambda *args: [_object("trades")])
+    monkeypatch.setattr(
+        "veldra.bybit.connector.BybitTradeDiscovery", lambda client: probe
+    )
+    key = ResourceKey("bybit", "options", "trades", "BTC-20SEP26-81000-C-USDT", None)
+    with httpx.Client() as client:
+        resource = BybitConnector().resources(
+            client, key, date(2025, 1, 1), date(2025, 1, 1)
+        )[0]
+    assert resource.archive_symbol == key.symbol
+
+
 def test_first_resource_skips_empty_monthly_probe(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -325,7 +325,9 @@ def _normalized_tables(
     for batch in reader:
         for offset in range(0, batch.num_rows, chunk_rows):
             raw = pa.Table.from_batches([batch.slice(offset, chunk_rows)])
-            yield normalizer(raw, dataset, resource.contract_size)
+            normalized = normalizer(raw, dataset, resource.contract_size)
+            if normalized.num_rows:
+                yield normalized
 
 
 def _write_ordered(

@@ -269,13 +269,27 @@ def ingest_trades(
     backoff: float = 0.5,
 ) -> IngestedResource:
     """Download, validate, and materialize one Bybit trade archive."""
+    if dataset.product == "options" and not resource.archive_symbol:
+        raise ValueError("Option archive requires a target instrument")
+
+    def normalize_resource(
+        table: Any, spec: DatasetSpec, contract_size: float | None
+    ) -> Any:
+        """Normalize a chunk and retain only its requested Option instrument."""
+        normalized = normalize_chunk(table, spec, contract_size)
+        if spec.product != "options":
+            return normalized
+        target = resource.archive_symbol
+        assert target is not None
+        return normalized.filter(pc.equal(normalized["instrument"], target))
+
     if resource.url.endswith(".zip"):
         return ingest_archive(
             client,
             resource,
             dataset,
             destination,
-            normalizer=normalize_chunk,
+            normalizer=normalize_resource,
             validator=validate_chunk,
             timeout=timeout,
             retries=retries,
@@ -287,7 +301,7 @@ def ingest_trades(
         resource,
         dataset,
         destination,
-        normalizer=normalize_chunk,
+        normalizer=normalize_resource,
         validator=validate_chunk,
         timeout=timeout,
         retries=retries,
