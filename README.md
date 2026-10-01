@@ -11,16 +11,16 @@ live market streaming.
 
 ## Supported exchanges
 
-| Exchange | Status | Historical access | Documentation |
-| --- | :---: | --- | --- |
-| Binance | ✅ | Public archives | [Binance guide](docs/binance.md) |
-| Gate.io | ✅ | Public archives | [Gate guide](docs/gate.md) |
-| HTX | ✅ | Public archives | [HTX guide](docs/htx.md) |
-| KuCoin | ✅ | Public archives | [KuCoin guide](docs/kucoin.md) |
-| OKX | ✅ | Archives and public REST APIs | [OKX guide](docs/okx.md) |
-| Upbit | ✅ | Public archives | [Upbit guide](docs/upbit.md) |
-| Bitget | ✅ | Public archives and public REST APIs | [Bitget guide](docs/bitget.md) |
-| Bybit | ✅ | Public archives and public REST APIs | [Bybit guide](docs/bybit.md) |
+| Exchange | Spot | Futures | Core historical data | Documentation |
+| --- | :---: | :---: | --- | --- |
+| Binance | ✅ | ✅ | Klines, trades, aggregate trades | [Guide](docs/binance.md) |
+| Bitget | ✅ | ✅ | Klines, trades, order books | [Guide](docs/bitget.md) |
+| Bybit | ✅ | ✅ | Klines, trades, order-book updates | [Guide](docs/bybit.md) |
+| Gate.io | ✅ | ✅ | Klines, trades, order books | [Guide](docs/gate.md) |
+| HTX | ✅ | ✅ | Klines, trades, order-book updates | [Guide](docs/htx.md) |
+| KuCoin | ✅ | ✅ | Klines, trades, order books | [Guide](docs/kucoin.md) |
+| OKX | ✅ | ✅ | Klines, trades, order-book updates | [Guide](docs/okx.md) |
+| Upbit | ✅ | — | Klines and trades | [Guide](docs/upbit.md) |
 
 Products, datasets, intervals, and source-specific behavior are documented in
 each exchange guide.
@@ -35,7 +35,7 @@ each exchange guide.
 | Normalized Parquet cache | ✅ | ❌ |
 | DuckDB filtering and supported Kline resampling | ✅ | ❌ |
 | Structured warnings, gaps, and pair suggestions | ✅ | ❌ |
-| Repeat queries without network access | ✅ | ❌ |
+| Reuses locally stored historical ranges | ✅ | ❌ |
 | Consistent exchange-specific facades | ✅ | ❌ |
 
 Veldra accelerates archive retrieval through concurrent downloads and uses the
@@ -46,6 +46,10 @@ metadata, normalizes the data, caches it as Parquet, and returns query-ready
 DataFrames. Results depend on the exchange, dataset, requested range, and
 network conditions. The Binance benchmark and its scope are described in
 [the Binance guide](docs/binance.md#performance).
+
+Retrieval is transparent: Veldra queries matching local Parquet data when it
+exists. Otherwise it obtains the missing source data, validates and stores it,
+then serves the requested rows through DuckDB.
 
 ## Install
 

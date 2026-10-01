@@ -47,9 +47,8 @@ trades = bybit.get_trades(
 ```
 
 A string pair returns one `pandas.DataFrame`. A list returns DataFrames in the
-same order. API history is cached as Parquet and can be reused with
-`offline=True`. Archive history is discovered, validated, normalized, and
-queried through the shared DuckDB catalog.
+same order. API and archive history are normalized into Parquet and queried
+through the shared DuckDB catalog.
 
 Native Kline intervals are `1m`, `3m`, `5m`, `15m`, `30m`, `1h`, `2h`, `4h`,
 `6h`, `12h`, `1d`, `1w`, and `1mo`. Bybit serves each interval directly;

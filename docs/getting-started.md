@@ -22,21 +22,24 @@ python -m pip install -e ".[dev]"
 ## Create an exchange service
 
 Constructing a facade does not access the network or create the data directory.
-The first online retrieval loads market metadata, finds the pair's source
+The first retrieval loads market metadata, finds the pair's source
 boundary, and discovers useful archives for the requested range. It does not
 crawl every dataset file for every market.
 
 ```python
-from veldra import Binance, HTX, KuCoin, OKX, Upbit
+from veldra import Binance, Bitget, Bybit, Gate, HTX, KuCoin, OKX, Upbit
 
 binance = Binance(data_dir="data/binance")
+bitget = Bitget(data_dir="data/bitget")
+bybit = Bybit(data_dir="data/bybit")
+gate = Gate(data_dir="data/gate")
 htx = HTX(data_dir="data/htx", progress=False)
 kucoin = KuCoin(data_dir="data/kucoin")
 okx = OKX(data_dir="data/okx")
 upbit = Upbit(data_dir="data/upbit")
 ```
 
-All five constructors accept these common options:
+All eight constructors accept these common options:
 
 | Argument | Default | Meaning |
 | --- | --- | --- |
@@ -50,16 +53,18 @@ All five constructors accept these common options:
 | `backoff` | `0.5` | Initial exponential retry delay, in seconds |
 | `progress` | `True` | Show Rich status and download progress |
 
-Binance, HTX, KuCoin, and Upbit also accept `discovery_tail_days`. OKX instead
-uses bounded historical manifests and endpoint-specific rate limiters.
+Archive-backed facades also accept `discovery_tail_days`. API-backed sources
+use endpoint-specific rate limiters.
 
-Each facade also exposes four read-only properties:
+Every facade exposes `data_dir`, `earliest_date`, and `max_workers`. Facades
+with one configured physical Kline interval also expose
+`kline_base_interval`:
 
 | Property | Value |
 | --- | --- |
 | `data_dir` | Resolved catalog and Parquet root |
 | `earliest_date` | Configured UTC history boundary, or `None` for all history |
-| `kline_base_interval` | Kline archive interval stored in the cache |
+| `kline_base_interval` | Configured physical Kline interval, when applicable |
 | `max_workers` | Exchange-wide worker ceiling |
 
 ## Retrieve data
@@ -84,10 +89,17 @@ Common retrieval arguments are:
 | `interval` | Kline output interval; omitted for event and snapshot datasets |
 | `columns` | Canonical column list, or `{canonical_name: output_name}` mapping |
 | `gap_policy` | Kline-only internal-gap behavior |
-| `refresh` | Repeat remote discovery and revalidate cached source archives |
-| `offline` | Forbid network access and use only cataloged, cached data |
 
-`refresh=True` and `offline=True` cannot be combined.
+Source-specific methods may expose additional controls documented in their
+exchange guide.
+
+## Local storage
+
+Call retrieval methods declaratively: ask for the data you need. If a valid
+local Parquet range already covers the request, Veldra filters it with DuckDB.
+Otherwise Veldra obtains the missing source data, validates and normalizes it,
+publishes it to the local catalog, and returns the requested rows. Later calls
+reuse that stored data.
 
 Date-only requests cover whole UTC days. This request includes January 1–3 and
 uses January 4 at midnight as its exclusive query boundary:
@@ -220,9 +232,11 @@ base_interval = "1m"
 ```
 
 Use `earliest_date = "all"` to permit each pair's full available archive
-history. The source's actual listing date still bounds every request. Klines
-are currently stored at `1m`; higher supported intervals are produced by
-DuckDB when queried.
+history. The source's actual listing date still bounds every request. Most
+archive-backed Klines are stored at `1m`; higher supported intervals are
+produced by DuckDB when queried. Sources that publish native intervals may
+store the requested interval directly. The exchange guide states which model
+is used.
 
 Use one writable Veldra process per `data_dir`. Calls within that process may
 download many resources concurrently, but separate writable processes should
