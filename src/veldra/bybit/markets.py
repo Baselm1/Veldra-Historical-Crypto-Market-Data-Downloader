@@ -171,7 +171,7 @@ def _option_bases(client: MarketClient) -> list[str]:
             raise ValueError("Bybit Option base directory contains an invalid row")
         base = symbol(row.get("baseCoin"))
         has_symbol = row.get("hasSymbol")
-        if has_symbol == 1 or has_symbol == "1":
+        if has_symbol in (1, "1"):
             bases.add(base)
     return sorted(bases)
 

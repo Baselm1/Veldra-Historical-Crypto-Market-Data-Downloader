@@ -16,6 +16,10 @@ from veldra.core.rate_limit import RatePolicy, RollingWindowRateLimiter
 REST_URL = "https://api.bybit.com"
 PORTAL_URL = "https://www.bybit.com"
 MANIFEST_PATH = "/x-api/quote/public/support/download/list-files"
+PORTAL_HEADERS: Mapping[str, str] = {
+    "User-Agent": "Mozilla/5.0",
+    "Referer": "https://www.bybit.com/data-download",
+}
 RETRYABLE_STATUS = frozenset({408, 425, 429, 500, 502, 503, 504})
 DEFAULT_POLICIES: Mapping[str, RatePolicy] = {
     # Bybit documents one 600-request, five-second IP budget. Reserving one
@@ -358,6 +362,7 @@ class BybitClient:
         policy_key: str,
         params: Mapping[str, str] | None,
         parser: Callable[[httpx.Response], object],
+        headers: Mapping[str, str] | None = None,
     ) -> object:
         """Make one pooled, rate-limited, and retryable request.
 
@@ -366,6 +371,7 @@ class BybitClient:
             policy_key: Shared request quota key.
             params: Optional query-string values.
             parser: Source-envelope parser.
+            headers: Optional source-required request headers.
 
         Returns:
             The validated envelope result.
@@ -374,7 +380,9 @@ class BybitClient:
             self.limiter.acquire(policy_key)
             response: httpx.Response | None = None
             try:
-                response = self.client.get(url, params=params, timeout=self.timeout)
+                response = self.client.get(
+                    url, params=params, headers=headers, timeout=self.timeout
+                )
                 self._cooldown(response)
                 if response.status_code in RETRYABLE_STATUS:
                     response.raise_for_status()
@@ -424,6 +432,7 @@ class BybitClient:
             policy_key="manifest",
             params=params,
             parser=self._manifest_envelope,
+            headers=PORTAL_HEADERS,
         )
 
     @staticmethod
