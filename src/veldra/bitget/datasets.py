@@ -151,6 +151,7 @@ def _klines(product: BitgetProduct) -> DatasetSpec:
         source_schemas=(KLINE_SOURCE_LEGACY,),
         sort_source_rows=True,
         archive_day_offset=ARCHIVE_DAY_OFFSET,
+        archive_symbol_attribute="pair",
     )
 
 
@@ -188,6 +189,7 @@ def _trades(product: BitgetProduct) -> DatasetSpec:
         string_columns=("side",),
         sort_source_rows=True,
         archive_day_offset=ARCHIVE_DAY_OFFSET,
+        archive_symbol_attribute="pair",
     )
 
 
@@ -224,6 +226,7 @@ def _best_book(product: BitgetProduct) -> DatasetSpec:
         integer_columns=("event_number",),
         sort_source_rows=True,
         archive_day_offset=ARCHIVE_DAY_OFFSET,
+        archive_symbol_attribute="pair",
     )
 
 
@@ -254,6 +257,7 @@ def _order_book(product: BitgetProduct) -> DatasetSpec:
         object_columns=("bids", "asks"),
         sort_source_rows=True,
         archive_day_offset=ARCHIVE_DAY_OFFSET,
+        archive_symbol_attribute="pair",
     )
 
 
@@ -363,7 +367,13 @@ def supports(product: str, dataset: str) -> bool:
     return dataset in SUPPORTED_DATASETS.get(product, frozenset())
 
 
-def get_dataset(product: object, dataset: object) -> DatasetSpec:
+def get_dataset(
+    product: object,
+    dataset: object,
+    *,
+    kline_base_interval: object = None,
+    requested_interval: object = None,
+) -> DatasetSpec:
     """Return the physical Bitget schema needed by one request.
 
     Args:
@@ -373,6 +383,7 @@ def get_dataset(product: object, dataset: object) -> DatasetSpec:
     Returns:
         The matching immutable dataset declaration.
     """
+    del kline_base_interval, requested_interval
     if not isinstance(product, str):
         raise TypeError("product must be a string")
     if not isinstance(dataset, str):

@@ -1,1 +1,5 @@
-"""Provide Bitget historical market-data support."""
+"""Expose the public Bitget facade."""
+
+from .facade import Bitget
+
+__all__: tuple[str, ...] = ("Bitget",)
