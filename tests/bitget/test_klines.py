@@ -105,4 +105,4 @@ def test_rejects_bad_source_shape_and_chunk_boundary() -> None:
 def test_rejects_non_kline_dispatch() -> None:
     """Dataset dispatch cannot silently use a Kline schema."""
     with pytest.raises(ValueError, match="unsupported normalizer"):
-        normalize_chunk(raw(), get_dataset("spot", "trades"))
+        normalize_chunk(raw(), get_dataset("usdt_futures", "funding_rates"))
