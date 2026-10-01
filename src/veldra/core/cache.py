@@ -12,6 +12,7 @@ import pyarrow.parquet as parquet
 
 from veldra.core.catalog import Catalog
 from veldra.core.datasets import DatasetSpec
+from veldra.core.discovery import covered_days
 from veldra.core.reporting import Reporter
 from veldra.core.models import (
     IngestedResource,
@@ -601,8 +602,6 @@ def _daily_fallback(
         executor: Optional shared download executor.
         requested_range: Inclusive requested days, or the entire archive when absent.
     """
-    from .planner import covered_days
-
     daily_key = replace(key, cadence="daily")
     first, last = monthly.day, monthly.last_day
     if requested_range is not None:

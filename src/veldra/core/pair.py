@@ -16,6 +16,7 @@ from veldra.core.cache import cache_resources, invalid_parquet_paths
 from veldra.core.datasets import DatasetSpec
 from veldra.core.reporting import Reporter, format_range, format_time
 from veldra.core.discovery import (
+    covered_days,
     latest_published_day,
     latest_published_end,
     requested_days,
@@ -44,7 +45,6 @@ from veldra.core.connector import Connector
 
 from .planner import (
     plan_archives,
-    covered_days,
     catalog_archives,
     catalog_archives_between,
 )

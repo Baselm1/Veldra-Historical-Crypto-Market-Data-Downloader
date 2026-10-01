@@ -12,6 +12,7 @@ from veldra.core.catalog import Catalog, catalog_lock, open_catalog
 from veldra.core.datasets import DatasetSpec
 from veldra.core.discovery import (
     _merge_ranges,
+    covered_days,
     discover_resources,
     latest_published_day,
     requested_days,
@@ -33,7 +34,7 @@ from veldra.core.request import (
     parse_pairs,
 )
 
-from .planner import plan_archives, catalog_archives, select_archives, covered_days
+from .planner import plan_archives, catalog_archives, select_archives
 
 LOGGER = logging.getLogger(__name__)
 

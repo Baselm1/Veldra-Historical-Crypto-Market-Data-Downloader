@@ -11,6 +11,7 @@ from .catalog import Catalog
 from .cache import valid_cached_path
 from .datasets import DatasetSpec
 from .discovery import (
+    covered_days,
     discover_resources,
     requested_days,
     _uncovered_ranges,
@@ -21,15 +22,6 @@ from .reporting import Reporter
 from .connector import Connector
 
 LOGGER = logging.getLogger(__name__)
-
-
-def covered_days(resources: list[Resource]) -> set[date]:
-    """Return calendar days covered by the supplied physical archives."""
-    return {
-        resource.day + timedelta(days=i)
-        for resource in resources
-        for i in range((resource.last_day - resource.day).days + 1)
-    }
 
 
 def catalog_archives(
