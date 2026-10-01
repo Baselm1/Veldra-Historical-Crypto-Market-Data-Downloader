@@ -59,8 +59,19 @@ def _zip(name: str, events: list[dict[str, object]]) -> bytes:
     """Return one safe source ZIP containing JSON Lines."""
     output = io.BytesIO()
     with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
-        archive.writestr(name, b"\n".join(json.dumps(item).encode() for item in events))
+        _write_member(
+            archive,
+            name,
+            b"\n".join(json.dumps(item).encode() for item in events),
+        )
     return output.getvalue()
+
+
+def _write_member(archive: zipfile.ZipFile, name: str, value: bytes) -> None:
+    """Write one deterministic member so xdist workers collect equal tests."""
+    member = zipfile.ZipInfo(name, date_time=(2025, 1, 1, 0, 0, 0))
+    member.compress_type = zipfile.ZIP_DEFLATED
+    archive.writestr(member, value)
 
 
 def _raw_zip(entries: dict[str, bytes]) -> bytes:
@@ -68,7 +79,7 @@ def _raw_zip(entries: dict[str, bytes]) -> bytes:
     output = io.BytesIO()
     with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
         for name, value in entries.items():
-            archive.writestr(name, value)
+            _write_member(archive, name, value)
     return output.getvalue()
 
 

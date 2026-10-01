@@ -236,6 +236,36 @@ def test_volatility_splits_requests_at_thirty_days() -> None:
     assert len(client.calls) == 2
 
 
+def test_volatility_does_not_send_future_boundaries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Clamp inclusive current-day requests to the API's present boundary."""
+    now = datetime(2025, 1, 2, 12, tzinfo=UTC)
+    monkeypatch.setattr("veldra.bybit.history._utc_now", lambda: now)
+    client = Client([[]])
+    start = datetime(2025, 1, 1, tzinfo=UTC)
+    frame = BybitHistory(client).volatility(
+        "BTC", 30, start, datetime(2025, 1, 3, tzinfo=UTC)
+    )
+    assert frame.empty
+    assert client.calls[0][1]["endTime"] == str(int(now.timestamp() * 1_000) - 1)
+
+
+def test_volatility_skips_ranges_entirely_after_the_present(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Return an empty typed frame without making an invalid future request."""
+    now = datetime(2025, 1, 1, tzinfo=UTC)
+    monkeypatch.setattr("veldra.bybit.history._utc_now", lambda: now)
+    client = Client([])
+    frame = BybitHistory(client).volatility(
+        "BTC", 30, now + timedelta(days=1), now + timedelta(days=2)
+    )
+    assert frame.empty
+    assert frame.columns.tolist() == ["event_time", "period", "volatility"]
+    assert not client.calls
+
+
 def test_delivery_prices_filter_exact_range() -> None:
     """Filter cursor-based delivery histories by timestamp."""
     row = {"deliveryTime": "1735689600000", "deliveryPrice": "95000"}

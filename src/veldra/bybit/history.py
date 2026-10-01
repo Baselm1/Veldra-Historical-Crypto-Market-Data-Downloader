@@ -43,6 +43,11 @@ _POSITION_PERIODS: Mapping[str, str] = {
 VOLATILITY_PERIODS = frozenset({7, 14, 21, 30, 60, 90, 180, 270})
 
 
+def _utc_now() -> datetime:
+    """Return the current UTC instant for source-boundary validation."""
+    return datetime.now(UTC)
+
+
 class PublicClient(Protocol):
     """Describe the one client operation required by public histories."""
 
@@ -414,10 +419,11 @@ class BybitHistory:
         if isinstance(period, bool) or period not in VOLATILITY_PERIODS:
             choices = ", ".join(str(item) for item in sorted(VOLATILITY_PERIODS))
             raise ValueError(f"unsupported volatility period; choose from {choices}")
+        source_end = min(end, _utc_now())
         found: list[dict[str, object]] = []
         cursor = start
-        while cursor < end:
-            window_end = min(end, cursor + timedelta(days=30))
+        while cursor < source_end:
+            window_end = min(source_end, cursor + timedelta(days=30))
             value = self.client.v5(
                 "/v5/market/historical-volatility",
                 {
