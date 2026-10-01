@@ -209,6 +209,11 @@ def _resource(value: object, dataset: str) -> Resource:
     _required_text(row, "fileName")
     symbol = _required_text(row, "displayName")
     start = datetime.combine(day, time.min, SOURCE_TIMEZONE).astimezone(UTC)
+    integrity = (
+        IntegritySpec("archive_only")
+        if dataset == "order_book_snapshots"
+        else IntegritySpec("response_header", algorithm="md5")
+    )
     return Resource(
         day=day,
         url=url,
@@ -217,7 +222,7 @@ def _resource(value: object, dataset: str) -> Resource:
         timestamp_column="open_time" if dataset == "klines" else "event_time",
         coverage_start=start,
         coverage_end=start + timedelta(days=1),
-        integrity=IntegritySpec("response_header", algorithm="md5"),
+        integrity=integrity,
     )
 
 

@@ -161,6 +161,18 @@ def test_depth_datasets_send_their_native_depth_type(dataset: str, depth: int) -
     assert portal.calls[0][1]["businessLine"] == 2
 
 
+def test_deep_order_books_use_archive_integrity_when_etags_are_multipart() -> None:
+    """Level-500 ZIPs rely on archive integrity rather than multipart ETags."""
+    resource = BitgetManifestDiscovery(Portal([file_row()])).discover(
+        "spot",
+        "order_book_snapshots",
+        ["BTC/USDT"],
+        date(2026, 8, 1),
+        date(2026, 8, 1),
+    )[0]
+    assert resource.integrity_spec.mode == "archive_only"
+
+
 def test_duplicate_manifest_urls_are_collapsed() -> None:
     """Ignore duplicate shard entries observed in older portal responses."""
     resources = BitgetManifestDiscovery(Portal([file_row(), file_row()])).discover(

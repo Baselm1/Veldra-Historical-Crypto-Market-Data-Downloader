@@ -46,6 +46,32 @@ def test_connector_rejects_bad_identity_and_range() -> None:
         connector.resources(httpx.Client(), key(), date(2025, 1, 2), date(2025, 1, 1))
 
 
+@pytest.mark.parametrize(
+    ("product", "archive_symbol", "portal_symbol"),
+    [
+        ("spot", "BTC/USDT", "BTC/USDT"),
+        ("usdt_futures", "BTC/USDT", "BTCUSDT"),
+        ("usdc_futures", "BTC/USDC", "BTCUSDC"),
+        ("coin_futures", "BTC/USD", "BTCUSD"),
+    ],
+)
+def test_connector_uses_product_specific_portal_symbols(
+    product: str, archive_symbol: str, portal_symbol: str
+) -> None:
+    """Spot keeps slash pairs while every Futures portal route is compact."""
+    connector = BitgetConnector()
+    resource_key = ResourceKey(
+        "bitget", product, "klines", "NATIVE", "1m", archive_symbol
+    )
+    with patch(
+        "veldra.bitget.connector.BitgetManifestDiscovery.discover", return_value=[]
+    ) as discover:
+        connector.resources(
+            httpx.Client(), resource_key, date(2025, 1, 1), date(2025, 1, 1)
+        )
+    assert discover.call_args.args[2] == [portal_symbol]
+
+
 def test_checksum_reads_plain_etag() -> None:
     """Revision checks reuse the CDN's published MD5 ETag."""
     client = httpx.Client(

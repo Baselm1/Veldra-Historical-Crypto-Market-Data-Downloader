@@ -11,7 +11,7 @@ Veldra retrieves Bitget history from the [daily download portal](https://www.bit
 | USDC Futures | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Coin Futures | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 
-Archive dates use Bitget's UTC+8 calendar. Veldra converts timestamps to UTC and returns the exact requested range. XLSX- or CSV-bearing daily ZIPs are checked against the CDN's MD5 ETag and ZIP integrity before they become Parquet. Trade days split across several files are merged into one logical daily partition.
+Archive dates use Bitget's UTC+8 calendar. Veldra converts timestamps to UTC and returns the exact requested range. Files with a plain CDN MD5 ETag are checked against it before they become Parquet. Large depth-500 files use multipart ETags, so Veldra instead validates their ZIP structure and member CRC. Trade days split across several files are merged into one logical daily partition.
 
 ## Use
 

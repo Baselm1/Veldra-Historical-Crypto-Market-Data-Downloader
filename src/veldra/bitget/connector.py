@@ -25,7 +25,6 @@ from veldra.core.datasets import DatasetSpec
 from veldra.core.ingest import ingest_archive
 from veldra.core.models import (
     IngestedResource,
-    IntegritySpec,
     Market,
     Resource,
     ResourceKey,
@@ -87,7 +86,6 @@ def _physical_resources(resource: Resource) -> tuple[Resource, ...]:
             replace(
                 resource,
                 url=urlunsplit(parsed._replace(fragment="")),
-                integrity=IntegritySpec("response_header", algorithm="md5"),
             )
         )
     return tuple(resources)
@@ -152,10 +150,13 @@ class BitgetConnector:
     ) -> list[Resource]:
         """Return manifest archives in one inclusive UTC+8 date range."""
         self._validate(key, start_day, end_day)
+        archive_symbol = key.archive_symbol or key.symbol
+        if key.product != "spot":
+            archive_symbol = archive_symbol.replace("/", "")
         found = BitgetManifestDiscovery(self._client(client)).discover(
             key.product,
             key.dataset,
-            [key.archive_symbol or key.symbol],
+            [archive_symbol],
             start_day,
             end_day,
         )
