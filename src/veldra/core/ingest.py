@@ -175,7 +175,8 @@ def _member(
     """
     members = archive.infolist()
     archive_name = unquote(Path(urlsplit(resource.url).path).name)
-    expected = archive_name.removesuffix(".zip") + ".csv"
+    stem = archive_name.removesuffix(".zip")
+    expected = stem if stem.endswith(".csv") else f"{stem}.csv"
     actual = members[0].filename if members else ""
     name_matches = actual == expected or (
         allow_name_prefix and actual.endswith(f"_{expected}")
@@ -324,7 +325,9 @@ def _normalized_tables(
     for batch in reader:
         for offset in range(0, batch.num_rows, chunk_rows):
             raw = pa.Table.from_batches([batch.slice(offset, chunk_rows)])
-            yield normalizer(raw, dataset, resource.contract_size)
+            normalized = normalizer(raw, dataset, resource.contract_size)
+            if normalized.num_rows:
+                yield normalized
 
 
 def _write_ordered(

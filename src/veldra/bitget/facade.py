@@ -1,5 +1,6 @@
 """Provide the public facade for Bitget historical market data."""
 
+from collections.abc import Callable
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Literal
@@ -10,6 +11,8 @@ from veldra.bitget.client import BitgetClient, BitgetResponseError
 from veldra.bitget.connector import BitgetConnector
 from veldra.bitget.datasets import BitgetDataset, BitgetProduct, get_dataset
 from veldra.bitget.reference import BitgetReferenceService, candle_frame, funding_frame
+from veldra.bitget.rest import BitgetRESTCache
+from veldra.core.catalog import catalog_lock, open_catalog
 from veldra.core.download import _validate_settings
 from veldra.core.engine import RetrievalEngine
 from veldra.core.inspection import discover_availability as _discover_availability
@@ -19,6 +22,7 @@ from veldra.core.inspection import get_markets as _get_markets
 from veldra.core.models import Availability, Market, Message, Result
 from veldra.core.request import parse_timestamp
 from veldra.core.request import parse_pairs
+from veldra.core.subjects import DataSubject
 
 type DateInput = str | date | datetime
 type PairInput = str | list[str]
@@ -154,6 +158,79 @@ class Bitget:
     def data_dir(self) -> Path:
         """Return the resolved catalog and Parquet root."""
         return self._downloader.data_dir
+
+    @property
+    def earliest_date(self) -> date | None:
+        """Return the configured usable history boundary."""
+        return self._downloader.earliest_date
+
+    @property
+    def kline_base_interval(self) -> str:
+        """Return the physical Kline interval stored from daily archives."""
+        return self._downloader.kline_base_interval
+
+    @property
+    def max_workers(self) -> int:
+        """Return the facade-wide archive worker ceiling."""
+        return self._downloader.max_workers
+
+    def __enter__(self) -> "Bitget":
+        """Return this open facade from a context manager."""
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: object,
+    ) -> None:
+        """Close the facade-owned REST client on context exit.
+
+        Args:
+            exc_type: Exception type raised inside the context, when present.
+            exc_value: Exception raised inside the context, when present.
+            traceback: Traceback associated with the exception, when present.
+        """
+        del exc_type, exc_value, traceback
+        self.close()
+
+    def _rest_data(
+        self,
+        pair: str,
+        start: datetime,
+        end: datetime,
+        *,
+        product: str,
+        dataset: str,
+        interval: str | None,
+        fetch: Callable[[], pd.DataFrame],
+    ) -> pd.DataFrame:
+        """Return Bitget REST rows from local Parquet or fetch them once.
+
+        Args:
+            pair: Validated native Futures symbol.
+            start: Inclusive UTC request boundary.
+            end: Exclusive UTC request boundary.
+            product: Bitget Futures settlement product.
+            dataset: Canonical REST dataset name.
+            interval: Stored Kline interval, or ``None`` for event data.
+            fetch: Source request used only when local rows are absent.
+
+        Returns:
+            Exact canonical rows for the requested range.
+        """
+        catalog_path = self.data_dir / "catalog.duckdb"
+        with catalog_lock(catalog_path):
+            with open_catalog(catalog_path) as catalog:
+                return BitgetRESTCache(catalog, self.data_dir).get(
+                    dataset,
+                    DataSubject("instrument", pair),
+                    start,
+                    end,
+                    product=product,
+                    interval=interval,
+                    fetch=fetch,
+                )
 
     def _retrieve(
         self,
@@ -296,8 +373,16 @@ class Bitget:
         first, last = _range(start, end)
         symbol = _reference_pair(pair)
         try:
-            frame = self._reference.candles(
-                symbol, product, dataset, interval, first, last
+            frame = self._rest_data(
+                symbol,
+                first,
+                last,
+                product=product,
+                dataset=dataset,
+                interval=interval,
+                fetch=lambda: self._reference.candles(
+                    symbol, product, dataset, interval, first, last
+                ),
             )
             return _reported_reference(frame, symbol, (first, last), product, dataset)
         except BitgetResponseError as error:
@@ -325,7 +410,15 @@ class Bitget:
         first, last = _range(start, end)
         symbol = _reference_pair(pair)
         try:
-            frame = self._reference.funding(symbol, product, first, last)
+            frame = self._rest_data(
+                symbol,
+                first,
+                last,
+                product=product,
+                dataset="funding_rates",
+                interval=None,
+                fetch=lambda: self._reference.funding(symbol, product, first, last),
+            )
             return _reported_reference(
                 frame, symbol, (first, last), product, "funding_rates"
             )

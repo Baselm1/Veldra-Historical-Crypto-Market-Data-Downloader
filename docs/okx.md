@@ -103,7 +103,7 @@ contracts through logical DuckDB partitions.
 
 ```python
 futures = okx.get_futures_chain_klines(
-    family="BTC-USDT",
+    instrument_family="BTC-USDT",
     start="2025-01-01",
     end="2025-01-07",
     product="linear_futures",
@@ -111,7 +111,7 @@ futures = okx.get_futures_chain_klines(
 )
 
 options = okx.get_option_chain_trades(
-    family="BTC-USD",
+    instrument_family="BTC-USD",
     start="2025-01-01",
     end="2025-01-02",
     option_type="call",
@@ -221,7 +221,8 @@ mark = okx.get_mark_price_klines(
     "BTC-USDT-SWAP",
     "2025-01-01",
     "2025-01-02",
-    interval="1H",
+    product="linear_swap",
+    interval="1h",
 )
 ```
 

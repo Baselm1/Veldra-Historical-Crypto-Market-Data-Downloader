@@ -22,6 +22,7 @@ def test_package_can_be_imported() -> None:
     assert package.__all__ == (
         "Binance",
         "Bitget",
+        "Bybit",
         "Gate",
         "HTX",
         "KuCoin",

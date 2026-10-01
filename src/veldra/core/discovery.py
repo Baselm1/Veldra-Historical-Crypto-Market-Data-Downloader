@@ -15,6 +15,22 @@ LOGGER = logging.getLogger(__name__)
 DISCOVERY_TTL = timedelta(hours=24)
 
 
+def covered_days(resources: list[Resource]) -> set[date]:
+    """Return all calendar days represented by physical archives.
+
+    Args:
+        resources: Daily, monthly, or otherwise bounded source archives.
+
+    Returns:
+        Every inclusive source day covered by the supplied archives.
+    """
+    return {
+        resource.day + timedelta(days=offset)
+        for resource in resources
+        for offset in range((resource.last_day - resource.day).days + 1)
+    }
+
+
 def requested_days(
     start: datetime, end: datetime, offset: timedelta = timedelta(0)
 ) -> tuple[date, date]:

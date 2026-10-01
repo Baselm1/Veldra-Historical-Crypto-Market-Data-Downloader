@@ -41,7 +41,12 @@ deep = bitget.get_order_book_snapshots(
 
 `best` has flat bid/ask prices and quantities. `deep` stores each side as a typed list of `{price, quantity}` levels; it is not a diff stream.
 
-Futures reference data comes from rate-limited public REST endpoints. Mark, index, and premium candles contain OHLC prices; Bitget fills both volume fields with zero because these are reference prices rather than executed trades. Native intervals are `1m`, `3m`, `5m`, `15m`, `30m`, `1h`, `4h`, `6h`, `12h`, and `1d`. These reference calls use Bitget's API each time; offline reuse currently applies to the daily archive methods.
+Futures reference data comes from rate-limited public REST endpoints. Mark,
+index, and premium candles contain OHLC prices; Bitget fills both volume fields
+with zero because these are reference prices rather than executed trades.
+Native intervals are `1m`, `3m`, `5m`, `15m`, `30m`, `1h`, `4h`, `6h`, `12h`,
+and `1d`. Veldra stores normalized reference ranges as Parquet, so later calls
+covered by those ranges are served locally.
 
 ```python
 from datetime import UTC, datetime, timedelta
@@ -68,4 +73,5 @@ matches = bitget.find_markets("btcusdt", product="spot")
 
 Use `get_availability(...)` for coverage already in the local catalog and `discover_availability(...)` to scan a bounded archive range without downloading it.
 
-Call `bitget.close()` when the facade is no longer needed.
+Call `bitget.close()` when the facade is no longer needed, or use `Bitget` as a
+context manager.
