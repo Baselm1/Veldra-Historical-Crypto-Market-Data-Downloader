@@ -1,6 +1,7 @@
 """Normalize and validate Bitget archive rows with Arrow."""
 
 from datetime import UTC, date, datetime, time, timedelta
+import json
 from typing import Any, cast
 
 import pyarrow as pa
@@ -122,6 +123,67 @@ def _normalize_trades(table: Any, dataset: DatasetSpec) -> Any:
     return pa.table({column: values[column] for column in dataset.stored_columns})
 
 
+def _normalize_best_book(table: Any, dataset: DatasetSpec) -> Any:
+    """Convert top-of-book snapshots into canonical flat columns."""
+    _source_columns(table, dataset)
+    values = {
+        "event_time": _epoch_milliseconds(table["timestamp"], "event_time"),
+        "event_number": _integer(table["__row_number"], "event_number"),
+        "ask_price": _number(table["ask_price"], "ask_price"),
+        "bid_price": _number(table["bid_price"], "bid_price"),
+        "ask_quantity": _number(table["ask_volume"], "ask_quantity"),
+        "bid_quantity": _number(table["bid_volume"], "bid_quantity"),
+    }
+    return pa.table({column: values[column] for column in dataset.stored_columns})
+
+
+_LEVEL_TYPE = pa.list_(
+    pa.struct([pa.field("price", pa.float64()), pa.field("quantity", pa.float64())])
+)
+
+
+def _levels(value: object, side: str) -> list[dict[str, float]]:
+    """Parse one JSON-encoded order-book side into typed levels."""
+    if not isinstance(value, str):
+        raise DataValidationError(f"invalid {side} levels")
+    try:
+        decoded = json.loads(value)
+    except (TypeError, ValueError) as error:
+        raise DataValidationError(f"invalid {side} levels") from error
+    if not isinstance(decoded, list) or len(decoded) > 500:
+        raise DataValidationError(f"invalid {side} levels")
+    result: list[dict[str, float]] = []
+    for level in decoded:
+        if not isinstance(level, list) or len(level) < 2:
+            raise DataValidationError(f"invalid {side} levels")
+        try:
+            price, quantity = float(level[0]), float(level[1])
+        except (TypeError, ValueError) as error:
+            raise DataValidationError(f"invalid {side} levels") from error
+        if not (price > 0 and quantity > 0):
+            raise DataValidationError(f"invalid {side} levels")
+        result.append({"price": price, "quantity": quantity})
+    return result
+
+
+def _normalize_order_book(table: Any, dataset: DatasetSpec) -> Any:
+    """Convert level-500 JSON sides into nested Arrow snapshots."""
+    _source_columns(table, dataset)
+    values = {
+        "event_time": _epoch_milliseconds(table["timestamp"], "event_time"),
+        "event_number": _integer(table["__row_number"], "event_number"),
+        "bids": pa.array(
+            [_levels(value, "bid") for value in table["bids"].to_pylist()],
+            type=_LEVEL_TYPE,
+        ),
+        "asks": pa.array(
+            [_levels(value, "ask") for value in table["asks"].to_pylist()],
+            type=_LEVEL_TYPE,
+        ),
+    }
+    return pa.table({column: values[column] for column in dataset.stored_columns})
+
+
 def normalize_chunk(
     table: Any, dataset: DatasetSpec, contract_size: float | None = None
 ) -> Any:
@@ -146,6 +208,10 @@ def normalize_chunk(
         and dataset.name == "trades"
     ):
         return _normalize_trades(table, dataset)
+    if dataset.name == "best_book_snapshots":
+        return _normalize_best_book(table, dataset)
+    if dataset.name == "order_book_snapshots":
+        return _normalize_order_book(table, dataset)
     raise ValueError(f"unsupported normalizer: {dataset.product}/{dataset.name}")
 
 
@@ -229,6 +295,22 @@ def _validate_trades(table: Any) -> None:
     )
 
 
+def _validate_best_book(table: Any) -> None:
+    """Validate top-of-book prices, quantities, and spread."""
+    for column in ("ask_price", "bid_price", "ask_quantity", "bid_quantity"):
+        _reject(pc.less_equal(table[column], 0), f"{column} must be positive")
+    _reject(pc.less(table["ask_price"], table["bid_price"]), "order book is crossed")
+
+
+def _validate_order_book(table: Any) -> None:
+    """Require nonempty nested sides after structural parsing."""
+    for column in ("bids", "asks"):
+        _reject(
+            pc.equal(pc.list_value_length(table[column]), 0),
+            f"{column} cannot be empty",
+        )
+
+
 def validate_chunk(
     table: Any,
     dataset: DatasetSpec,
@@ -248,7 +330,12 @@ def validate_chunk(
     Returns:
         Final UTC timestamp in the table.
     """
-    if dataset.name not in {"klines", "trades"} or dataset.product not in {
+    if dataset.name not in {
+        "klines",
+        "trades",
+        "best_book_snapshots",
+        "order_book_snapshots",
+    } or dataset.product not in {
         "spot",
         "usdt_futures",
         "usdc_futures",
@@ -258,9 +345,13 @@ def validate_chunk(
     _validate_schema(table, dataset)
     if dataset.name == "klines":
         _validate_values(table)
-    else:
+    elif dataset.name == "trades":
         for column in dataset.stored_columns:
             if table[column].null_count:
                 raise DataValidationError("trade values must be nonnull")
         _validate_trades(table)
+    elif dataset.name == "best_book_snapshots":
+        _validate_best_book(table)
+    else:
+        _validate_order_book(table)
     return _validate_times(table, dataset, day, previous_timestamp, end_day)
