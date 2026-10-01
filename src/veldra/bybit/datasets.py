@@ -127,6 +127,17 @@ def _native_kline(product: str, name: str, *, reference: bool = False) -> Datase
     if reference:
         source: tuple[str, ...] = _REFERENCE_KLINE_SOURCE
         stored: tuple[str, ...] = ("open_time", "open", "high", "low", "close")
+    elif product == "inverse":
+        source = _KLINE_SOURCE
+        stored = (
+            "open_time",
+            "open",
+            "high",
+            "low",
+            "close",
+            "contract_volume",
+            "base_volume",
+        )
     else:
         source = _KLINE_SOURCE
         stored = (
