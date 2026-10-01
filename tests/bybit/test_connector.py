@@ -161,6 +161,15 @@ def test_market_onboard_time_narrows_first_resource_scans(
     assert connector._source_start(key) == date(2024, 1, 2)
 
 
+def test_spot_order_books_use_their_later_source_launch() -> None:
+    """Do not scan years where Bybit's Spot book portal is always empty."""
+    connector = BybitConnector()
+    trades = ResourceKey("bybit", "spot", "trades", "BTCUSDT", None)
+    books = ResourceKey("bybit", "spot", "order_book_updates", "BTCUSDT", None)
+    assert connector._source_start(trades) == date(2021, 7, 1)
+    assert connector._source_start(books) == date(2025, 4, 29)
+
+
 def test_quote_volumes_route_through_the_public_client(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -30,6 +30,12 @@ _SOURCE_START = {
     "inverse": date(2019, 1, 1),
     "options": date(2022, 1, 1),
 }
+_DATASET_SOURCE_START = {
+    # Bybit's Spot book portal is empty before its shared launch date.  Using
+    # the older Spot-trade floor causes hundreds of guaranteed-empty manifest
+    # requests whenever a fresh catalog resolves book availability.
+    ("spot", "order_book_updates"): date(2025, 4, 29),
+}
 
 
 class BybitConnector:
@@ -190,7 +196,10 @@ class BybitConnector:
     def _source_start(self, key: ResourceKey) -> date:
         """Return the narrowest known source scan boundary."""
         onboard = self._onboard.get((key.product, key.symbol))
-        return max(_SOURCE_START[key.product], onboard or date.min)
+        source_start = _DATASET_SOURCE_START.get(
+            (key.product, key.dataset), _SOURCE_START[key.product]
+        )
+        return max(source_start, onboard or date.min)
 
     @staticmethod
     def _check_product(product: str) -> None:
