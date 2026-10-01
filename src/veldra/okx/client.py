@@ -1,42 +1,22 @@
 """Call OKX public endpoints through one shared rolling-window limiter."""
 
-from collections import defaultdict, deque
-from collections.abc import Callable, Hashable, Mapping, Sequence
-from dataclasses import dataclass
+from collections.abc import Mapping, Sequence
 from datetime import UTC, date, datetime
 import json
 import math
 import random
-from threading import Condition
 import time
-from typing import Protocol, cast
+from typing import Callable, Protocol, cast
 
 import httpx
 
 from veldra.core.download import retry_delay
+from veldra.core.rate_limit import RatePolicy, RollingWindowRateLimiter
 
 BASE_URL = "https://www.okx.com"
 INSTRUMENT_TYPES = frozenset({"SPOT", "MARGIN", "SWAP", "FUTURES", "OPTION"})
 MANIFEST_MODULES = frozenset({1, 2, 3, 4, 5, 6, 11})
 RETRYABLE_STATUS = frozenset({408, 429, 500, 502, 503, 504})
-
-
-@dataclass(frozen=True)
-class RatePolicy:
-    """Declare one request-count quota over a rolling time window."""
-
-    capacity: int
-    window_seconds: float
-    safety_seconds: float = 0.05
-
-    def __post_init__(self) -> None:
-        """Reject nonpositive or nonfinite limiter settings."""
-        if isinstance(self.capacity, bool) or self.capacity < 1:
-            raise ValueError("rate policy capacity must be positive")
-        if not math.isfinite(self.window_seconds) or self.window_seconds <= 0:
-            raise ValueError("rate policy window must be finite and positive")
-        if not math.isfinite(self.safety_seconds) or self.safety_seconds < 0:
-            raise ValueError("rate policy safety must be finite and nonnegative")
 
 
 DEFAULT_POLICIES: dict[str, RatePolicy] = {
@@ -57,90 +37,16 @@ DEFAULT_POLICIES: dict[str, RatePolicy] = {
 }
 
 
-class OKXRateLimiter:
-    """Share keyed rolling-window request limits across worker threads."""
+class OKXRateLimiter(RollingWindowRateLimiter):
+    """Apply OKX's endpoint policies through the shared limiter."""
 
-    def __init__(
-        self,
-        policies: Mapping[str, RatePolicy] | None = None,
-        *,
-        clock: Callable[[], float] = time.monotonic,
-    ) -> None:
-        """Create a limiter from endpoint policies.
+    def __init__(self, policies: Mapping[str, RatePolicy] | None = None) -> None:
+        """Create the limiter with OKX's default endpoint policies.
 
         Args:
-            policies: Endpoint policies keyed by quota family.
-            clock: Monotonic clock used to age reservations.
+            policies: Optional replacement endpoint policies.
         """
-        self.policies = dict(DEFAULT_POLICIES if policies is None else policies)
-        self._clock = clock
-        self._condition = Condition()
-        self._reservations: dict[Hashable, deque[float]] = defaultdict(deque)
-        self._penalties: dict[Hashable, float] = {}
-
-    def _policy(self, key: Hashable) -> RatePolicy:
-        """Resolve an exact or colon-qualified limiter key.
-
-        Args:
-            key: Exact endpoint key or a qualified per-instrument key.
-
-        Returns:
-            The declared endpoint policy.
-        """
-        if key in self.policies:
-            return self.policies[key]
-        if isinstance(key, str) and ":" in key:
-            family = key.split(":", 1)[0]
-            if family in self.policies:
-                return self.policies[family]
-        raise KeyError(f"no rate policy is declared for {key!r}")
-
-    def acquire(self, key: Hashable, *, cost: int = 1) -> None:
-        """Wait until one endpoint request fits its rolling quota.
-
-        Args:
-            key: Endpoint quota key.
-            cost: Request units reserved by this call.
-        """
-        policy = self._policy(key)
-        if isinstance(cost, bool) or not isinstance(cost, int) or cost < 1:
-            raise ValueError("rate-limit cost must be a positive integer")
-        if cost > policy.capacity:
-            raise ValueError("rate-limit cost exceeds policy capacity")
-        with self._condition:
-            while True:
-                now = self._clock()
-                reservations = self._reservations[key]
-                cutoff = now - policy.window_seconds
-                while reservations and reservations[0] <= cutoff:
-                    reservations.popleft()
-                penalty = self._penalties.get(key, 0.0)
-                if penalty <= now and len(reservations) + cost <= policy.capacity:
-                    reservations.extend([now] * cost)
-                    return
-                waits = []
-                if penalty > now:
-                    waits.append(penalty - now)
-                if len(reservations) + cost > policy.capacity:
-                    index = len(reservations) + cost - policy.capacity - 1
-                    waits.append(reservations[index] + policy.window_seconds - now)
-                self._condition.wait(max(0.001, min(waits)) + policy.safety_seconds)
-
-    def penalize(self, key: Hashable, retry_after: float) -> None:
-        """Pause one affected quota bucket after server throttling.
-
-        Args:
-            key: Endpoint quota key.
-            retry_after: Minimum pause in seconds.
-        """
-        self._policy(key)
-        if not math.isfinite(retry_after) or retry_after < 0:
-            raise ValueError("retry_after must be finite and nonnegative")
-        with self._condition:
-            self._penalties[key] = max(
-                self._penalties.get(key, 0.0), self._clock() + retry_after
-            )
-            self._condition.notify_all()
+        super().__init__(DEFAULT_POLICIES if policies is None else policies)
 
 
 class Limiter(Protocol):
