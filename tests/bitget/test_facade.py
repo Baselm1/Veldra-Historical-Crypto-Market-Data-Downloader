@@ -8,6 +8,7 @@ import pandas as pd
 import pytest
 
 from veldra import Bitget
+from veldra.bitget.client import BitgetResponseError
 from veldra.core.models import Availability
 from veldra.bitget.facade import _range
 
@@ -138,4 +139,42 @@ def test_named_reference_helpers_select_exact_datasets(tmp_path: Path) -> None:
     assert service.get_reference_klines.call_args.kwargs["dataset"] == (
         "premium_index_klines"
     )
+    service.close()
+
+
+def test_reference_results_include_the_standard_download_report(tmp_path: Path) -> None:
+    """Successful and empty REST frames carry ordinary Veldra result metadata."""
+    service = Bitget(tmp_path, progress=False)
+    row = pd.DataFrame(
+        {
+            "open_time": pd.to_datetime(["2025-01-01T00:00:00Z"]),
+            "open": [1.0],
+            "high": [2.0],
+            "low": [0.5],
+            "close": [1.5],
+            "base_volume": [0.0],
+            "quote_volume": [0.0],
+        }
+    )
+    service._reference.candles = Mock(return_value=row)  # type: ignore[method-assign]
+    result = service.get_mark_price_klines("BTCUSDT", "2025-01-01", "2025-01-01")
+    assert result.attrs["download"]["complete"] is True
+    assert result.attrs["download"]["dataset"] == "mark_price_klines"
+
+    service._reference.candles = Mock(return_value=row.iloc[0:0])  # type: ignore[method-assign]
+    empty = service.get_mark_price_klines("BTCUSDT", "2025-01-01", "2025-01-01")
+    assert empty.attrs["download"]["complete"] is False
+    assert empty.attrs["download"]["errors"][0]["code"] == "range_unavailable"
+    service.close()
+
+
+def test_unknown_reference_pair_returns_an_error_frame(tmp_path: Path) -> None:
+    """A deterministic unknown symbol cannot terminate the caller's program."""
+    service = Bitget(tmp_path, progress=False)
+    service._reference.candles = Mock(  # type: ignore[method-assign]
+        side_effect=BitgetResponseError("25100", "Trading pair does not exist")
+    )
+    frame = service.get_mark_price_klines("NOTREAL", "2025-01-01", "2025-01-01")
+    assert frame.empty
+    assert frame.attrs["download"]["errors"][0]["code"] == "unknown_pair"
     service.close()

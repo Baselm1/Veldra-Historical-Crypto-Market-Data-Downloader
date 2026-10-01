@@ -6,17 +6,17 @@ from typing import Literal
 
 import pandas as pd
 
-from veldra.bitget.client import BitgetClient
+from veldra.bitget.client import BitgetClient, BitgetResponseError
 from veldra.bitget.connector import BitgetConnector
 from veldra.bitget.datasets import BitgetDataset, BitgetProduct, get_dataset
-from veldra.bitget.reference import BitgetReferenceService
+from veldra.bitget.reference import BitgetReferenceService, candle_frame, funding_frame
 from veldra.core.download import _validate_settings
 from veldra.core.engine import RetrievalEngine
 from veldra.core.inspection import discover_availability as _discover_availability
 from veldra.core.inspection import find_markets as _find_markets
 from veldra.core.inspection import get_availability as _get_availability
 from veldra.core.inspection import get_markets as _get_markets
-from veldra.core.models import Availability, Market
+from veldra.core.models import Availability, Market, Message, Result
 from veldra.core.request import parse_timestamp
 from veldra.core.request import parse_pairs
 
@@ -61,6 +61,52 @@ def _reference_pair(value: object) -> str:
     if not symbol.isascii() or not symbol.isalnum():
         raise ValueError("pair must contain only ASCII letters and digits")
     return symbol
+
+
+def _reported_reference(
+    frame: pd.DataFrame,
+    pair: str,
+    requested: tuple[datetime, datetime],
+    product: str,
+    dataset: str,
+    *,
+    error: Message | None = None,
+) -> pd.DataFrame:
+    """Attach the normal Veldra report to one reference-history frame.
+
+    Args:
+        frame: Canonical source rows, possibly empty.
+        pair: Validated native Futures symbol.
+        requested: Exact half-open UTC request range.
+        product: Futures settlement product.
+        dataset: Reference-history dataset.
+        error: Optional deterministic retrieval failure.
+
+    Returns:
+        The same tabular data with a serializable download report.
+    """
+    available = None if frame.empty else requested
+    result = Result(
+        pair,
+        frame,
+        requested,
+        used_range=available,
+        available_range=available,
+        source="bitget",
+        product=product,
+        dataset=dataset,
+        gap_policy=None,
+    )
+    if error is not None:
+        result.errors.append(error)
+    elif frame.empty:
+        result.errors.append(
+            Message(
+                "range_unavailable",
+                "Bitget returned no rows for the requested reference-data range.",
+            )
+        )
+    return result.frame()
 
 
 class Bitget:
@@ -248,9 +294,23 @@ class Bitget:
         declaration = get_dataset(product, dataset)
         declaration.resolve_interval(interval)
         first, last = _range(start, end)
-        return self._reference.candles(
-            _reference_pair(pair), product, dataset, interval, first, last
-        )
+        symbol = _reference_pair(pair)
+        try:
+            frame = self._reference.candles(
+                symbol, product, dataset, interval, first, last
+            )
+            return _reported_reference(frame, symbol, (first, last), product, dataset)
+        except BitgetResponseError as error:
+            if error.code != "25100":
+                raise
+            return _reported_reference(
+                candle_frame([]),
+                symbol,
+                (first, last),
+                product,
+                dataset,
+                error=Message("unknown_pair", error.message),
+            )
 
     def get_funding_rates(
         self,
@@ -263,7 +323,23 @@ class Bitget:
         """Return Bitget Futures funding settlements."""
         get_dataset(product, "funding_rates")
         first, last = _range(start, end)
-        return self._reference.funding(_reference_pair(pair), product, first, last)
+        symbol = _reference_pair(pair)
+        try:
+            frame = self._reference.funding(symbol, product, first, last)
+            return _reported_reference(
+                frame, symbol, (first, last), product, "funding_rates"
+            )
+        except BitgetResponseError as error:
+            if error.code != "25100":
+                raise
+            return _reported_reference(
+                funding_frame([]),
+                symbol,
+                (first, last),
+                product,
+                "funding_rates",
+                error=Message("unknown_pair", error.message),
+            )
 
     def get_mark_price_klines(
         self,
