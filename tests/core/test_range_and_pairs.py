@@ -4,12 +4,14 @@ from veldra.binance.datasets import get_dataset
 
 
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import replace
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
-from threading import Lock
+from threading import Barrier, Lock
 from time import sleep
+from unittest.mock import patch
 
 import httpx
 import pandas as pd
@@ -825,6 +827,81 @@ def test_multiple_pair_workflows_run_concurrently_and_preserve_order(
     assert [result.pair for result in results] == symbols
     assert all(result.complete for result in results)
     assert source.peak_calls >= 2
+
+
+def test_distinct_sources_overlap_with_one_catalog(tmp_path: Path) -> None:
+    """Allow both sources to reach network work before either can finish."""
+    both_fetching = Barrier(2, timeout=5)
+    day = date(2024, 1, 1)
+
+    class ConcurrentSource(RangeSource):
+        """Block market discovery until the other source reaches it."""
+
+        def markets(self, client: httpx.Client, product: str) -> list[Market]:
+            """Wait for the other source and then return this market snapshot."""
+            both_fetching.wait()
+            return super().markets(client, product)
+
+    sources = [
+        ConcurrentSource([market("BTCUSDT")], {"BTCUSDT": [day]}) for _ in range(2)
+    ]
+    for index, source in enumerate(sources):
+        source.code = f"source_{index}"
+
+    def retrieve(source: RangeSource) -> Result:
+        """Retrieve the same symbol from one source in the shared catalog."""
+        result = service(tmp_path, source).get_results(
+            "BTCUSDT", day, day, progress=False
+        )
+        return one_result(result)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(retrieve, sources))
+
+    assert [result.source for result in results] == ["source_0", "source_1"]
+    assert all(result.complete and len(result.data) == 1 for result in results)
+    with open_catalog(tmp_path / "catalog.duckdb") as catalog:
+        for source in sources:
+            key = ResourceKey(source.code, "spot", "klines", "BTCUSDT", "1m")
+            assert catalog.resources(key, day, day)[0].status == "ready"
+
+
+def test_overlapping_calls_to_one_source_reuse_the_published_archive(
+    tmp_path: Path,
+) -> None:
+    """Keep duplicate publications coordinated across downloader instances."""
+    day = date(2024, 1, 1)
+    source = RangeSource([market("BTCUSDT")], {"BTCUSDT": [day]}, delay=0.05)
+    both_ready = Barrier(2, timeout=5)
+
+    def retrieve(engine: RetrievalEngine) -> Result:
+        """Start each retrieval at the same time."""
+        both_ready.wait()
+        return one_result(engine.get_results("BTCUSDT", day, day, progress=False))
+
+    write_fixture = source.ingest
+
+    def ingest_with_schema(
+        client: httpx.Client,
+        resource: Resource,
+        dataset: DatasetSpec,
+        destination: Path,
+    ) -> IngestedResource:
+        """Publish the fixture with the schema required for warm reuse."""
+        return replace(
+            write_fixture(client, resource, dataset, destination),
+            timestamp_column=dataset.time_column,
+            schema_version=dataset.schema_version,
+        )
+
+    engines = [service(tmp_path, source), service(tmp_path, source)]
+    with patch.object(source, "ingest", side_effect=ingest_with_schema) as ingest:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            results = list(executor.map(retrieve, engines))
+        assert ingest.call_count == 1
+    assert source.market_calls == 1
+    assert all(result.complete and len(result.data) == 1 for result in results)
+    pd.testing.assert_frame_equal(results[0].data, results[1].data)
 
 
 def test_dataset_ingestion_limit_is_shared_by_every_pair(

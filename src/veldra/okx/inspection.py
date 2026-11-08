@@ -163,7 +163,7 @@ def _snapshot(
     if offline and not catalog_path.is_file():
         raise RuntimeError("offline mode requires cached OKX market metadata")
     reporter = Reporter(service.progress)
-    with catalog_lock(catalog_path):
+    with catalog_lock(catalog_path, "okx"):
         with service._client(offline=offline) as client:
             with open_catalog(catalog_path) as catalog:
                 markets = service._markets(
@@ -748,7 +748,7 @@ def get_availability(
     catalog_path = service.data_dir / "catalog.duckdb"
     if not catalog_path.is_file():
         raise RuntimeError("local availability requires cached OKX market metadata")
-    with catalog_lock(catalog_path):
+    with catalog_lock(catalog_path, "okx"):
         with open_catalog(catalog_path) as catalog:
             market, subject, specification = _inspection_identity(
                 service,
@@ -816,7 +816,7 @@ def discover_availability(
         effective_start, request.end, specification
     )
     catalog_path = service.data_dir / "catalog.duckdb"
-    with catalog_lock(catalog_path):
+    with catalog_lock(catalog_path, "okx"):
         with service._client(offline=False) as client:
             with open_catalog(catalog_path) as catalog:
                 market, subject, specification = _inspection_identity(
