@@ -1,5 +1,6 @@
 """Provide the public facade for Gate historical market data."""
 
+from collections.abc import Iterator
 from datetime import date, datetime
 from pathlib import Path
 from typing import Literal
@@ -16,6 +17,7 @@ from veldra.core.inspection import (
     get_markets as _get_markets,
 )
 from veldra.core.models import Availability, Market, Result
+from veldra.gate.archives import SpotKlineArchive
 from veldra.gate.connector import GateConnector
 from veldra.gate.datasets import GateDataset, get_dataset
 
@@ -63,9 +65,10 @@ class Gate:
         _validate_settings(timeout, retries, backoff)
         if not isinstance(progress, bool):
             raise TypeError("progress must be a Boolean")
+        self._source = GateConnector(timeout=timeout, retries=retries, backoff=backoff)
         self._downloader = RetrievalEngine(
             data_dir,
-            source=GateConnector(timeout=timeout, retries=retries, backoff=backoff),
+            source=self._source,
             dataset_resolver=get_dataset,
             config_path=config_path,
             earliest_date=earliest_date,
@@ -581,6 +584,19 @@ class Gate:
             dataset=dataset,
             interval=interval,
         )
+
+    def list_spot_kline_archives(
+        self, start: date, end: date, *, interval: Literal["10s", "1m", "5m"] = "1m"
+    ) -> Iterator[SpotKlineArchive]:
+        """Yield archive objects overlapping inclusive UTC days.
+
+        Includes historical symbols and both file cadences. Iteration uses the
+        exchange's HTTP budget and can raise if a listing page fails.
+        """
+        if type(start) is not date or type(end) is not date:
+            raise TypeError("archive listing dates must be date objects")
+        with self._downloader._client(offline=False) as client:
+            yield from self._source.spot_kline_archives(client, start, end, interval)
 
     def discover_availability(
         self,

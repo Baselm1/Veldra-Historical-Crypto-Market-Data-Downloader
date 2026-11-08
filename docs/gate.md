@@ -1,5 +1,11 @@
 # Gate.io
 
+`Gate.list_spot_kline_archives(start, end)` lists native one-minute files
+that overlap inclusive UTC dates, including symbols absent from the live
+market roster. Pass `interval="5m"` to inspect the separate native archive
+inventory. Daily and monthly files can overlap, so count each covered range
+once when estimating availability.
+
 - Historical data: [gate.com/developer/historical_quotes](https://www.gate.com/developer/historical_quotes)
 - Public API: [gate.com/docs/developers/apiv4](https://www.gate.com/docs/developers/apiv4/)
 
