@@ -11,6 +11,7 @@ from veldra.core.download import _validate_settings
 from veldra.core.engine import RetrievalEngine
 from veldra.core.inspection import (
     discover_availability as _discover_availability,
+    discover_availability_many as _discover_availability_many,
     find_markets as _find_markets,
     get_availability as _get_availability,
     get_markets as _get_markets,
@@ -708,6 +709,34 @@ class HTX:
         return _discover_availability(
             self._downloader,
             pair,
+            start,
+            end,
+            product=product,
+            dataset=dataset,
+            interval=interval,
+            refresh=refresh,
+            progress=self._progress,
+        )
+
+    def discover_availability_many(
+        self,
+        pairs: list[str],
+        start: DateInput,
+        end: DateInput,
+        *,
+        product: Product,
+        dataset: HTXDataset,
+        interval: str | None = None,
+        refresh: bool = False,
+    ) -> list[Availability]:
+        """Discover archive coverage concurrently in input order.
+
+        An exception group identifies failed pairs after the batch settles.
+        Successful archive checkpoints can be reused on retry.
+        """
+        return _discover_availability_many(
+            self._downloader,
+            pairs,
             start,
             end,
             product=product,

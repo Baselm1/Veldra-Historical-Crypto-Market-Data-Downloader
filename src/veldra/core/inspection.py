@@ -1,7 +1,11 @@
 """Inspect source markets and dataset coverage without exposing the catalog."""
 
+from concurrent.futures import ThreadPoolExecutor
+from collections.abc import Callable
+from contextlib import nullcontext
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta
+from functools import partial
 import logging
 from pathlib import Path
 from typing import Protocol, cast
@@ -11,6 +15,7 @@ import httpx
 from veldra.core.catalog import Catalog, catalog_lock, open_catalog
 from veldra.core.datasets import DatasetSpec
 from veldra.core.discovery import (
+    CheckpointGuard,
     _merge_ranges,
     boundary_predates_known_cadence,
     covered_days,
@@ -948,6 +953,7 @@ def _source_boundary(
     requested_start: datetime,
     refresh: bool,
     progress: bool,
+    checkpoint_guard: CheckpointGuard = nullcontext,
 ) -> None:
     """Discover and cache the first source archive when it is not known.
 
@@ -960,6 +966,7 @@ def _source_boundary(
         requested_start: The requested UTC start used to detect older archive layouts.
         refresh: Whether to repeat source-boundary discovery.
         progress: Whether to show Rich activity.
+        checkpoint_guard: Context that serializes writes after remote discovery.
     """
     bounds = catalog.source_bounds(key)
     if (
@@ -977,7 +984,8 @@ def _source_boundary(
         )
     if first is None:
         return
-    record_source_boundary(catalog, key, first)
+    with checkpoint_guard():
+        record_source_boundary(catalog, key, first)
 
 
 def discover_availability(
@@ -1036,50 +1044,16 @@ def discover_availability(
                     refresh_hours=downloader.market_refresh_hours,
                 )
                 market = _resolve_market(request.pairs[0], markets)
-                key = _key(
-                    downloader.source.code,
-                    selected_product,
-                    specification,
-                    market,
-                )
-                _source_boundary(
+                result = _discover_market(
                     downloader,
                     catalog,
                     client,
-                    key,
+                    request,
+                    market,
                     specification,
-                    requested_start=request.start,
+                    output_interval,
                     refresh=selected_refresh,
                     progress=progress,
-                )
-                _first, last = requested_days(
-                    request.start,
-                    request.end,
-                    specification.archive_day_offset,
-                )
-                recent = last >= latest_published_day(
-                    utc_today(), specification
-                ) - timedelta(days=downloader.discovery_tail_days - 1)
-                plan_archives(
-                    downloader.source,
-                    catalog,
-                    client,
-                    key,
-                    request.start,
-                    request.end,
-                    dataset=specification,
-                    active=market.active and recent,
-                    refresh=selected_refresh,
-                    tail_days=downloader.discovery_tail_days,
-                    reporter=Reporter(progress),
-                )
-                result = _availability(
-                    downloader,
-                    catalog,
-                    key,
-                    specification,
-                    market,
-                    output_interval,
                 )
     LOGGER.info(
         "Availability discovered: product=%s dataset=%s symbol=%s "
@@ -1092,3 +1066,150 @@ def discover_availability(
         result.available_days,
     )
     return result
+
+
+def _discover_market(
+    downloader: RetrievalEngine,
+    catalog: Catalog,
+    client: httpx.Client,
+    request: Request,
+    market: Market,
+    specification: DatasetSpec,
+    output_interval: str | None,
+    *,
+    refresh: bool,
+    progress: bool,
+    checkpoint_guard: CheckpointGuard = nullcontext,
+) -> Availability:
+    """Discover one resolved market and summarize its committed coverage."""
+    key = _key(downloader.source.code, request.product, specification, market)
+    _source_boundary(
+        downloader,
+        catalog,
+        client,
+        key,
+        specification,
+        requested_start=request.start,
+        refresh=refresh,
+        progress=progress,
+        checkpoint_guard=checkpoint_guard,
+    )
+    _, last = requested_days(
+        request.start, request.end, specification.archive_day_offset
+    )
+    recent = last >= latest_published_day(utc_today(), specification) - timedelta(
+        days=downloader.discovery_tail_days - 1
+    )
+    plan_archives(
+        downloader.source,
+        catalog,
+        client,
+        key,
+        request.start,
+        request.end,
+        dataset=specification,
+        active=market.active and recent,
+        refresh=refresh,
+        tail_days=downloader.discovery_tail_days,
+        reporter=Reporter(progress),
+        checkpoint_guard=checkpoint_guard,
+    )
+    return _availability(
+        downloader, catalog, key, specification, market, output_interval
+    )
+
+
+def discover_availability_many(
+    downloader: RetrievalEngine,
+    pairs: list[str],
+    start: object,
+    end: object,
+    *,
+    product: object,
+    dataset: object,
+    interval: object = None,
+    refresh: object = False,
+    progress: bool = True,
+) -> list[Availability]:
+    """Discover coverage for several pairs with one exchange HTTP budget.
+
+    Results follow input order. If any pair fails, an exception group identifies
+    the failures after all jobs settle. Successful checkpoints remain reusable.
+    """
+    selected_refresh = _boolean(refresh, "refresh")
+    selected_product, specification, output_interval = _dataset(
+        downloader, product, dataset, interval
+    )
+    request = Request.parse(
+        pairs,
+        start,
+        end,
+        product=selected_product,
+        dataset=specification.name,
+        interval=interval,
+        gap_policy=None,
+    ).resolve_dataset(specification)
+    path = downloader.data_dir / "catalog.duckdb"
+    guard = partial(catalog_lock, path, downloader.source.code)
+    with downloader._client(offline=False) as client:
+        with guard(), open_catalog(path) as catalog:
+            markets = _load_markets(
+                downloader.source,
+                catalog,
+                client,
+                selected_product,
+                Reporter(progress),
+                refresh=selected_refresh,
+                offline=False,
+                refresh_hours=downloader.market_refresh_hours,
+            )
+        targets = _discovery_targets(request.pairs, markets)
+
+        def discover(market: Market) -> Availability | Exception:
+            try:
+                with open_catalog(path, initialize=False) as catalog:
+                    return _discover_market(
+                        downloader,
+                        catalog,
+                        client,
+                        request,
+                        market,
+                        specification,
+                        output_interval,
+                        refresh=selected_refresh,
+                        progress=False,
+                        checkpoint_guard=guard,
+                    )
+            except Exception as error:
+                error.add_note(f"Availability discovery for {market.symbol}")
+                return error
+
+        unique = tuple(dict.fromkeys(targets))
+        with ThreadPoolExecutor(
+            max_workers=min(downloader._http_budget.limit, len(unique))
+        ) as pool:
+            outcomes = dict(zip(unique, pool.map(discover, unique), strict=True))
+    errors = [
+        outcome for outcome in outcomes.values() if isinstance(outcome, Exception)
+    ]
+    if errors:
+        raise ExceptionGroup("Archive availability discovery failed", errors)
+    return [cast(Availability, outcomes[market]) for market in targets]
+
+
+def _discovery_targets(
+    pairs: tuple[str, ...],
+    markets: list[Market],
+    *,
+    resolve: Callable[[str], Market] | None = None,
+) -> list[Market]:
+    """Index native spellings for a large roster and resolve other spellings normally."""
+    by_name: dict[str, list[Market]] = {}
+    for market in markets:
+        by_name.setdefault(market.symbol.upper(), []).append(market)
+    resolve = resolve or (lambda pair: _resolve_market(pair, markets))
+    targets = []
+    for pair in pairs:
+        exact = by_name.get(pair.upper(), [])
+        targets.append(exact[0] if len(exact) == 1 else resolve(pair))
+    return targets

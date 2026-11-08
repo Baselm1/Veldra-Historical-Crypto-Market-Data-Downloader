@@ -172,7 +172,7 @@ class OKXArchivePlanner:
         monthly_only_specific: bool,
     ) -> list[ArchiveObject]:
         """Discover only source dates not covered by ready physical objects."""
-        selected: list[ArchiveObject] = []
+        groups: dict[tuple[Cadence, date, date], list[DataSubject]] = {}
         for subject in subjects:
             covered = self._covered_days(cached, subject, begin, end)
             missing = [day for day in self._days(begin, end) if day not in covered]
@@ -186,17 +186,16 @@ class OKXArchivePlanner:
                     missing, supports_monthly and not use_bulk
                 )
             for first, last in self._month_segments(monthly):
-                selected.extend(
-                    self._discovery.discover(
-                        product, dataset, [subject], "monthly", first, last
-                    )
-                )
+                groups.setdefault(("monthly", first, last), []).append(subject)
             for first, last in self._segments(daily):
-                selected.extend(
-                    self._discovery.discover(
-                        product, dataset, [subject], "daily", first, last
-                    )
-                )
+                groups.setdefault(("daily", first, last), []).append(subject)
+        selected = [
+            item
+            for (cadence, first, last), batch in groups.items()
+            for item in self._discovery.discover(
+                product, dataset, batch, cadence, first, last
+            )
+        ]
         return list({item.key.archive_id: item for item in selected}.values())
 
     @staticmethod
