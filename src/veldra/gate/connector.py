@@ -1,7 +1,7 @@
 """Discover Gate markets and deterministic historical archive resources."""
 
 from calendar import monthrange
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import UTC, date, datetime, time, timedelta
@@ -22,10 +22,10 @@ from veldra.core.models import (
     ResourceKey,
 )
 from veldra.core.request import normalize_pair
+from veldra.gate.archives import ARCHIVE_URL, SpotKlineArchive, list_spot_klines
 from veldra.gate.datasets import PRODUCTS, get_dataset, supports
 
 API_URL = "https://api.gateio.ws/api/v4"
-ARCHIVE_URL = "https://download.gatedata.org"
 PRODUCT_PATHS: Mapping[str, str] = {
     "spot": "spot",
     "um": "futures_usdt",
@@ -34,6 +34,7 @@ PRODUCT_PATHS: Mapping[str, str] = {
 _SAFE_SYMBOL = re.compile(r"[A-Z0-9_]+")
 _PLAIN_MD5 = re.compile(r"[0-9a-fA-F]{32}")
 _ORDER_BOOK_DATASETS = frozenset({"order_book_updates", "order_book_snapshots"})
+_SPOT_KLINE_START = date(2017, 9, 1)
 
 
 class GateConnector:
@@ -166,6 +167,9 @@ class GateConnector:
             if key.cadence == "monthly"
             else self._days(start_day, end_day)
         )
+        listing_threshold = 1 if key.cadence == "monthly" else 31
+        if self._spot_klines(key) and len(periods) > listing_threshold:
+            return self._listed_resources(client, key, start_day, end_day, periods)
         candidates = [self._candidate(key, period) for period in periods]
         if not candidates:
             return []
@@ -178,6 +182,71 @@ class GateConnector:
                 )
             )
         return [resource for resource in found if resource is not None]
+
+    @staticmethod
+    def _spot_klines(key: ResourceKey) -> bool:
+        """Identify the archive family supported by the bucket listing."""
+        return key.product == "spot" and key.dataset == "klines"
+
+    def spot_kline_archives(
+        self,
+        client: httpx.Client,
+        start_day: date,
+        end_day: date,
+        interval: str,
+        *,
+        symbol: str | None = None,
+    ) -> Iterator[SpotKlineArchive]:
+        """List Spot kline archives that overlap inclusive UTC dates."""
+        if start_day > end_day:
+            raise ValueError("archive range must not be reversed")
+        if end_day < _SPOT_KLINE_START:
+            return
+        for month in self._month_starts(max(start_day, _SPOT_KLINE_START), end_day):
+            for archive in list_spot_klines(
+                client,
+                month,
+                interval,
+                symbol=symbol,
+                timeout=self.timeout,
+                retries=self.retries,
+                backoff=self.backoff,
+            ):
+                if archive.day <= end_day and (
+                    archive.cadence == "monthly" or archive.day >= start_day
+                ):
+                    yield archive
+
+    def _listed_resources(
+        self,
+        client: httpx.Client,
+        key: ResourceKey,
+        start_day: date,
+        end_day: date,
+        periods: list[date],
+    ) -> list[Resource]:
+        """Convert listed Spot files into ordinary download resources."""
+        assert key.interval is not None
+        wanted = set(periods)
+        found: dict[date, Resource] = {}
+        for archive in self.spot_kline_archives(
+            client,
+            start_day,
+            end_day,
+            key.interval,
+            symbol=key.archive_symbol or key.symbol,
+        ):
+            if archive.cadence == key.cadence and archive.day in wanted:
+                resource = self._candidate(key, archive.day)
+                if archive.checksum:
+                    resource = replace(
+                        resource,
+                        integrity=IntegritySpec(
+                            "response_header", "md5", expected=archive.checksum
+                        ),
+                    )
+                found[archive.day] = resource
+        return [found[day] for day in sorted(found)]
 
     def first_resource(
         self,
@@ -198,7 +267,10 @@ class GateConnector:
             The earliest existing resource, or ``None``.
         """
         self._validate_resource_request(key, start_day, end_day)
-        cursor = max(start_day or self._source_start(key), self._source_start(key))
+        floor = self._source_start(key)
+        if self._spot_klines(key) and start_day is not None:
+            floor = _SPOT_KLINE_START
+        cursor = max(start_day or floor, floor)
         transition = get_dataset(
             key.product, key.dataset, requested_interval=key.interval
         ).daily_archive_start
@@ -355,6 +427,8 @@ class GateConnector:
             if key.dataset in _ORDER_BOOK_DATASETS
             else date(2023, 1, 1)
         )
+        if self._spot_klines(key):
+            published_start = _SPOT_KLINE_START
         hint = self._onboard_dates.get((key.product, key.symbol))
         if hint is not None:
             return max(hint, published_start)

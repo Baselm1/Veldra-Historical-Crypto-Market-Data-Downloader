@@ -124,11 +124,11 @@ def test_daily_spot_kline_resources_use_compact_dates_and_etags() -> None:
     key = ResourceKey("gate", "spot", "klines", "BTC_USDT", "1m")
     with client() as http:
         resources = GateConnector(retries=0).resources(
-            http, key, date(2025, 1, 1), date(2025, 2, 1)
+            http, key, date(2025, 1, 30), date(2025, 2, 1)
         )
 
-    assert len(resources) == 31
-    assert resources[0].url.endswith("/BTC_USDT-20250101.csv.gz")
+    assert len(resources) == 2
+    assert resources[0].url.endswith("/BTC_USDT-20250130.csv.gz")
     assert resources[0].integrity_spec.expected == "0123456789abcdef0123456789abcdef"
     assert resources[0].coverage[1] - resources[0].coverage[0] == timedelta(days=1)
 
@@ -175,7 +175,7 @@ def test_source_bounds_never_probe_before_gate_publication() -> None:
 
     assert connector._source_start(
         ResourceKey("gate", "spot", "klines", "BTC_USDT", "1m")
-    ) == date(2023, 1, 1)
+    ) == date(2017, 9, 1)
     assert connector._source_start(
         ResourceKey("gate", "spot", "order_book_updates", "BTC_USDT", None)
     ) == date(2021, 8, 1)
