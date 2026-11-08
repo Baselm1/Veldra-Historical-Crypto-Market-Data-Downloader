@@ -219,6 +219,8 @@ class OKXFixture:
         Returns:
             Current API envelope, manifest, or archive bytes.
         """
+        if request.url.path.startswith("/priapi/"):
+            return httpx.Response(200, json={"code": "0", "data": {"instList": []}})
         if request.url.path.endswith("/instruments"):
             return httpx.Response(
                 200,

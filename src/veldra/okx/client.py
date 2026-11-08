@@ -5,6 +5,7 @@ from datetime import UTC, date, datetime
 import json
 import math
 import random
+import re
 import time
 from typing import Callable, Protocol, cast
 
@@ -22,6 +23,7 @@ RETRYABLE_STATUS = frozenset({408, 429, 500, 502, 503, 504})
 DEFAULT_POLICIES: dict[str, RatePolicy] = {
     "manifest": RatePolicy(5, 2),
     "instruments": RatePolicy(20, 2),
+    "historical_instruments": RatePolicy(5, 2),
     "tickers": RatePolicy(20, 2),
     "history_candles": RatePolicy(20, 2),
     "history_index_candles": RatePolicy(10, 2),
@@ -239,14 +241,14 @@ class OKXClient:
         self.close()
 
     @staticmethod
-    def _envelope(response: httpx.Response) -> list[object]:
-        """Validate one OKX response envelope and return its data list.
+    def _envelope_data(response: httpx.Response) -> object:
+        """Validate one OKX response envelope and return its data.
 
         Args:
             response: Successful HTTP response to decode.
 
         Returns:
-            The source data list, which may be empty.
+            The source data value.
         """
         try:
             payload = response.json()
@@ -266,7 +268,12 @@ class OKXClient:
                 message if isinstance(message, str) else "unknown source error",
                 retryable=code == "50011",
             )
-        data = payload.get("data")
+        return payload.get("data")
+
+    @staticmethod
+    def _envelope(response: httpx.Response) -> list[object]:
+        """Return the validated data list from a standard OKX endpoint."""
+        data = OKXClient._envelope_data(response)
         if not isinstance(data, list):
             raise OKXResponseError("invalid_envelope", "response data must be a list")
         return data
@@ -302,6 +309,16 @@ class OKXClient:
         Returns:
             The validated response data list.
         """
+        return self._request(path, policy_key, params, self._envelope)
+
+    def _request[T](
+        self,
+        path: str,
+        policy_key: str,
+        params: Mapping[str, str] | None,
+        decode: Callable[[httpx.Response], T],
+    ) -> T:
+        """Retry a request using the decoder for its response shape."""
         for attempt in range(self.retries + 1):
             self.limiter.acquire(policy_key)
             response: httpx.Response | None = None
@@ -312,7 +329,7 @@ class OKXClient:
                 if response.status_code in RETRYABLE_STATUS:
                     response.raise_for_status()
                 response.raise_for_status()
-                return self._envelope(response)
+                return decode(response)
             except OKXResponseError as error:
                 retryable = error.retryable
                 caught: Exception = error
@@ -379,6 +396,28 @@ class OKXClient:
             params=params,
         )
         return self._rows(data, "instrument")
+
+    def get_historical_spot_instruments(self) -> list[str]:
+        """Return native Spot IDs from OKX's public archive selector."""
+        return self._request(
+            "/priapi/v5/broker/public/trade-data/instruments",
+            "historical_instruments",
+            {"instType": "SPOT"},
+            self._historical_spot_ids,
+        )
+
+    @staticmethod
+    def _historical_spot_ids(response: httpx.Response) -> list[str]:
+        """Validate the selector without changing native instrument spelling."""
+        data = OKXClient._envelope_data(response)
+        values = data.get("instList") if isinstance(data, dict) else None
+        if not isinstance(values, list) or any(
+            not isinstance(value, str)
+            or re.fullmatch(r"[A-Za-z0-9_-]+-[A-Za-z0-9_]+", value) is None
+            for value in values
+        ):
+            raise OKXResponseError("invalid_data", "invalid historical Spot IDs")
+        return sorted(set(cast(list[str], values)))
 
     def get_underlyings(self, inst_type: str) -> list[str]:
         """Return native derivative underlyings for one instrument type.

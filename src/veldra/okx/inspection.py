@@ -583,7 +583,8 @@ def _availability(
     relevant = [
         item
         for item in archives
-        if item.key.remote_scope_kind == "all" or item.key.subject == subject
+        if item.key.subject == subject
+        or (item.key.remote_scope_kind == "all" and market.status != "archive_only")
     ]
     available = _coverage_days([item for item in relevant if item.status != "missing"])
     remote_range = (min(available), max(available)) if available else None

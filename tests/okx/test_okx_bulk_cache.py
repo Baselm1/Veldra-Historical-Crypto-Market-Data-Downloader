@@ -64,6 +64,8 @@ class BulkFixture:
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         """Return one response for each bulk-cache operation."""
+        if request.url.path.startswith("/priapi/"):
+            return httpx.Response(200, json={"code": "0", "data": {"instList": []}})
         if request.url.path.endswith("/instruments"):
             rows = [self._instrument("BTC-USDT"), self._instrument("ETH-USDT")]
             return httpx.Response(

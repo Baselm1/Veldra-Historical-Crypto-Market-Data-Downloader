@@ -62,6 +62,8 @@ class OptionsFixture:
                 json={"code": "0", "msg": "", "data": [["BTC-USD"]]},
                 request=request,
             )
+        if request.url.path.startswith("/priapi/"):
+            return httpx.Response(200, json={"code": "0", "data": {"instList": []}})
         if request.url.path.endswith("/instruments"):
             row = {
                 "instType": "OPTION",
