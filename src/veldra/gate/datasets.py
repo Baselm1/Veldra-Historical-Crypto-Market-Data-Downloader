@@ -1,6 +1,7 @@
 """Declare Gate products, datasets, schemas, and physical intervals."""
 
 from collections.abc import Mapping
+from datetime import date
 from types import MappingProxyType
 from typing import Literal
 
@@ -140,6 +141,7 @@ def _klines(product: GateProduct, base_interval: Literal["10s", "1m"]) -> Datase
         timestamp_columns=("open_time",),
         sort_source_rows=True,
         archive_cadence="daily" if spot else "monthly",
+        daily_archive_start=date(2024, 4, 1) if spot else None,
     )
 
 

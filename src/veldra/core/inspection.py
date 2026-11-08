@@ -1,7 +1,7 @@
 """Inspect source markets and dataset coverage without exposing the catalog."""
 
 from dataclasses import dataclass, replace
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 import logging
 from pathlib import Path
 from typing import Protocol, cast
@@ -12,9 +12,11 @@ from veldra.core.catalog import Catalog, catalog_lock, open_catalog
 from veldra.core.datasets import DatasetSpec
 from veldra.core.discovery import (
     _merge_ranges,
+    boundary_predates_known_cadence,
     covered_days,
     discover_resources,
     latest_published_day,
+    record_source_boundary,
     requested_days,
 )
 from veldra.core.reporting import Reporter, format_source
@@ -949,6 +951,7 @@ def _source_boundary(
     key: ResourceKey,
     dataset: DatasetSpec,
     *,
+    requested_start: datetime,
     refresh: bool,
     progress: bool,
 ) -> None:
@@ -960,12 +963,18 @@ def _source_boundary(
         client: The HTTPX client used for source requests.
         key: The exact stored dataset identity.
         dataset: The dataset declaring its publication calendar.
+        requested_start: The requested UTC start used to detect older archive layouts.
         refresh: Whether to repeat source-boundary discovery.
         progress: Whether to show Rich activity.
     """
-    if catalog.source_bounds(key) is not None and not refresh:
+    bounds = catalog.source_bounds(key)
+    if (
+        bounds is not None
+        and not refresh
+        and not boundary_predates_known_cadence(requested_start, bounds[0], dataset)
+    ):
         return
-    with Reporter(progress).status(f"Finding the first {key.symbol} daily file"):
+    with Reporter(progress).status(f"Finding the first {key.symbol} archive"):
         first = downloader.source.first_resource(
             client,
             key,
@@ -974,8 +983,7 @@ def _source_boundary(
         )
     if first is None:
         return
-    catalog.save_discovery(key, first.day, first.day, [first])
-    catalog.save_source_bounds(key, first.day, None)
+    record_source_boundary(catalog, key, first)
 
 
 def discover_availability(
@@ -1055,6 +1063,7 @@ def discover_availability(
                     client,
                     key,
                     specification,
+                    requested_start=request.start,
                     refresh=selected_refresh,
                     progress=progress,
                 )

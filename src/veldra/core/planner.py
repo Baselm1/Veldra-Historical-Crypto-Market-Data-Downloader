@@ -212,6 +212,20 @@ def plan_archives(
             reporter=reporter,
         )
 
+    def scan_transition(transition: date) -> list[Resource]:
+        """Select both archive generations on either side of the transition."""
+        month_first = first.replace(day=1)
+        historical_last = min(last, transition - timedelta(days=1))
+        month_last = historical_last.replace(
+            day=monthrange(historical_last.year, historical_last.month)[1]
+        )
+        archives = scan(
+            replace(key, cadence="monthly"), month_first, month_last, monthly=True
+        )
+        if transition <= last:
+            archives.extend(scan(key, transition, last))
+        return select_archives(archives, dataset)
+
     if key.cadence == "monthly":
         for month_start, month_end in _overlapping_months(first, last):
             scan(key, month_start, month_end, monthly=True)
@@ -219,6 +233,10 @@ def plan_archives(
             catalog.resources_between(key, start, end),
             dataset,
         )
+
+    transition = dataset.daily_archive_start
+    if transition is not None and first < transition:
+        return scan_transition(transition)
 
     if key.dataset not in getattr(source, "monthly_datasets", ()):
         return scan(
