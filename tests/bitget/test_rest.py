@@ -1,6 +1,6 @@
 """Test persistent local storage for Bitget REST histories."""
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, tzinfo
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -142,6 +142,55 @@ def test_event_dataset_uses_the_same_presence_based_storage(tmp_path: Path) -> N
 
     assert fetch.call_count == 1
     pd.testing.assert_frame_equal(first, second)
+
+
+@pytest.mark.parametrize("initial_rows", [0, 1])
+def test_provisional_range_is_refetched_before_becoming_final(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, initial_rows: int
+) -> None:
+    """Refresh a recent snapshot and recheck once when it crosses finality."""
+    cache = _cache(tmp_path)
+    start, end = _range()
+    now = end + timedelta(minutes=1)
+
+    class Clock(datetime):
+        """Expose the test clock to the REST cache."""
+
+        @classmethod
+        def now(cls, tz: tzinfo | None = None) -> datetime:
+            """Return the current test time."""
+            return now.astimezone(tz) if tz else now.replace(tzinfo=None)
+
+    monkeypatch.setattr("veldra.bitget.rest.datetime", Clock)
+    candles = _candles()
+    fetch = Mock(side_effect=[candles.iloc[:initial_rows], candles, candles])
+
+    def read() -> pd.DataFrame:
+        """Request the same REST history window."""
+        return cache.get(
+            "mark_price_klines",
+            DataSubject("instrument", "BTCUSDT"),
+            start,
+            end,
+            product="usdt_futures",
+            interval="1m",
+            fetch=fetch,
+        )
+
+    assert len(read()) == initial_rows
+    assert len(read()) == initial_rows
+    assert fetch.call_count == 1
+
+    now += timedelta(hours=6)
+    assert len(read()) == 2
+    assert fetch.call_count == 2
+
+    now = end + timedelta(days=3)
+    assert len(read()) == 2
+    assert fetch.call_count == 3
+    now += timedelta(days=30)
+    assert len(read()) == 2
+    assert fetch.call_count == 3
 
 
 def test_unreadable_local_file_is_replaced_from_source(tmp_path: Path) -> None:
