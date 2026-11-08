@@ -1,6 +1,8 @@
 """Provide the public facade for Bybit historical market data."""
 
+from collections import Counter
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime
 from pathlib import Path
 from typing import Literal
@@ -14,6 +16,7 @@ from veldra.bybit.datasets import BybitDataset, get_dataset
 from veldra.bybit.history import kline_frame, object_frame
 from veldra.bybit.service import BybitService
 from veldra.core.download import _validate_settings
+from veldra.core.http_budget import MAX_EXCHANGE_REQUESTS
 from veldra.core.inspection import (
     discover_availability as _discover_availability,
     find_markets as _find_markets,
@@ -183,25 +186,36 @@ class Bybit:
             raise ValueError("refresh and offline cannot both be enabled")
         requested = parse_range(start, end)
         values, single = parse_pairs(pairs)
-        frames: list[pd.DataFrame] = []
-        for value in values:
-            symbol = value.upper()
+
+        def read(symbol: str) -> pd.DataFrame:
+            """Return one projected frame or an isolated unknown-pair report."""
             try:
                 frame = _project(retrieve(symbol, *requested), columns)
-                frames.append(_reported(frame, symbol, requested, product, dataset))
+                return _reported(frame, symbol, requested, product, dataset)
             except BybitResponseError as error:
                 if error.code not in _UNKNOWN_CODES:
                     raise
-                frames.append(
-                    _reported(
-                        _project(empty(), columns),
-                        symbol,
-                        requested,
-                        product,
-                        dataset,
-                        error=Message("unknown_pair", error.message),
-                    )
+                return _reported(
+                    _project(empty(), columns),
+                    symbol,
+                    requested,
+                    product,
+                    dataset,
+                    error=Message("unknown_pair", error.message),
                 )
+
+        symbols = [value.upper() for value in values]
+        if dataset == "klines" and len(symbols) > 1:
+            counts = Counter(symbols)
+            workers = min(len(counts), self.max_workers, MAX_EXCHANGE_REQUESTS)
+            with ThreadPoolExecutor(max_workers=workers) as executor:
+                loaded = dict(zip(counts, executor.map(read, counts), strict=True))
+            frames = [
+                loaded[symbol].copy() if counts[symbol] > 1 else loaded[symbol]
+                for symbol in symbols
+            ]
+        else:
+            frames = [read(symbol) for symbol in symbols]
         return frames[0] if single else frames
 
     def get_klines(
