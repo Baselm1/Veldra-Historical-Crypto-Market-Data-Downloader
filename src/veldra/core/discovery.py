@@ -134,11 +134,17 @@ def discover_resources(
     start_day, end_day = requested_days(start, end, offset)
     if tail_days < 1:
         raise ValueError("tail_days must be positive")
+    resources = catalog.resources_between(key, start, end)
     checkpoints = catalog.discovery_checkpoints(key)
     scan_ranges = _scan_ranges(
         start_day,
         end_day,
         checkpoints,
+        known=[
+            (resource.day, resource.last_day)
+            for resource in resources
+            if resource.status != "missing"
+        ],
         active=active,
         refresh=refresh,
         offline=offline,
@@ -161,19 +167,19 @@ def discover_resources(
     if scan_ranges:
         with display.status(f"Discovering {key.symbol} {key.cadence} files"):
             for scan_start, scan_end in scan_ranges:
-                resources = source.resources(client, key, scan_start, scan_end)
-                _validate_resources(resources, scan_start, scan_end)
-                catalog.save_discovery(key, scan_start, scan_end, resources)
+                found = source.resources(client, key, scan_start, scan_end)
+                _validate_resources(found, scan_start, scan_end)
+                catalog.save_discovery(key, scan_start, scan_end, found)
                 LOGGER.debug(
                     "Resource range discovered: key=%s range=[%s, %s] resources=%d",
                     key,
                     scan_start,
                     scan_end,
-                    len(resources),
+                    len(found),
                 )
+        resources = catalog.resources_between(key, start, end)
     elif not offline:
         display.info(f"{key.symbol}: reused cached {key.cadence}-file discovery")
-    resources = catalog.resources_between(key, start, end)
     LOGGER.info(
         "Resource discovery complete: key=%s resources=%d scans=%d",
         key,
@@ -188,6 +194,7 @@ def _scan_ranges(
     end_day: date,
     checkpoints: list[DiscoveryCheckpoint],
     *,
+    known: list[tuple[date, date]],
     active: bool,
     refresh: bool,
     offline: bool,
@@ -200,6 +207,7 @@ def _scan_ranges(
         start_day: The first day whose availability is needed.
         end_day: The last day whose availability is needed.
         checkpoints: The inclusive ranges already searched and their scan times.
+        known: The inclusive date ranges of archives already confirmed to exist.
         active: Whether recent listings may still change.
         refresh: Whether the caller requested a complete rescan.
         offline: Whether source access is forbidden.
@@ -211,14 +219,13 @@ def _scan_ranges(
     """
     if offline:
         return []
-    if refresh or not checkpoints:
+    if refresh:
         return [(start_day, end_day)]
 
-    covered_ranges = [(start, end) for start, end, _ in checkpoints]
-    ranges = _uncovered_ranges(start_day, end_day, covered_ranges)
+    fresh_ranges = _fresh_ranges(checkpoints, now)
+    ranges = _uncovered_ranges(start_day, end_day, [*known, *fresh_ranges])
     if active:
         tail_start = max(start_day, end_day - timedelta(days=tail_days - 1))
-        fresh_ranges = _fresh_ranges(checkpoints, now)
         ranges.extend(_uncovered_ranges(tail_start, end_day, fresh_ranges))
     return _merge_ranges(ranges)
 
