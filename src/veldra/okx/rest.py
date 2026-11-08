@@ -418,11 +418,16 @@ class OKXRESTHistory:
             raise ValueError(f"unsupported OKX REST dataset {name!r}")
         if start.tzinfo is None or end.tzinfo is None or start >= end:
             raise ValueError("REST history requires a valid aware time range")
-        key = self._key(spec, subject, start, end, product, params, interval)
+
+        def key_for_range(left: datetime, right: datetime) -> ArchiveKey:
+            """Keep the same request variant when checking an enclosing range."""
+            return self._key(spec, subject, left, right, product, params, interval)
+
+        key = key_for_range(start, end)
         partitions = self.catalog.partitions_between(
             "okx", product, name, subject, interval, start, end
         )
-        cached = self._covering_partition(partitions, start, end)
+        cached = self._covering_partition(partitions, start, end, key_for_range)
         archive = self.catalog.archive(key)
         fresh = end <= datetime.now(UTC) - timedelta(days=3) or (
             archive is not None and self._fresh(archive, end, spec.mutable_hours)
@@ -443,7 +448,10 @@ class OKXRESTHistory:
 
     @staticmethod
     def _covering_partition(
-        partitions: Sequence[LogicalPartition], start: datetime, end: datetime
+        partitions: Sequence[LogicalPartition],
+        start: datetime,
+        end: datetime,
+        key_for_range: Callable[[datetime, datetime], ArchiveKey],
     ) -> LogicalPartition | None:
         """Return the smallest cached partition covering a request.
 
@@ -451,6 +459,8 @@ class OKXRESTHistory:
             partitions: Candidate partitions for the logical subject.
             start: Inclusive requested timestamp.
             end: Exclusive requested timestamp.
+            key_for_range: Physical request identity for an enclosing range,
+                including the requested endpoint and query parameters.
 
         Returns:
             Exact or smallest enclosing partition, when one exists.
@@ -459,6 +469,9 @@ class OKXRESTHistory:
             item
             for item in partitions
             if item.coverage_start <= start and item.coverage_end >= end
+            # REST materializations are named after their physical request ID.
+            and item.materialization_path.stem
+            == key_for_range(item.coverage_start, item.coverage_end).archive_id
         )
         return min(
             covering,

@@ -66,7 +66,12 @@ class RESTFixture:
                 }
             ]
         elif path.endswith("taker-volume"):
-            data = [["1735689600000", "20", "30"]]
+            volumes = (
+                ("200", "300")
+                if request.url.params["instType"] == "CONTRACTS"
+                else ("20", "30")
+            )
+            data = [["1735689600000", *volumes]]
         elif path.endswith("long-short-account-ratio"):
             data = [["1735689600000", "1.2"]]
         elif path.endswith("open-interest-volume"):
@@ -144,6 +149,34 @@ def test_price_rate_and_lifecycle_history_is_cached(tmp_path: Path) -> None:
     cached = api.get_index_price_klines("BTC-USD", start, end, offline=True)
     assert len(cached) == 2
     assert fixture.calls["/api/v5/market/history-index-candles"] == 1
+
+
+def test_taker_volume_variants_do_not_share_covering_cache(tmp_path: Path) -> None:
+    """Reuse covering partitions only for the same statistics variant."""
+    fixture = RESTFixture()
+    api = configured(tmp_path, fixture)
+    start = datetime(2025, 1, 1, tzinfo=UTC)
+    end = datetime(2025, 1, 1, 0, 2, tzinfo=UTC)
+    subset_end = datetime(2025, 1, 1, 0, 1, tzinfo=UTC)
+    path = "/api/v5/rubik/stat/taker-volume"
+
+    spot = api.get_taker_volume("BTC", start, end, market="spot")
+    assert spot["sell_volume"].tolist() == [20.0]
+    with pytest.raises(RuntimeError, match="cached covering REST range"):
+        api.get_taker_volume("BTC", start, end, market="contracts", offline=True)
+
+    contracts = api.get_taker_volume("BTC", start, end, market="contracts")
+    assert contracts["sell_volume"].tolist() == [200.0]
+    for offline in (False, True):
+        spot = api.get_taker_volume(
+            "BTC", start, subset_end, market="spot", offline=offline
+        )
+        contracts = api.get_taker_volume(
+            "BTC", start, subset_end, market="contracts", offline=offline
+        )
+        assert spot["sell_volume"].tolist() == [20.0]
+        assert contracts["sell_volume"].tolist() == [200.0]
+    assert fixture.calls[path] == 2
 
 
 def test_trading_statistics_keep_distinct_schemas(tmp_path: Path) -> None:
