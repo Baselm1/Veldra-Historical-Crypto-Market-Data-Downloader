@@ -105,7 +105,7 @@ def test_spot_kline_schema_and_normalization_are_canonical() -> None:
     assert list(frame.columns) == ["instrument_id", *dataset.stored_columns]
     assert frame["base_volume"].tolist() == [2.0, 3.0]
     assert frame["quote_volume"].tolist() == [201.0, 306.0]
-    assert str(frame["open_time"].dtype) == "datetime64[ms, UTC]"
+    assert str(frame["open_time"].dtype) == "datetime64[us, UTC]"
     assert dataset.resolve_interval("1h") == "1h"
 
 
