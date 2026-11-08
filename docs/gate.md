@@ -106,6 +106,8 @@ Gate Spot Kline archives use monthly files through March 2024 and daily
 files from April 2024. Requests spanning the transition use both layouts.
 Missing source candles remain sparse by default with `gap_policy="keep"`;
 callers may request another supported gap policy explicitly.
+Active Spot kline retrieval searches only the requested window. Use
+`discover_availability(...)` to look up the earliest available archive.
 
 ## Order books
 

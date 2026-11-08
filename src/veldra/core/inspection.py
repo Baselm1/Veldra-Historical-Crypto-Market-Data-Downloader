@@ -754,7 +754,11 @@ def _remote_range(
     """
     bounds = catalog.source_bounds(key)
     if bounds is None:
-        return None
+        return (
+            catalog.resource_bounds(key, include_monthly=True)
+            if dataset.bounded_history_lookup
+            else None
+        )
     first, final = bounds
     if market.active:
         final = latest_published_day(today, dataset)

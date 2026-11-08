@@ -332,6 +332,7 @@ class DatasetSpec:
     archive_cadence: ArchiveCadence = "daily"
     daily_archive_start: date | None = None
     rebuild_on_refresh: bool = False
+    bounded_history_lookup: bool = False
 
     def __post_init__(self) -> None:
         """Validate the immutable capability declaration.

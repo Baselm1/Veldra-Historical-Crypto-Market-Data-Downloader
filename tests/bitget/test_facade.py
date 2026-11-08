@@ -145,6 +145,46 @@ def test_market_search_forwards_common_filters(tmp_path: Path) -> None:
     service.close()
 
 
+def test_active_klines_search_only_the_requested_archive_days(tmp_path: Path) -> None:
+    """Skip expensive earliest-file probes for a bounded missing kline window."""
+    from datetime import date
+    from veldra.core.models import Market
+
+    service = Bitget(tmp_path, retries=0, progress=False)
+    source = service._downloader.source
+    market = Market("BTCUSDT", "BTCUSDT", pair="BTC/USDT", active=True)
+    try:
+        with (
+            patch.object(source, "markets", return_value=[market]),
+            patch.object(
+                source, "first_resource", side_effect=AssertionError("broad scan")
+            ),
+            patch(
+                "veldra.bitget.connector.BitgetManifestDiscovery.discover",
+                return_value=[],
+            ) as discover,
+        ):
+            for offline in (False, False, True):
+                frame = service.get_klines(
+                    "BTCUSDT",
+                    "2025-01-15T12:00:00Z",
+                    "2025-01-15T12:05:00Z",
+                    offline=offline,
+                )
+                assert isinstance(frame, pd.DataFrame)
+                assert frame.empty
+                assert frame.attrs["download"]["available_range"] is None
+                assert (
+                    frame.attrs["download"]["problems"][0]["code"]
+                    == "resource_unavailable"
+                )
+        discover.assert_called_once_with(
+            "spot", "klines", ["BTC/USDT"], date(2025, 1, 15), date(2025, 1, 15)
+        )
+    finally:
+        service.close()
+
+
 def test_availability_helpers_delegate_to_shared_inspection(tmp_path: Path) -> None:
     """Bitget exposes cataloged and bounded remote coverage inspection."""
     expected = Mock(spec=Availability)

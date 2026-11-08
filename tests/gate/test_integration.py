@@ -91,6 +91,11 @@ def test_spot_klines_are_discovered_verified_cached_and_queried(
     assert isinstance(frame, pd.DataFrame)
     assert frame.open.tolist() == [99.0, 100.0]
     assert frame.attrs["download"]["pair"] == "BTC_USDT"
+    assert [
+        request.url.path.rsplit("/", 1)[-1]
+        for request in server.requests
+        if request.method == "HEAD"
+    ] == ["BTC_USDT-20250101.csv.gz"]
     requests = len(server.requests)
 
     cached = gate.get_klines(

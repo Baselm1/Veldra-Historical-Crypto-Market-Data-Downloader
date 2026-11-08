@@ -61,7 +61,7 @@ type TimeRange = tuple[datetime, datetime]
 class Availability:
     """Separate full source availability from the configured usable range."""
 
-    source_range: TimeRange
+    source_range: TimeRange | None
     usable_range: TimeRange
     configured_start: datetime | None
 
@@ -476,31 +476,39 @@ def _clean_range(
     Returns:
         The usable range, or ``None`` when no timestamps overlap.
     """
-    source_start, _source_end = availability.source_range
+    source_start = availability.source_range[0] if availability.source_range else None
     usable_start, usable_end = availability.usable_range
     start = max(request.start, usable_start)
     end = min(request.end, usable_end)
     configured_start = availability.configured_start
     limited_by_configuration = (
         configured_start is not None
-        and source_start < configured_start
+        and (source_start is None or source_start < configured_start)
         and request.start < configured_start
     )
     if start != request.start:
         if limited_by_configuration:
             assert configured_start is not None
+            detail = (
+                f". {result.source.title()} archive data begins on {source_start.date()}"
+                if source_start is not None
+                else ""
+            )
             message = Message(
                 "configured_start",
                 f"Configured history for {result.pair} begins on "
-                f"{configured_start.date()}; {result.source.title()} archive data begins "
-                f"on {source_start.date()}, so earlier files were not used.",
+                f"{configured_start.date()}{detail}.",
             )
             reporter.warning(
-                f"{result.pair}: configured history begins "
-                f"{format_time(configured_start)}; source archive "
-                f"begins {format_time(source_start)}"
+                f"{result.pair}: configured history begins {format_time(configured_start)}"
+                + (
+                    f" and the source archive begins {format_time(source_start)}"
+                    if source_start is not None
+                    else ""
+                )
             )
         else:
+            assert source_start is not None
             message = Message(
                 "start_trimmed",
                 f"Earliest source archive date for {result.pair} is "
@@ -620,10 +628,11 @@ def _usable_range(
         )
         return None
     result.available_range = availability.source_range
-    reporter.info(
-        f"{result.pair}: source archive availability "
-        f"{format_range(availability.source_range)}"
-    )
+    if availability.source_range is not None:
+        reporter.info(
+            f"{result.pair}: source archive availability "
+            f"{format_range(availability.source_range)}"
+        )
     if availability.configured_start is not None:
         reporter.info(
             f"{result.pair}: configured history begins "
@@ -1271,22 +1280,37 @@ def process_pair(
         return _finish(result, display, started)
     market, key = resolved
     active = market.active
-    availability = _availability_range(
-        source,
-        catalog,
-        client,
-        key,
-        dataset,
-        earliest_date,
-        today,
-        result,
-        display,
-        requested_start=request.start,
-        active=active,
-        refresh=refresh,
-        offline=offline,
-        tail_days=discovery_tail_days,
-    )
+    scoped = active and dataset.bounded_history_lookup
+    availability: Availability | None
+    if scoped:
+        configured = (
+            datetime.combine(earliest_date, time.min, UTC) if earliest_date else None
+        )
+        availability = Availability(
+            None,
+            (
+                max(request.start, configured or request.start),
+                latest_published_end(today, dataset),
+            ),
+            configured,
+        )
+    else:
+        availability = _availability_range(
+            source,
+            catalog,
+            client,
+            key,
+            dataset,
+            earliest_date,
+            today,
+            result,
+            display,
+            requested_start=request.start,
+            active=active,
+            refresh=refresh,
+            offline=offline,
+            tail_days=discovery_tail_days,
+        )
     if result.errors:
         return _finish(result, display, started)
     used_range = _usable_range(result, request, availability, display)
@@ -1334,6 +1358,10 @@ def process_pair(
             prefetch.finish()
     if resources is None:
         return _finish(result, display, started)
+    if scoped:
+        result.available_range = catalog.resource_coverage_bounds(
+            key, include_monthly=True
+        )
     noun = "file" if len(resources) == 1 else "files"
     display.info(f"{market.symbol}: found {len(resources):,} {noun}")
     requested_resources = _resources_in_range(resources, *used_range)
