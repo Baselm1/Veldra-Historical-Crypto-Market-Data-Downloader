@@ -766,9 +766,11 @@ def _remote_range(
     first, final = bounds
     if market.active:
         final = latest_published_day(today, dataset)
-    elif final is None:
-        known = catalog.resource_bounds(key)
-        final = known[1] if known is not None else None
+    else:
+        known = catalog.resource_bounds(key, include_monthly=True)
+        if known is not None:
+            first = min(first, known[0])
+            final = max(final or known[1], known[1])
     if final is None or final < first:
         return None
     return first, final
