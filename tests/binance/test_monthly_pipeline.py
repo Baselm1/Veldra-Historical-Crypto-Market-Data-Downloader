@@ -12,7 +12,7 @@ import pandas as pd
 import pytest
 
 from veldra.core.cache import cache_resources
-from veldra.core.catalog import Catalog
+from veldra.core.catalog import Catalog, open_catalog
 from veldra.binance.facade import Binance
 from veldra.core.models import Resource, ResourceKey
 from veldra.core.planner import plan_archives, select_archives
@@ -32,6 +32,12 @@ END = datetime(2024, 2, 2, tzinfo=UTC)
 FIXTURES = Path(__file__).parent / "fixtures"
 
 
+class LegacyBinanceConnector(BinanceConnector):
+    """Generate caches using the earlier remote monthly archive policy."""
+
+    monthly_cache_only = False
+
+
 class Portal:
     """Serve daily and monthly archives through real connector and HTTP paths."""
 
@@ -44,6 +50,7 @@ class Portal:
         """Configure archive publication, corruption and an optional missing day."""
         self.downloads: list[str] = []
         self.listings: list[str] = []
+        self.checksums: list[str] = []
         self.objects: dict[str, bytes] = {}
         template = (
             (FIXTURES / "binance_spot_klines_2024-01-01.csv")
@@ -94,6 +101,7 @@ class Portal:
         if key not in self.objects:
             return httpx.Response(404)
         if checksum:
+            self.checksums.append(key)
             return httpx.Response(
                 200,
                 text=f"{hashlib.sha256(self.objects[key]).hexdigest()}  {Path(key).name}",
@@ -102,10 +110,34 @@ class Portal:
         return httpx.Response(200, content=self.objects[key])
 
 
+def test_full_binance_month_is_discovered_and_downloaded_daily(tmp_path: Path) -> None:
+    """Select and verify only daily upstream files even when a month is present."""
+    portal = Portal()
+    with (
+        duckdb.connect() as connection,
+        httpx.Client(transport=httpx.MockTransport(portal)) as client,
+    ):
+        catalog = Catalog(connection)
+        source = BinanceConnector(retries=0)
+        resources = plan_archives(
+            source, catalog, client, KEY, START, END, dataset=SPOT_KLINES, active=False
+        )
+        coverage = cache_resources(
+            source, catalog, client, KEY, SPOT_KLINES, resources, tmp_path
+        )
+
+    assert len(coverage.paths) == len(portal.downloads) == 32
+    assert not coverage.problems
+    assert all(
+        "/daily/" in key
+        for key in portal.listings + portal.checksums + portal.downloads
+    )
+
+
 def test_inactive_market_keeps_monthly_coverage(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Inspect and retrieve a month extending beyond the first daily archive."""
+    """Keep an already cached month beyond the first daily archive."""
     portal = Portal()
     portal.objects = {
         key: payload
@@ -114,6 +146,21 @@ def test_inactive_market_keeps_monthly_coverage(
     }
     monkeypatch.setattr("veldra.core.engine.utc_today", lambda: date(2024, 2, 3))
     monkeypatch.setattr("veldra.core.inspection.utc_today", lambda: date(2024, 2, 3))
+    with (
+        open_catalog(tmp_path / "catalog.duckdb") as catalog,
+        httpx.Client(transport=httpx.MockTransport(portal)) as client,
+    ):
+        legacy = LegacyBinanceConnector(retries=0)
+        resources = plan_archives(
+            legacy, catalog, client, KEY, START, END, dataset=SPOT_KLINES
+        )
+        coverage = cache_resources(
+            legacy, catalog, client, KEY, SPOT_KLINES, resources, tmp_path
+        )
+        assert [path.name for path in coverage.paths] == ["2024-01.parquet"]
+    portal.listings.clear()
+    portal.checksums.clear()
+    portal.downloads.clear()
 
     def respond(request: httpx.Request) -> httpx.Response:
         """Expose BTCUSDT only in the archive market listing."""
@@ -145,9 +192,11 @@ def test_inactive_market_keeps_monthly_coverage(
     assert discovered.remote_range == (FIRST, LAST)
     assert discovered.available_days == 31
 
-    data = service.get_klines("BTCUSDT", FIRST, LAST, gap_policy="keep")
+    data = service.get_klines("BTCUSDT", FIRST, LAST, gap_policy="keep", refresh=True)
     assert len(data) == 62
-    assert len(portal.downloads) == 1 and "/monthly/" in portal.downloads[0]
+    assert not portal.downloads
+    assert not portal.checksums
+    assert all("/monthly/" not in prefix for prefix in portal.listings)
     cached = service.get_klines("BTCUSDT", FIRST, LAST, gap_policy="keep", offline=True)
     pd.testing.assert_frame_equal(data, cached)
     assert service.get_availability(
@@ -165,7 +214,7 @@ def test_month_and_daily_tail_are_cached_once_and_filtered_exactly(
         httpx.Client(transport=httpx.MockTransport(portal)) as client,
     ):
         catalog = Catalog(connection)
-        connector = BinanceConnector(retries=0)
+        connector = LegacyBinanceConnector(retries=0)
         resources = plan_archives(
             connector, catalog, client, KEY, START, END, dataset=SPOT_KLINES
         )
@@ -225,7 +274,7 @@ def test_absent_or_corrupt_monthly_archives_fall_back_to_daily(
         httpx.Client(transport=httpx.MockTransport(portal)) as client,
     ):
         catalog = Catalog(connection)
-        source = BinanceConnector(retries=0)
+        source = LegacyBinanceConnector(retries=0)
         resources = plan_archives(
             source, catalog, client, KEY, START, END, dataset=SPOT_KLINES
         )
@@ -309,7 +358,7 @@ def test_monthly_missing_day_is_reported_and_never_filled(tmp_path: Path) -> Non
         httpx.Client(transport=httpx.MockTransport(portal)) as client,
     ):
         catalog = Catalog(connection)
-        source = BinanceConnector(retries=0)
+        source = LegacyBinanceConnector(retries=0)
         resources = plan_archives(
             source, catalog, client, KEY, START, END, dataset=SPOT_KLINES
         )
@@ -372,7 +421,7 @@ def test_refresh_keeps_valid_monthly_file_and_limited_fallback(tmp_path: Path) -
         httpx.Client(transport=httpx.MockTransport(portal)) as client,
     ):
         catalog = Catalog(connection)
-        source = BinanceConnector(retries=0)
+        source = LegacyBinanceConnector(retries=0)
         resources = plan_archives(
             source, catalog, client, KEY, START, END, dataset=SPOT_KLINES
         )
@@ -410,7 +459,7 @@ def test_bad_month_name_is_ignored() -> None:
     portal = Portal()
     portal.objects["data/spot/monthly/klines/BTCUSDT/1m/BTCUSDT-1m-2024-99.zip"] = b""
     with httpx.Client(transport=httpx.MockTransport(portal)) as client:
-        resources = BinanceConnector().resources(
+        resources = LegacyBinanceConnector().resources(
             client, replace(KEY, cadence="monthly"), FIRST, LAST
         )
     assert len(resources) == 1
