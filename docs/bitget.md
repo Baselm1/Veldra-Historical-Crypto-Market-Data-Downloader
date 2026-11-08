@@ -1,5 +1,9 @@
 # Bitget
 
+Spot kline discovery can search dates before 2023. Set `earliest_date="all"`
+to include older archives in the configured download range. File availability
+depends on the pair and source date.
+
 Veldra retrieves Bitget history from the [daily download portal](https://www.bitget.com/data-download) and the [public market API](https://www.bitget.com/api-doc/). It keeps archive requests concurrent while limiting portal metadata calls and REST history to their separate published quotas.
 
 Kline requests for active markets search the requested date window. Use

@@ -14,6 +14,7 @@ from veldra.core.request import parse_timestamp
 from veldra.okx.chain import OptionChainFilter
 from veldra.okx.inspection import (
     discover_availability as _discover_availability,
+    discover_availability_many as _discover_availability_many,
     find_markets as _find_markets,
     get_availability as _get_availability,
     get_contracts as _get_contracts,
@@ -309,6 +310,33 @@ class OKX:
         return _discover_availability(
             self._service,
             pair,
+            start,
+            end,
+            product=product,
+            dataset=dataset,
+            interval=interval,
+            refresh=refresh,
+        )
+
+    def discover_availability_many(
+        self,
+        pairs: list[str],
+        start: DateInput,
+        end: DateInput,
+        *,
+        product: Product,
+        dataset: str,
+        interval: str | None = None,
+        refresh: bool = False,
+    ) -> list[Availability]:
+        """Discover coverage in input order using native manifest batches.
+
+        An exception group identifies failed batches after discovery settles.
+        Successful checkpoints can be reused on retry.
+        """
+        return _discover_availability_many(
+            self._service,
+            pairs,
             start,
             end,
             product=product,

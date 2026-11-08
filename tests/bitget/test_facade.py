@@ -9,7 +9,14 @@ import pytest
 
 from veldra import Bitget
 from veldra.bitget.client import BitgetResponseError
-from veldra.core.models import Availability
+from veldra.core.catalog import open_catalog
+from veldra.core.models import (
+    Availability,
+    IntegritySpec,
+    Market,
+    Resource,
+    ResourceKey,
+)
 from veldra.bitget.facade import _range
 
 
@@ -183,6 +190,39 @@ def test_active_klines_search_only_the_requested_archive_days(tmp_path: Path) ->
         )
     finally:
         service.close()
+
+
+def test_pre_2023_discovery_rechecks_a_catalog_with_the_old_floor(
+    tmp_path: Path,
+) -> None:
+    """A previously recorded source boundary cannot hide a verified older file."""
+    old_key = ResourceKey("bitget", "spot", "klines", "BTCUSDT", "1m", "BTC/USDT")
+    with open_catalog(tmp_path / "catalog.duckdb") as catalog:
+        catalog.save_source_bounds(old_key, date(2023, 1, 1), None)
+    day = date(2019, 1, 1)
+    archive = Resource(
+        day=day,
+        url="https://example.com/20190101",
+        checksum_url=None,
+        integrity=IntegritySpec("archive_only"),
+    )
+    market = Market("BTCUSDT", "BTCUSDT", pair="BTC/USDT", active=True)
+    with Bitget(tmp_path, earliest_date="all", progress=False) as service:
+        source = service._downloader.source
+        with (
+            patch.object(source, "markets", return_value=[market]),
+            patch.object(source, "first_resource", return_value=archive) as first,
+        ):
+            result = service.discover_availability(
+                "BTCUSDT",
+                "2019-01-01T00:00:00Z",
+                "2019-01-01T01:00:00Z",
+                product="spot",
+                dataset="klines",
+            )
+        first.assert_called_once()
+    assert result.remote_range and result.remote_range[0] == day
+    assert result.available_days == 1
 
 
 def test_availability_helpers_delegate_to_shared_inspection(tmp_path: Path) -> None:

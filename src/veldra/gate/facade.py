@@ -1,5 +1,6 @@
 """Provide the public facade for Gate historical market data."""
 
+from collections.abc import Iterator
 from datetime import date, datetime
 from pathlib import Path
 from typing import Literal
@@ -11,11 +12,13 @@ from veldra.core.download import _validate_settings
 from veldra.core.engine import RetrievalEngine
 from veldra.core.inspection import (
     discover_availability as _discover_availability,
+    discover_availability_many as _discover_availability_many,
     find_markets as _find_markets,
     get_availability as _get_availability,
     get_markets as _get_markets,
 )
 from veldra.core.models import Availability, Market, Result
+from veldra.gate.archives import SpotKlineArchive
 from veldra.gate.connector import GateConnector
 from veldra.gate.datasets import GateDataset, get_dataset
 
@@ -63,9 +66,10 @@ class Gate:
         _validate_settings(timeout, retries, backoff)
         if not isinstance(progress, bool):
             raise TypeError("progress must be a Boolean")
+        self._source = GateConnector(timeout=timeout, retries=retries, backoff=backoff)
         self._downloader = RetrievalEngine(
             data_dir,
-            source=GateConnector(timeout=timeout, retries=retries, backoff=backoff),
+            source=self._source,
             dataset_resolver=get_dataset,
             config_path=config_path,
             earliest_date=earliest_date,
@@ -582,6 +586,19 @@ class Gate:
             interval=interval,
         )
 
+    def list_spot_kline_archives(
+        self, start: date, end: date, *, interval: Literal["10s", "1m", "5m"] = "1m"
+    ) -> Iterator[SpotKlineArchive]:
+        """Yield archive objects overlapping inclusive UTC days.
+
+        Includes historical symbols and both file cadences. Iteration uses the
+        exchange's HTTP budget and can raise if a listing page fails.
+        """
+        if type(start) is not date or type(end) is not date:
+            raise TypeError("archive listing dates must be date objects")
+        with self._downloader._client(offline=False) as client:
+            yield from self._source.spot_kline_archives(client, start, end, interval)
+
     def discover_availability(
         self,
         pair: str,
@@ -610,6 +627,34 @@ class Gate:
         return _discover_availability(
             self._downloader,
             pair,
+            start,
+            end,
+            product=product,
+            dataset=dataset,
+            interval=interval,
+            refresh=refresh,
+            progress=self._progress,
+        )
+
+    def discover_availability_many(
+        self,
+        pairs: list[str],
+        start: DateInput,
+        end: DateInput,
+        *,
+        product: Product,
+        dataset: GateDataset,
+        interval: str | None = None,
+        refresh: bool = False,
+    ) -> list[Availability]:
+        """Discover archive coverage concurrently in input order.
+
+        An exception group identifies failed pairs after the batch settles.
+        Successful archive checkpoints can be reused on retry.
+        """
+        return _discover_availability_many(
+            self._downloader,
+            pairs,
             start,
             end,
             product=product,

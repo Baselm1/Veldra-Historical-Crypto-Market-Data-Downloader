@@ -32,6 +32,8 @@ from veldra.core.models import (
 
 _ETAG = re.compile(r"[0-9a-fA-F]{32}")
 _PARTS_PREFIX = "veldra-parts="
+_SPOT_KLINE_START = date(2018, 1, 1)
+_DEFAULT_ARCHIVE_START = date(2023, 1, 1)
 
 
 def _packed_resource(parts: tuple[Resource, ...]) -> Resource:
@@ -179,8 +181,12 @@ class BitgetConnector:
     ) -> Resource | None:
         """Return the earliest archive found in bounded seven-day probes."""
         self._validate(key, start_day, end_day)
-        hinted = self._onboard.get((key.product, key.symbol), date(2023, 1, 1))
-        cursor = max(start_day or hinted, hinted, date(2023, 1, 1))
+        spot_klines = key.product == "spot" and key.dataset == "klines"
+        floor = _SPOT_KLINE_START if spot_klines else _DEFAULT_ARCHIVE_START
+        hinted = self._onboard.get((key.product, key.symbol), floor)
+        # An explicit Spot history window can predate a current listing hint.
+        first = start_day if spot_klines and start_day is not None else hinted
+        cursor = max(first, start_day or floor, floor)
         while cursor <= end_day:
             last = min(end_day, cursor + timedelta(days=6))
             found = self.resources(client, key, cursor, last)

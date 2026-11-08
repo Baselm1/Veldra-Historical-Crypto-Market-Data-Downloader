@@ -1,6 +1,7 @@
 """Discover requested daily resources and record them in the catalog."""
 
 from collections.abc import Callable, Iterator
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 import logging
@@ -17,6 +18,7 @@ LOGGER = logging.getLogger(__name__)
 DISCOVERY_TTL = timedelta(hours=24)
 DEFAULT_DISCOVERY_WINDOW_DAYS = 31
 type ArchiveBatch = Callable[[list[Resource]], None]
+type CheckpointGuard = Callable[[], AbstractContextManager[None]]
 
 
 def record_source_boundary(catalog: Catalog, key: ResourceKey, first: Resource) -> None:
@@ -35,18 +37,21 @@ def record_source_boundary(catalog: Catalog, key: ResourceKey, first: Resource) 
 def boundary_predates_known_cadence(
     requested_start: datetime, known_start: date, dataset: DatasetSpec
 ) -> bool:
-    """Detect an older request whose cached boundary covers only the daily generation.
+    """Detect an older request whose cached boundary may omit historical archives.
 
     Args:
         requested_start: First requested UTC timestamp.
         known_start: First archive day previously recorded in the catalog.
-        dataset: Dataset declaring any historical monthly generation.
+        dataset: Dataset declaring an archive transition or earlier discovery floor.
 
     Returns:
         Whether to discover the source start again for the older request.
     """
-    transition = dataset.daily_archive_start
-    return transition is not None and requested_start.date() < transition <= known_start
+    source_day = (requested_start + dataset.archive_day_offset).date()
+    return any(
+        boundary is not None and source_day < boundary <= known_start
+        for boundary in (dataset.daily_archive_start, dataset.previous_archive_floor)
+    )
 
 
 def covered_days(resources: list[Resource]) -> set[date]:
@@ -145,6 +150,7 @@ def discover_resources(
     tail_days: int = 7,
     reporter: Reporter | None = None,
     on_batch: ArchiveBatch | None = None,
+    checkpoint_guard: CheckpointGuard = nullcontext,
 ) -> list[Resource]:
     """Discover and persist resources overlapping one request.
 
@@ -162,6 +168,7 @@ def discover_resources(
         tail_days: The recent active-market days eligible for periodic rescans.
         reporter: The optional activity reporter for actual source scans.
         on_batch: Optional consumer of settled archive batches during discovery.
+        checkpoint_guard: Context that serializes catalog writes after remote discovery.
 
     Returns:
         All cataloged resources in the requested daily range.
@@ -224,7 +231,8 @@ def discover_resources(
             for scan_start, scan_end in windows:
                 found = source.resources(client, key, scan_start, scan_end)
                 _validate_resources(found, scan_start, scan_end)
-                catalog.save_discovery(key, scan_start, scan_end, found)
+                with checkpoint_guard():
+                    catalog.save_discovery(key, scan_start, scan_end, found)
                 if on_batch is not None and found:
                     on_batch(catalog.resources(key, scan_start, scan_end))
                 LOGGER.debug(

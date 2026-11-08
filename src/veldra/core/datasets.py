@@ -333,6 +333,7 @@ class DatasetSpec:
     daily_archive_start: date | None = None
     rebuild_on_refresh: bool = False
     bounded_history_lookup: bool = False
+    previous_archive_floor: date | None = None
 
     def __post_init__(self) -> None:
         """Validate the immutable capability declaration.

@@ -1,6 +1,7 @@
 """Select non-overlapping monthly and daily archives for a requested range."""
 
 from calendar import monthrange
+from contextlib import nullcontext
 from dataclasses import replace
 from datetime import UTC, date, datetime, time, timedelta
 import logging
@@ -12,6 +13,7 @@ from .cache import valid_cached_path
 from .datasets import DatasetSpec
 from .discovery import (
     ArchiveBatch,
+    CheckpointGuard,
     covered_days,
     discover_resources,
     requested_days,
@@ -171,6 +173,7 @@ def plan_archives(
     tail_days: int = 7,
     reporter: Reporter | None = None,
     on_batch: ArchiveBatch | None = None,
+    checkpoint_guard: CheckpointGuard = nullcontext,
 ) -> list[Resource]:
     """Discover useful monthly archives and daily files for uncovered dates.
 
@@ -188,6 +191,7 @@ def plan_archives(
         tail_days: Recent days subject to discovery freshness.
         reporter: Optional progress display.
         on_batch: Optional consumer of settled daily archive batches.
+        checkpoint_guard: Context that serializes catalog writes after remote discovery.
 
     Returns:
         A non-overlapping set of physical archives for the request.
@@ -217,6 +221,7 @@ def plan_archives(
             tail_days=(scan_end - scan_start).days + 1 if monthly else tail_days,
             reporter=reporter,
             on_batch=on_batch if not monthly else None,
+            checkpoint_guard=checkpoint_guard,
         )
 
     def scan_transition(transition: date) -> list[Resource]:

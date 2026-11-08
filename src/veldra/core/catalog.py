@@ -775,6 +775,8 @@ class Catalog:
         dataset: str,
         start_day: date,
         end_day: date,
+        *,
+        subject: DataSubject | None = None,
     ) -> list[ArchiveObject]:
         """Return every known physical archive overlapping source dates.
 
@@ -784,6 +786,7 @@ class Catalog:
             dataset: Historical dataset identifier.
             start_day: First inclusive source date.
             end_day: Last inclusive source date.
+            subject: Optional exact remote scope, including shared archives.
 
         Returns:
             Discovered, ready, failed, and missing objects in source order.
@@ -794,9 +797,20 @@ class Catalog:
             SELECT * FROM archive_objects
             WHERE source = ? AND product = ? AND dataset = ?
               AND period_start <= ? AND period_end >= ?
+              AND (? IS NULL OR remote_scope_kind = 'all'
+                   OR (remote_scope_kind = ? AND remote_scope_value = ?))
             ORDER BY period_start, period_end, remote_name
             """,
-            [source, product, dataset, end_day, start_day],
+            [
+                source,
+                product,
+                dataset,
+                end_day,
+                start_day,
+                subject.kind if subject else None,
+                subject.kind if subject else None,
+                subject.value if subject else None,
+            ],
         ).fetchall()
         return [self._archive(row) for row in rows]
 
