@@ -388,6 +388,9 @@ def _cached_coverage(
     if not refresh or offline:
         coverage.paths.extend(path for _resource, path in cached)
         return coverage, pending
+    if dataset.rebuild_on_refresh:
+        pending.extend(cached)
+        return coverage, pending
 
     paths, changed, warnings = _revalidate_cached_resources(
         source,
