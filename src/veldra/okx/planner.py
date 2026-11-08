@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, timedelta
-from typing import Protocol, Sequence
+from typing import Collection, Protocol, Sequence
 
 from veldra.core.models import ArchiveObject
 from veldra.core.subjects import DataSubject
@@ -55,6 +55,7 @@ class OKXArchivePlanner:
         *,
         cached: Sequence[ArchiveObject] = (),
         bulk_threshold: int = 8,
+        require_specific: Collection[DataSubject] = (),
     ) -> None:
         """Create a planner over manifest discovery and known archives.
 
@@ -62,12 +63,14 @@ class OKXArchivePlanner:
             discovery: Service that resolves physical manifest objects.
             cached: Existing physical archive metadata.
             bulk_threshold: Subject count where automatic planning prefers ANY.
+            require_specific: Subjects for which shared files do not establish coverage.
         """
         if bulk_threshold < 1:
             raise ValueError("bulk_threshold must be positive")
         self._discovery = discovery
         self._cached = tuple(cached)
         self._bulk_threshold = bulk_threshold
+        self._require_specific = frozenset(require_specific)
 
     def plan(
         self,
@@ -198,8 +201,8 @@ class OKXArchivePlanner:
         ]
         return list({item.key.archive_id: item for item in selected}.values())
 
-    @staticmethod
     def _covered_days(
+        self,
         cached: Sequence[ArchiveObject],
         subject: DataSubject,
         begin: date,
@@ -207,12 +210,14 @@ class OKXArchivePlanner:
     ) -> set[date]:
         """Return requested source days covered by matching cached archives."""
         covered: set[date] = set()
+        allow_shared = subject not in self._require_specific
         for item in cached:
-            if item.key.remote_scope_kind != "all" and item.key.subject != subject:
-                continue
-            first = max(begin, item.key.period_start)
-            last = min(end, item.key.period_end)
-            covered.update(OKXArchivePlanner._days(first, last))
+            if item.key.subject == subject or (
+                allow_shared and item.key.remote_scope_kind == "all"
+            ):
+                first = max(begin, item.key.period_start)
+                last = min(end, item.key.period_end)
+                covered.update(self._days(first, last))
         return covered
 
     @staticmethod

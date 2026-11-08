@@ -471,11 +471,15 @@ def test_local_availability_requires_metadata_and_unknowns_offer_suggestions(
         okx.get_availability("BTCSUDT", product="spot", dataset="klines", interval="1m")
 
 
+@pytest.mark.parametrize("batch", [False, True])
 def test_local_availability_counts_ready_partitions_and_physical_bytes(
     tmp_path: Path,
+    batch: bool,
 ) -> None:
-    """Confirm ready shared files become exact logical cache coverage."""
+    """Count shared partitions while still checking archive-only instruments."""
     fixture = InspectionFixture()
+    retired = "OLD_Mixed-USDT"
+    fixture.historical = [retired]
     okx = service(tmp_path, fixture)
     okx.get_markets(product="spot")
     path = tmp_path / "ready.parquet"
@@ -542,6 +546,29 @@ def test_local_availability_counts_ready_partitions_and_physical_bytes(
     assert value.cached_range == (date(2025, 1, 1), date(2025, 1, 1))
     assert value.row_count == 2
     assert value.local_bytes == len(b"parquet fixture")
+    assert (
+        okx.get_availability(retired, product="spot", dataset="klines").available_days
+        == 0
+    )
+
+    window = ("2025-01-01T00:00:00Z", "2025-01-01T01:00:00Z")
+    if batch:
+        current, historical = okx.discover_availability_many(
+            ["ETH-USDT", retired],
+            *window,
+            product="spot",
+            dataset="klines",
+        )
+        assert current.available_days == 1
+    else:
+        historical = okx.discover_availability(
+            retired,
+            *window,
+            product="spot",
+            dataset="klines",
+        )
+    assert fixture.manifests == 1
+    assert historical.available_days == 1
 
 
 def test_currency_and_historical_contract_coverage_resolve_native_subjects(
