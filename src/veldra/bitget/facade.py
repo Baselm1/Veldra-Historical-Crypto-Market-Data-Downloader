@@ -147,6 +147,7 @@ class Bitget:
             market_refresh_hours=market_refresh_hours,
         )
         self._reference_client = BitgetClient(
+            budget=self._downloader._http_budget,
             limiter=connector.limiter,
             timeout=timeout,
             retries=retries,

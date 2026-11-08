@@ -17,6 +17,8 @@ from veldra.core.cache import invalid_parquet_paths
 from veldra.core.catalog import Catalog, catalog_lock, open_catalog
 from veldra.core.config import load_settings
 from veldra.core.datasets import DatasetSpec
+from veldra.core.engine import _http_client
+from veldra.core.http_budget import RequestBudget
 from veldra.core.matching import exact_markets, suggest_symbols
 from veldra.core.models import (
     ArchiveObject,
@@ -174,6 +176,9 @@ class OKXService:
         self.connector = OKXConnector(
             timeout=request_timeout, retries=retry_count, backoff=retry_backoff
         )
+        self._http_budget = RequestBudget(
+            self.connector.code, min(self.connector.max_concurrency, max_workers)
+        )
 
     @staticmethod
     def _history_date(value: object) -> date | None:
@@ -203,22 +208,7 @@ class OKXService:
         Returns:
             Configured shared HTTPX client.
         """
-        if offline:
-
-            def reject(request: httpx.Request) -> httpx.Response:
-                """Reject accidental offline network access."""
-                raise RuntimeError(f"offline mode attempted {request.url}")
-
-            transport: httpx.BaseTransport = httpx.MockTransport(reject)
-        elif self.transport is not None:
-            transport = self.transport
-        else:
-            transport = httpx.HTTPTransport(retries=0)
-        limits = httpx.Limits(
-            max_connections=self.max_workers,
-            max_keepalive_connections=self.max_workers,
-        )
-        return httpx.Client(transport=transport, follow_redirects=True, limits=limits)
+        return _http_client(self.transport, self._http_budget, offline=offline)
 
     def _markets(
         self,

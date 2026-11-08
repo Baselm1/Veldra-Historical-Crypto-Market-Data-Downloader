@@ -21,7 +21,6 @@ from veldra.core.reporting import Reporter, format_source
 from veldra.core.engine import (
     RetrievalEngine,
     _load_markets,
-    _source_limit,
     utc_now,
     utc_today,
 )
@@ -226,17 +225,8 @@ def _snapshot(
     catalog_path = downloader.data_dir / "catalog.duckdb"
     if offline and not catalog_path.is_file():
         raise RuntimeError("offline mode requires cached market metadata")
-    source_limit = _source_limit(downloader.source, downloader.max_workers)
-    limits = httpx.Limits(
-        max_connections=source_limit,
-        max_keepalive_connections=source_limit,
-    )
     with catalog_lock(catalog_path, downloader.source.code):
-        with httpx.Client(
-            transport=downloader.transport,
-            follow_redirects=True,
-            limits=limits,
-        ) as client:
+        with downloader._client(offline=offline) as client:
             with open_catalog(catalog_path) as catalog:
                 reporter = Reporter(progress)
                 markets = _load_markets(
@@ -1020,17 +1010,8 @@ def discover_availability(
         gap_policy=None,
     ).resolve_dataset(specification)
     catalog_path = downloader.data_dir / "catalog.duckdb"
-    source_limit = _source_limit(downloader.source, downloader.max_workers)
-    limits = httpx.Limits(
-        max_connections=source_limit,
-        max_keepalive_connections=source_limit,
-    )
     with catalog_lock(catalog_path, downloader.source.code):
-        with httpx.Client(
-            transport=downloader.transport,
-            follow_redirects=True,
-            limits=limits,
-        ) as client:
+        with downloader._client(offline=False) as client:
             with open_catalog(catalog_path) as catalog:
                 markets = _load_markets(
                     downloader.source,
