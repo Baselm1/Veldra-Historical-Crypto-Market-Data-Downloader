@@ -140,6 +140,7 @@ def _klines(product: GateProduct, base_interval: Literal["10s", "1m"]) -> Datase
         timestamp_columns=("open_time",),
         sort_source_rows=True,
         archive_cadence="daily" if spot else "monthly",
+        bounded_history_lookup=spot,
     )
 
 

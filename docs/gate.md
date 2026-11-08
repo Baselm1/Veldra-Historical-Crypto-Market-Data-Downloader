@@ -104,6 +104,8 @@ Gate Futures additionally publish native `10s` archives. An explicit
 `interval="10s"` request uses those files. Spot does not support `10s`.
 Missing source candles remain sparse by default with `gap_policy="keep"`;
 callers may request another supported gap policy explicitly.
+Active Spot kline retrieval searches only the requested window. Use
+`discover_availability(...)` to look up the earliest available archive.
 
 ## Order books
 

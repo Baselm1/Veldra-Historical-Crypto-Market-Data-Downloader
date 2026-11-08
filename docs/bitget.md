@@ -2,6 +2,9 @@
 
 Veldra retrieves Bitget history from the [daily download portal](https://www.bitget.com/data-download) and the [public market API](https://www.bitget.com/api-doc/). It keeps archive requests concurrent while limiting portal metadata calls and REST history to their separate published quotas.
 
+Kline requests for active markets search the requested date window. Use
+`discover_availability(...)` to look up the earliest archive separately.
+
 ## Support
 
 | Product | Klines | Trades | Best book | Depth 500 | Mark/index/premium Klines | Funding |

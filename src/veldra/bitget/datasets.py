@@ -164,6 +164,7 @@ def _klines(product: BitgetProduct) -> DatasetSpec:
         sort_source_rows=True,
         archive_day_offset=ARCHIVE_DAY_OFFSET,
         archive_symbol_attribute="pair",
+        bounded_history_lookup=True,
     )
 
 
