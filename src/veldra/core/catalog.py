@@ -30,6 +30,31 @@ from veldra.core.subjects import DataSubject, SubjectKind
 
 _CATALOG_LOCKS = tuple(RLock() for _ in range(64))
 LOGGER = logging.getLogger(__name__)
+_LEGACY_ARCHIVES_MIGRATION = 1
+_LEGACY_RESOURCE_COLUMNS = """
+    source, product, dataset, symbol, interval, cadence,
+    day, url, checksum_url, status, archive_checksum,
+    parquet_path, parquet_size, parquet_mtime_ns, row_count,
+    first_timestamp, last_timestamp, archive_symbol, timestamp_column,
+    schema_version, error, last_attempt_at, end_day, cadence,
+    coverage_start, coverage_end, checksum_algorithm,
+    integrity_mode, integrity_expected
+"""
+_ARCHIVE_CONFLICT_UPDATE = """
+    ON CONFLICT (archive_id) DO UPDATE SET
+        url = excluded.url,
+        url_expires_at = excluded.url_expires_at,
+        remote_size = excluded.remote_size,
+        integrity_mode = excluded.integrity_mode,
+        integrity_algorithm = excluded.integrity_algorithm,
+        integrity_expected = excluded.integrity_expected,
+        integrity_sidecar_url = excluded.integrity_sidecar_url,
+        discovered_at = excluded.discovered_at,
+        status = excluded.status,
+        revision_id = excluded.revision_id,
+        last_attempt_at = excluded.last_attempt_at,
+        error = excluded.error
+"""
 
 type ReadyResourceOutcome = tuple[date, Path, IngestedResource]
 type FailedResourceOutcome = tuple[date, str]
@@ -341,6 +366,10 @@ class Catalog:
                 )
             );
 
+            CREATE TABLE IF NOT EXISTS catalog_migrations (
+                version INTEGER PRIMARY KEY
+            );
+
             CREATE TABLE IF NOT EXISTS materializations (
                 materialization_id VARCHAR PRIMARY KEY,
                 archive_id VARCHAR NOT NULL,
@@ -488,7 +517,7 @@ class Catalog:
                 ON CONFLICT DO NOTHING
                 """)
             self.connection.execute("DROP TABLE discoveries")
-        self._backfill_logical_catalog()
+        self._migrate_legacy_archives()
 
     def _tables(self) -> set[str]:
         """Return the names of tables already present in this catalog."""
@@ -597,23 +626,11 @@ class Catalog:
             archive: The physical archive metadata to write.
         """
         self.connection.execute(
-            """
+            f"""
             INSERT INTO archive_objects VALUES (
                 ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
             )
-            ON CONFLICT (archive_id) DO UPDATE SET
-                url = excluded.url,
-                url_expires_at = excluded.url_expires_at,
-                remote_size = excluded.remote_size,
-                integrity_mode = excluded.integrity_mode,
-                integrity_algorithm = excluded.integrity_algorithm,
-                integrity_expected = excluded.integrity_expected,
-                integrity_sidecar_url = excluded.integrity_sidecar_url,
-                discovered_at = excluded.discovered_at,
-                status = excluded.status,
-                revision_id = excluded.revision_id,
-                last_attempt_at = excluded.last_attempt_at,
-                error = excluded.error
+            {_ARCHIVE_CONFLICT_UPDATE}
             """,
             self._archive_row(archive),
         )
@@ -1236,36 +1253,62 @@ class Catalog:
             )
         return True
 
-    def _backfill_logical_catalog(self) -> None:
-        """Adapt existing one-file resources into physical and logical metadata."""
-        rows = self.connection.execute("""
-            SELECT source, product, dataset, symbol, interval, cadence,
-                   day, url, checksum_url, status, archive_checksum,
-                   parquet_path, parquet_size, parquet_mtime_ns, row_count,
-                   first_timestamp, last_timestamp, archive_symbol, timestamp_column,
-                   schema_version, error, last_attempt_at, end_day, cadence,
-                   coverage_start, coverage_end, checksum_algorithm,
-                   integrity_mode, integrity_expected
-            FROM resources
-            ORDER BY source, product, dataset, symbol, interval, cadence, day
-            """).fetchall()
-        if not rows:
+    def _migrate_legacy_archives(self) -> None:
+        """Backfill physical and logical metadata once for an existing catalog."""
+        if self.connection.execute(
+            "SELECT version FROM catalog_migrations WHERE version = ?",
+            [_LEGACY_ARCHIVES_MIGRATION],
+        ).fetchone():
             return
         now = datetime.now(UTC)
         with self._transaction():
+            rows = self.connection.execute(f"""
+                SELECT {_LEGACY_RESOURCE_COLUMNS} FROM resources
+                ORDER BY source, product, dataset, symbol, interval, cadence, day
+                """).fetchall()
             for row in rows:
                 self._write_legacy_logical_resource(row, now)
+            self.connection.execute(
+                "INSERT INTO catalog_migrations VALUES (?)",
+                [_LEGACY_ARCHIVES_MIGRATION],
+            )
 
-    def _write_legacy_logical_resource(
-        self, row: Sequence[Any], observed_at: datetime
-    ) -> None:
-        """Adapt one legacy resource row into physical and logical metadata.
+    def _legacy_rows(
+        self, key: ResourceKey, days: Sequence[date]
+    ) -> list[tuple[Any, ...]]:
+        """Return legacy rows for the exact days touched by a write.
 
         Args:
-            row: A complete legacy resource row prefixed by its dataset identity.
-            observed_at: The UTC timestamp used when older metadata has no timestamp.
+            key: The identity shared by all touched resources.
+            days: Source days included in the write.
+
+        Returns:
+            Legacy resource rows with their dataset identity.
         """
-        resource = self._resource(row[6:])
+        return self.connection.execute(
+            f"""
+            SELECT {_LEGACY_RESOURCE_COLUMNS} FROM resources
+            WHERE source = ? AND product = ? AND dataset = ?
+              AND symbol = ? AND interval = ? AND cadence = ? AND day = ANY(?)
+            ORDER BY day
+            """,
+            [*_key_values(key), list(days)],
+        ).fetchall()
+
+    @staticmethod
+    def _legacy_archive(
+        row: Sequence[Any], resource: Resource, observed_at: datetime
+    ) -> ArchiveObject:
+        """Build physical metadata for one resource stored by the legacy engine.
+
+        Args:
+            row: The resource row, prefixed by its dataset identity.
+            resource: The decoded resource metadata.
+            observed_at: The timestamp to use when the row has no last attempt.
+
+        Returns:
+            The matching physical archive.
+        """
         remote_name = Path(urlsplit(resource.url).path).name or resource.url
         key = ArchiveKey(
             source=row[0],
@@ -1285,7 +1328,7 @@ class Catalog:
             if resource.status in {"discovered", "ready", "failed", "missing"}
             else "discovered"
         )
-        archive = ArchiveObject(
+        return ArchiveObject(
             key=key,
             url=resource.url,
             integrity=integrity,
@@ -1295,12 +1338,51 @@ class Catalog:
             last_attempt_at=resource.last_attempt_at,
             error=resource.error,
         )
+
+    def _write_discovered_archives(
+        self, key: ResourceKey, resources: Sequence[Resource]
+    ) -> None:
+        """Mirror the changed legacy discovery rows in a single archive write.
+
+        Args:
+            key: The shared dataset identity.
+            resources: The resources in the current discovery batch.
+        """
+        observed_at = datetime.now(UTC)
+        rows = [
+            self._archive_row(
+                self._legacy_archive(row, self._resource(row[6:]), observed_at)
+            )
+            for row in self._legacy_rows(key, [resource.day for resource in resources])
+        ]
+        frame = _arrow_rows(rows, columns=[f"field_{i}" for i in range(len(rows[0]))])
+        self.connection.register("incoming_archive_objects", frame)
+        try:
+            self.connection.execute(f"""
+                INSERT INTO archive_objects
+                SELECT * FROM incoming_archive_objects
+                {_ARCHIVE_CONFLICT_UPDATE}
+                """)
+        finally:
+            self.connection.unregister("incoming_archive_objects")
+
+    def _write_legacy_logical_resource(
+        self, row: Sequence[Any], observed_at: datetime
+    ) -> None:
+        """Adapt one legacy resource row into physical and logical metadata.
+
+        Args:
+            row: A complete legacy resource row prefixed by its dataset identity.
+            observed_at: The UTC timestamp used when older metadata has no timestamp.
+        """
+        resource = self._resource(row[6:])
+        archive = self._legacy_archive(row, resource, observed_at)
         self._write_archive(archive)
         if resource.status != "ready" or resource.parquet_path is None:
             return
         coverage_start, coverage_end = resource.coverage
         materialization = Materialization(
-            archive_key=key,
+            archive_key=archive.key,
             local_path=resource.parquet_path,
             schema_version=resource.schema_version,
             row_count=resource.row_count or 0,
@@ -1313,9 +1395,9 @@ class Catalog:
             ready_at=resource.last_attempt_at or observed_at,
         )
         partition = LogicalPartition(
-            source=key.source,
-            product=key.product,
-            dataset=key.dataset,
+            source=archive.key.source,
+            product=archive.key.product,
+            dataset=archive.key.dataset,
             subject=DataSubject("instrument", row[3]),
             interval=row[4] or None,
             coverage_start=coverage_start,
@@ -1860,6 +1942,7 @@ class Catalog:
                         timestamp_column = excluded.timestamp_column,
                         schema_version = excluded.schema_version
                     """)
+                    self._write_discovered_archives(key, resources)
                 self.connection.execute(
                     """
                     INSERT INTO discovery_segments (
@@ -2131,33 +2214,8 @@ class Catalog:
                 if updated_days != set(days):
                     missing = min(set(days) - updated_days)
                     raise KeyError(f"resource {missing.isoformat()} was not discovered")
-                ready_rows = self.connection.execute(
-                    """
-                    SELECT stored.source, stored.product, stored.dataset,
-                           stored.symbol, stored.interval, stored.cadence,
-                           stored.day, stored.url, stored.checksum_url, stored.status,
-                           stored.archive_checksum, stored.parquet_path,
-                           stored.parquet_size, stored.parquet_mtime_ns,
-                           stored.row_count, stored.first_timestamp,
-                           stored.last_timestamp, stored.archive_symbol,
-                           stored.timestamp_column, stored.schema_version,
-                           stored.error, stored.last_attempt_at, stored.end_day,
-                           stored.cadence, stored.coverage_start,
-                           stored.coverage_end, stored.checksum_algorithm
-                           , stored.integrity_mode, stored.integrity_expected
-                    FROM resources AS stored
-                    JOIN incoming_resource_outcomes AS incoming
-                      ON stored.day = incoming.day
-                    WHERE incoming.status = 'ready'
-                      AND stored.source = ? AND stored.product = ?
-                      AND stored.dataset = ? AND stored.symbol = ?
-                      AND stored.interval = ? AND stored.cadence = ?
-                    ORDER BY stored.day
-                    """,
-                    _key_values(key),
-                ).fetchall()
                 observed_at = datetime.now(UTC)
-                for row in ready_rows:
+                for row in self._legacy_rows(key, days):
                     self._write_legacy_logical_resource(row, observed_at)
         finally:
             self.connection.unregister("incoming_resource_outcomes")

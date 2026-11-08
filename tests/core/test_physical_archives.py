@@ -3,9 +3,11 @@
 from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
+from unittest.mock import patch
 import duckdb
-from veldra.core.catalog import Catalog
-from veldra.core.models import Resource, ResourceKey, IngestedResource
+import pytest
+from veldra.core.catalog import Catalog, open_catalog
+from veldra.core.models import ArchiveKey, Resource, ResourceKey, IngestedResource
 from veldra.core.planner import _overlapping_months
 from veldra.core.subjects import DataSubject
 
@@ -120,3 +122,88 @@ def test_ready_legacy_resources_backfill_once_without_redownload(
             assert connection.execute(
                 "select count(*) from logical_partitions"
             ).fetchone() == (1,)
+
+
+def test_discovery_and_failure_publish_archive_metadata_before_reopen(
+    tmp_path: Path,
+) -> None:
+    """Keep physical metadata current without a reopen-time compatibility scan."""
+    path = tmp_path / "catalog.duckdb"
+    day = date(2025, 1, 1)
+    resource = Resource(day, "https://example/one.zip", "https://example/one.sum")
+    key = ArchiveKey(
+        "binance",
+        "spot",
+        "klines",
+        "legacy_archive",
+        "instrument",
+        "BTCUSDT",
+        "daily",
+        day,
+        day,
+        "one.zip",
+    )
+    with open_catalog(path) as catalog:
+        catalog.save_discovery(KEY, day, day, [resource])
+        found = catalog.archive(key)
+        assert found is not None and found.status == "discovered"
+        catalog.mark_failed(KEY, day, "temporary failure")
+        failed = catalog.archive(key)
+        assert failed is not None and failed.status == "failed"
+        assert failed.error == "temporary failure"
+
+    with patch.object(
+        Catalog,
+        "_write_legacy_logical_resource",
+        side_effect=AssertionError("completed migration rewrote a resource"),
+    ):
+        with open_catalog(path) as catalog:
+            assert catalog.archive(key) == failed
+
+
+def test_failed_backfill_rolls_back_and_retries_on_next_open(tmp_path: Path) -> None:
+    """Publish the legacy backfill and its completion marker together."""
+    path = tmp_path / "catalog.duckdb"
+    day = date(2025, 1, 1)
+    next_day = day + timedelta(days=1)
+    with open_catalog(path) as catalog:
+        catalog.save_discovery(
+            KEY,
+            day,
+            next_day,
+            [
+                Resource(day, "https://example/one.zip", "https://example/one.sum"),
+                Resource(
+                    next_day, "https://example/two.zip", "https://example/two.sum"
+                ),
+            ],
+        )
+        catalog.connection.execute("DELETE FROM archive_objects")
+        catalog.connection.execute("DROP TABLE catalog_migrations")
+
+    original = Catalog._write_legacy_logical_resource
+
+    def fail_second(self, row, observed_at):
+        """Interrupt migration after the first archive has been written."""
+        if row[6] == next_day:
+            raise RuntimeError("interrupted")
+        original(self, row, observed_at)
+
+    with patch.object(Catalog, "_write_legacy_logical_resource", fail_second):
+        with pytest.raises(RuntimeError, match="interrupted"):
+            with open_catalog(path):
+                pytest.fail("migration should fail before opening the catalog")
+    with open_catalog(path, initialize=False) as catalog:
+        assert catalog.connection.execute(
+            "SELECT count(*) FROM archive_objects"
+        ).fetchone() == (0,)
+        assert catalog.connection.execute(
+            "SELECT count(*) FROM catalog_migrations"
+        ).fetchone() == (0,)
+    with open_catalog(path) as catalog:
+        assert catalog.connection.execute(
+            "SELECT count(*) FROM archive_objects"
+        ).fetchone() == (2,)
+        assert catalog.connection.execute(
+            "SELECT count(*) FROM catalog_migrations"
+        ).fetchone() == (1,)
