@@ -1,5 +1,6 @@
 """Discover requested daily resources and record them in the catalog."""
 
+from collections.abc import Callable, Iterator
 from datetime import UTC, date, datetime, timedelta
 import logging
 
@@ -13,6 +14,8 @@ from veldra.core.connector import Connector
 
 LOGGER = logging.getLogger(__name__)
 DISCOVERY_TTL = timedelta(hours=24)
+DEFAULT_DISCOVERY_WINDOW_DAYS = 31
+type ArchiveBatch = Callable[[list[Resource]], None]
 
 
 def covered_days(resources: list[Resource]) -> set[date]:
@@ -110,6 +113,7 @@ def discover_resources(
     offline: bool = False,
     tail_days: int = 7,
     reporter: Reporter | None = None,
+    on_batch: ArchiveBatch | None = None,
 ) -> list[Resource]:
     """Discover and persist resources overlapping one request.
 
@@ -126,6 +130,7 @@ def discover_resources(
         offline: Whether all source access must be skipped.
         tail_days: The recent active-market days eligible for periodic rescans.
         reporter: The optional activity reporter for actual source scans.
+        on_batch: Optional consumer of settled archive batches during discovery.
 
     Returns:
         All cataloged resources in the requested daily range.
@@ -164,12 +169,33 @@ def discover_resources(
         offline,
     )
     display = reporter if reporter is not None else Reporter(False)
+    if on_batch is not None:
+        on_batch(
+            [
+                resource
+                for resource in resources
+                if all(
+                    resource.last_day < first or resource.day > last
+                    for first, last in scan_ranges
+                )
+            ]
+        )
     if scan_ranges:
+        windows = (
+            _scan_windows(
+                scan_ranges,
+                getattr(source, "discovery_window_days", DEFAULT_DISCOVERY_WINDOW_DAYS),
+            )
+            if on_batch is not None
+            else iter(scan_ranges)
+        )
         with display.status(f"Discovering {key.symbol} {key.cadence} files"):
-            for scan_start, scan_end in scan_ranges:
+            for scan_start, scan_end in windows:
                 found = source.resources(client, key, scan_start, scan_end)
                 _validate_resources(found, scan_start, scan_end)
                 catalog.save_discovery(key, scan_start, scan_end, found)
+                if on_batch is not None and found:
+                    on_batch(catalog.resources(key, scan_start, scan_end))
                 LOGGER.debug(
                     "Resource range discovered: key=%s range=[%s, %s] resources=%d",
                     key,
@@ -187,6 +213,19 @@ def discover_resources(
         len(scan_ranges),
     )
     return resources
+
+
+def _scan_windows(
+    ranges: list[tuple[date, date]], days: int
+) -> Iterator[tuple[date, date]]:
+    """Yield consecutive bounded ranges for incremental discovery."""
+    if days < 1:
+        raise ValueError("discovery window must be positive")
+    for start, end in ranges:
+        while start <= end:
+            last = min(end, start + timedelta(days=days - 1))
+            yield start, last
+            start = last + timedelta(days=1)
 
 
 def _scan_ranges(

@@ -12,10 +12,11 @@ import duckdb
 import httpx
 
 from veldra.core.catalog import Catalog
-from veldra.core.cache import cache_resources, invalid_parquet_paths
+from veldra.core.cache import ArchivePrefetch, cache_resources, invalid_parquet_paths
 from veldra.core.datasets import DatasetSpec
 from veldra.core.reporting import Reporter, format_range, format_time
 from veldra.core.discovery import (
+    ArchiveBatch,
     covered_days,
     latest_published_day,
     latest_published_end,
@@ -801,6 +802,7 @@ def _discover(
     offline: bool,
     tail_days: int,
     dataset: DatasetSpec,
+    on_batch: ArchiveBatch | None = None,
 ) -> list[Resource] | None:
     """Discover one pair's resources while isolating source failures.
 
@@ -818,6 +820,7 @@ def _discover(
         offline: Whether source access must be skipped.
         tail_days: The recent active-market days to revisit.
         dataset: The requested dataset and its archive calendar.
+        on_batch: Optional consumer of settled daily archives.
 
     Returns:
         The known resources, or ``None`` after an isolated failure.
@@ -836,6 +839,7 @@ def _discover(
             offline=offline,
             tail_days=tail_days,
             reporter=reporter,
+            on_batch=on_batch,
         )
     except Exception as error:
         LOGGER.exception("Resource discovery failed: key=%s", key)
@@ -1247,27 +1251,47 @@ def process_pair(
     if used_range is None:
         return _finish(result, display, started)
     result.used_range = used_range
-    resources = _discover(
-        source,
-        catalog,
-        client,
-        key,
-        used_range[0],
-        used_range[1],
-        result,
-        display,
-        active=_recent_active_range(
-            active,
-            used_range,
-            today,
-            discovery_tail_days,
+    archive_days = requested_days(*used_range, dataset.archive_day_offset)
+    prefetch = (
+        ArchivePrefetch(
+            source,
+            catalog,
+            client,
+            key,
             dataset,
-        ),
-        refresh=refresh,
-        offline=offline,
-        tail_days=discovery_tail_days,
-        dataset=dataset,
+            data_dir,
+            ingestion_executor,
+            used_range,
+            max_workers,
+        )
+        if ingestion_executor is not None
+        and not (offline or refresh or dataset.requires_contract_size)
+        and dataset.name == "klines"
+        and archive_days[0] != archive_days[1]
+        else None
     )
+    try:
+        resources = _discover(
+            source,
+            catalog,
+            client,
+            key,
+            used_range[0],
+            used_range[1],
+            result,
+            display,
+            active=_recent_active_range(
+                active, used_range, today, discovery_tail_days, dataset
+            ),
+            refresh=refresh,
+            offline=offline,
+            tail_days=discovery_tail_days,
+            dataset=dataset,
+            on_batch=prefetch.offer if prefetch is not None else None,
+        )
+    finally:
+        if prefetch is not None:
+            prefetch.finish()
     if resources is None:
         return _finish(result, display, started)
     noun = "file" if len(resources) == 1 else "files"
@@ -1302,10 +1326,8 @@ def process_pair(
         max_workers=max_workers,
         reporter=display,
         executor=ingestion_executor,
-        requested_range=requested_days(
-            *used_range,
-            dataset.archive_day_offset,
-        ),
+        requested_range=archive_days,
+        prefetched=prefetch,
     )
     result.warnings.extend(coverage.warnings)
     result.problems.extend(coverage.problems)
