@@ -264,6 +264,8 @@ class BookFixture:
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         """Return the response matching one public facade operation."""
+        if request.url.path.startswith("/priapi/"):
+            return httpx.Response(200, json={"code": "0", "data": {"instList": []}})
         if request.url.path.endswith("/instruments"):
             row = {
                 "instType": "SPOT",

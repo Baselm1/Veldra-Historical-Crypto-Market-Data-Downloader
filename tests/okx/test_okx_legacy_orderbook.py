@@ -303,6 +303,8 @@ class LegacyFixture:
         Returns:
             Valid OKX envelope or source archive.
         """
+        if request.url.path.startswith("/priapi/"):
+            return httpx.Response(200, json={"code": "0", "data": {"instList": []}})
         if request.url.path.endswith("/instruments"):
             market = {
                 "instType": "SPOT",

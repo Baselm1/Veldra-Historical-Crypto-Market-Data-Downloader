@@ -239,7 +239,9 @@ class OKXService:
         stale = not markets or snapshot is None or snapshot < fresh_after
         if not offline and (refresh or stale):
             with reporter.status(f"Refreshing OKX {product} markets"):
-                markets = self.connector.markets(client, product)
+                markets = self.connector.markets(
+                    client, product, historical_fallback=markets
+                )
             catalog.save_markets("okx", product, markets)
             reporter.market_summary(markets, refreshed=True)
         elif not markets:

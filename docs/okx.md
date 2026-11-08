@@ -1,5 +1,9 @@
 # OKX
 
+The Spot market roster includes historical IDs from the download portal.
+Archive-only instruments carry the `archive_only` status. Use
+`discover_availability()` to confirm files for the requested dates.
+
 Veldra exposes OKX historical archives and public history endpoints through
 the `OKX` facade. Source data comes from the
 [OKX historical-data portal](https://www.okx.com/en-eu/historical-data),

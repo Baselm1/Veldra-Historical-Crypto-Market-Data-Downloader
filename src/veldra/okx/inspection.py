@@ -591,7 +591,8 @@ def _availability(
     relevant = [
         item
         for item in archives
-        if item.key.remote_scope_kind == "all" or item.key.subject == subject
+        if item.key.subject == subject
+        or (item.key.remote_scope_kind == "all" and market.status != "archive_only")
     ]
     available = _coverage_days([item for item in relevant if item.status != "missing"])
     remote_range = (min(available), max(available)) if available else None
@@ -841,7 +842,13 @@ def discover_availability(
                     "okx", selected_product, selected_dataset, first_day, last_day
                 )
                 discovery = OKXManifestDiscovery(service.connector._api(client))
-                plan = OKXArchivePlanner(discovery, cached=cached).plan(
+                plan = OKXArchivePlanner(
+                    discovery,
+                    cached=cached,
+                    require_specific=(
+                        (subject,) if market.status == "archive_only" else ()
+                    ),
+                ).plan(
                     selected_product,
                     selected_dataset,
                     [subject],
@@ -914,7 +921,12 @@ def discover_availability_many(
                 catalog, targets, first, last, refresh=selected_refresh
             )
         if groups:
-            _discover_batches(service, client, request, groups)
+            require_specific = {
+                key.data_subject
+                for market, key in targets
+                if market.status == "archive_only"
+            }
+            _discover_batches(service, client, request, groups, require_specific)
         with catalog_lock(path, "okx"), open_catalog(path, initialize=False) as catalog:
             return [
                 _availability(
@@ -1010,6 +1022,7 @@ def _discover_batches(
     client: httpx.Client,
     request: Request,
     groups: dict[tuple[date, date], list[ResourceKey]],
+    require_specific: set[DataSubject],
 ) -> None:
     """Fetch native manifest batches concurrently and serialize their writes."""
     path = service.data_dir / "catalog.duckdb"
@@ -1027,7 +1040,9 @@ def _discover_batches(
                 cached = catalog.ready_archives_between(
                     "okx", request.product, request.dataset, first, last
                 )
-                plan = OKXArchivePlanner(discovery, cached=cached).plan(
+                plan = OKXArchivePlanner(
+                    discovery, cached=cached, require_specific=require_specific
+                ).plan(
                     request.product,
                     request.dataset,
                     [key.data_subject for key in keys],

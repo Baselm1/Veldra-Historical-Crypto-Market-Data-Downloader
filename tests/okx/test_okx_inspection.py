@@ -75,6 +75,7 @@ class InspectionFixture:
         self.instruments = 0
         self.manifests = 0
         self.tickers = 0
+        self.historical: list[str] | None = []
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         """Return one response for each public inspection request.
@@ -86,6 +87,12 @@ class InspectionFixture:
             A valid OKX response envelope.
         """
         path = request.url.path
+        if path.startswith("/priapi/"):
+            if self.historical is None:
+                return httpx.Response(503)
+            return httpx.Response(
+                200, json={"code": "0", "data": {"instList": self.historical}}
+            )
         if path.endswith("/instruments"):
             self.instruments += 1
             native = request.url.params.get("instType")
@@ -225,6 +232,53 @@ def test_market_search_is_product_scoped_and_validates_options(tmp_path: Path) -
         other = service(tmp_path / "other", InspectionFixture())
         other.get_markets(product="spot")
         other.get_markets(product="spot", sort_by="quote_volume", offline=True)
+
+
+def test_historical_spot_roster_keeps_native_ids_and_requires_manifest_evidence(
+    tmp_path: Path,
+) -> None:
+    """Historical IDs are inactive and become covered only after discovery."""
+    fixture = InspectionFixture()
+    fixture.historical = ["BTC-USDT", "OLD_Mixed-USDT"]
+    okx = service(tmp_path, fixture)
+    markets = {item.symbol: item for item in okx.get_markets(product="spot")}
+    assert markets["BTC-USDT"].active
+    retired = markets["OLD_Mixed-USDT"]
+    assert retired.status == "archive_only"
+    assert not retired.active
+    assert (retired.base_asset, retired.quote_asset) == ("OLD_Mixed", "USDT")
+    initial = okx.get_availability(retired.symbol, product="spot", dataset="klines")
+    assert initial.available_days == 0
+    assert fixture.manifests == 0
+    found = okx.discover_availability(
+        retired.symbol,
+        "2025-01-01",
+        "2025-01-01",
+        product="spot",
+        dataset="klines",
+    )
+    assert found.symbol == retired.symbol
+    assert found.available_days == 1
+    fixture.historical = None
+    refreshed = okx.get_markets(product="spot", refresh=True)
+    assert retired in refreshed
+
+
+def test_historical_selector_failure_retains_current_spot_roster(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A failing selector leaves the live metadata usable and reports the failure."""
+    fixture = InspectionFixture()
+    fixture.historical = None
+    assert [
+        market.symbol
+        for market in service(tmp_path, fixture).get_markets(product="spot")
+    ] == [
+        "BTC-USDT",
+        "ETH-USDT",
+    ]
+    assert "historical Spot instrument selector failed" in caplog.text
 
 
 def test_futures_contract_filters_return_only_the_requested_family(
@@ -417,11 +471,15 @@ def test_local_availability_requires_metadata_and_unknowns_offer_suggestions(
         okx.get_availability("BTCSUDT", product="spot", dataset="klines", interval="1m")
 
 
+@pytest.mark.parametrize("batch", [False, True])
 def test_local_availability_counts_ready_partitions_and_physical_bytes(
     tmp_path: Path,
+    batch: bool,
 ) -> None:
-    """Confirm ready shared files become exact logical cache coverage."""
+    """Count shared partitions while still checking archive-only instruments."""
     fixture = InspectionFixture()
+    retired = "OLD_Mixed-USDT"
+    fixture.historical = [retired]
     okx = service(tmp_path, fixture)
     okx.get_markets(product="spot")
     path = tmp_path / "ready.parquet"
@@ -488,6 +546,29 @@ def test_local_availability_counts_ready_partitions_and_physical_bytes(
     assert value.cached_range == (date(2025, 1, 1), date(2025, 1, 1))
     assert value.row_count == 2
     assert value.local_bytes == len(b"parquet fixture")
+    assert (
+        okx.get_availability(retired, product="spot", dataset="klines").available_days
+        == 0
+    )
+
+    window = ("2025-01-01T00:00:00Z", "2025-01-01T01:00:00Z")
+    if batch:
+        current, historical = okx.discover_availability_many(
+            ["ETH-USDT", retired],
+            *window,
+            product="spot",
+            dataset="klines",
+        )
+        assert current.available_days == 1
+    else:
+        historical = okx.discover_availability(
+            retired,
+            *window,
+            product="spot",
+            dataset="klines",
+        )
+    assert fixture.manifests == 1
+    assert historical.available_days == 1
 
 
 def test_currency_and_historical_contract_coverage_resolve_native_subjects(
