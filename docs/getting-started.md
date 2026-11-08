@@ -22,6 +22,12 @@ python -m pip install -e ".[dev]"
 ## Create an exchange service
 
 Constructing a facade does not access the network or create the data directory.
+By default, Veldra resolves `data/veldra` from the working directory when you
+construct the facade. If you run your code from the root of `myproject`,
+downloads and catalog data go under `myproject/data/veldra`.
+Set `data_dir` explicitly if you launch from a different directory. To keep
+using a cache created under the previous default, pass `data_dir="data"`.
+
 The first retrieval loads market metadata, finds the pair's source
 boundary, and discovers useful archives for the requested range. It does not
 crawl every dataset file for every market.
@@ -43,7 +49,7 @@ All eight constructors accept these common options:
 
 | Argument | Default | Meaning |
 | --- | --- | --- |
-| `data_dir` | `"data"` | DuckDB catalog and Parquet cache root |
+| `data_dir` | `"data/veldra"` | DuckDB catalog and Parquet cache root |
 | `config_path` | `None` | Optional TOML settings file |
 | `earliest_date` | `None` | Override the configured history boundary; use `"all"` for full source history |
 | `max_workers` | `32` | Exchange-wide archive worker ceiling |

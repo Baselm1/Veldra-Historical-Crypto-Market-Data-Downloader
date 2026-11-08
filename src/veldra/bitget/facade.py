@@ -7,6 +7,7 @@ from typing import Literal
 
 import pandas as pd
 
+from veldra.core.config import DEFAULT_DATA_DIR
 from veldra.bitget.client import BitgetClient, BitgetResponseError
 from veldra.bitget.connector import BitgetConnector
 from veldra.bitget.datasets import BitgetDataset, BitgetProduct, get_dataset
@@ -118,7 +119,7 @@ class Bitget:
 
     def __init__(
         self,
-        data_dir: str | Path = "data",
+        data_dir: str | Path = DEFAULT_DATA_DIR,
         *,
         config_path: str | Path | None = None,
         earliest_date: DateInput | Literal["all"] | None = None,

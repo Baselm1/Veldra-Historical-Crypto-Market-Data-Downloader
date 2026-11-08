@@ -15,7 +15,7 @@ import httpx
 import pandas as pd
 
 from veldra.core.catalog import Catalog, catalog_lock, open_catalog
-from veldra.core.config import Settings, load_settings
+from veldra.core.config import DEFAULT_DATA_DIR, Settings, load_settings
 from veldra.core.datasets import DatasetSpec, DatasetResolver
 from veldra.core.reporting import Reporter, format_source
 from veldra.core.models import Market, Result
@@ -395,7 +395,7 @@ class RetrievalEngine:
 
     def __init__(
         self,
-        data_dir: str | Path = "data",
+        data_dir: str | Path = DEFAULT_DATA_DIR,
         *,
         source: Connector,
         dataset_resolver: DatasetResolver,

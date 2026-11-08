@@ -5,6 +5,8 @@ from datetime import date
 from pathlib import Path
 import tomllib
 
+DEFAULT_DATA_DIR = "data/veldra"
+
 
 @dataclass(frozen=True)
 class Settings:
