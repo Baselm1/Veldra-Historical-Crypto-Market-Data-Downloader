@@ -72,6 +72,44 @@ def test_connector_uses_product_specific_portal_symbols(
     assert discover.call_args.args[2] == [portal_symbol]
 
 
+def test_first_spot_kline_archive_can_predate_2023() -> None:
+    """Older explicit windows take precedence over a later listing hint."""
+    connector = BitgetConnector()
+    first = date(2019, 1, 1)
+    connector._onboard["spot", "BTCUSDT"] = date(2024, 1, 1)
+    archive = Resource(
+        day=date(2019, 1, 8),
+        url="https://example.com",
+        checksum_url=None,
+        integrity=IntegritySpec("archive_only"),
+    )
+    with (
+        httpx.Client() as client,
+        patch.object(connector, "resources", side_effect=[[], [archive]]) as resources,
+    ):
+        assert connector.first_resource(client, key(), first, archive.day) == archive
+    assert [call.args[2:] for call in resources.call_args_list] == [
+        (first, date(2019, 1, 7)),
+        (archive.day, archive.day),
+    ]
+
+
+def test_first_spot_kline_archive_uses_listing_hint_without_a_window() -> None:
+    """Current markets start at their listing hint and propagate portal failures."""
+    connector = BitgetConnector()
+    first = date(2025, 1, 3)
+    connector._onboard["spot", "BTCUSDT"] = first
+    with (
+        httpx.Client() as client,
+        patch.object(
+            connector, "resources", side_effect=RuntimeError("portal failed")
+        ) as resources,
+        pytest.raises(RuntimeError, match="portal failed"),
+    ):
+        connector.first_resource(client, key(), None, first)
+    resources.assert_called_once_with(client, key(), first, first)
+
+
 def test_checksum_reads_plain_etag() -> None:
     """Revision checks reuse the CDN's published MD5 ETag."""
     client = httpx.Client(
