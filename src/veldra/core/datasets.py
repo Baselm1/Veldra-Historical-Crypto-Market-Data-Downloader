@@ -330,6 +330,7 @@ class DatasetSpec:
     archive_day_offset: timedelta = timedelta(0)
     publication_delay_days: int = 1
     archive_cadence: ArchiveCadence = "daily"
+    rebuild_on_refresh: bool = False
 
     def __post_init__(self) -> None:
         """Validate the immutable capability declaration.

@@ -113,6 +113,10 @@ Updates and snapshots answer different questions:
 - Snapshots contain complete bid and ask ladders at each observation and are
   easier to inspect independently.
 
+Veldra combines available hourly archives into one cached day, including days
+without a midnight archive. Use `refresh=True` to rebuild a cached day from the
+hours currently published by Gate.
+
 Snapshot `bids` and `asks` are nested lists of `price` and `quantity`
 structures. Update rows contain `side`, `action`, `price`, and an explicit
 `base_quantity` or `contract_quantity`. Veldra preserves both source datasets;

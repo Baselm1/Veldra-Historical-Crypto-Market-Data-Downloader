@@ -1,11 +1,13 @@
 """Exercise the Gate facade through its complete archive pipeline."""
 
+from datetime import date
 import gzip
 import hashlib
 from pathlib import Path
 
 import httpx
 import pandas as pd
+import pytest
 
 from veldra import Gate
 
@@ -121,6 +123,43 @@ def test_unknown_pair_is_isolated_in_structured_results(tmp_path: Path) -> None:
     assert result.data.empty
     assert result.errors[0].code == "unknown_pair"
     assert result.errors[0].suggestions == ("BTC_USDT",)
+
+
+def test_sparse_order_book_day_discovers_and_refreshes_available_hours(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Load a day without hour zero and rebuild it when another hour appears."""
+    monkeypatch.setattr("veldra.core.engine.utc_today", lambda: date(2025, 1, 2))
+    market_server = GateServer()
+    payloads = {"12": gzip.compress(b"1735732800,2,set,100,2,10,0\n")}
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        """Serve the available depth hours and the ordinary market fixture."""
+        if "/orderbooks/" not in request.url.path:
+            return market_server(request)
+        payload = payloads.get(request.url.path[-9:-7])
+        if payload is None:
+            return httpx.Response(404)
+        return httpx.Response(
+            200,
+            headers={"ETag": hashlib.md5(payload).hexdigest()},
+            content=b"" if request.method == "HEAD" else payload,
+        )
+
+    gate = service(tmp_path, market_server)
+    gate._downloader.transport = httpx.MockTransport(respond)
+    day = "2025-01-01"
+    first = gate.get_order_book_updates("BTCUSDT", day, day)
+    assert isinstance(first, pd.DataFrame)
+    assert first.update_id.tolist() == [10]
+
+    payloads["13"] = gzip.compress(b"1735736400,1,make,101,3,11,1\n")
+    refreshed = gate.get_order_book_updates("BTCUSDT", day, day, refresh=True)
+    assert isinstance(refreshed, pd.DataFrame)
+    assert refreshed.update_id.tolist() == [10, 11]
+    cached = gate.get_order_book_updates("BTCUSDT", day, day, offline=True)
+    assert isinstance(cached, pd.DataFrame)
+    pd.testing.assert_frame_equal(cached, refreshed)
 
 
 def test_partial_resampling_edges_are_omitted_and_reported(tmp_path: Path) -> None:

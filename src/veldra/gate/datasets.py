@@ -210,6 +210,7 @@ def _updates(product: GateProduct) -> DatasetSpec:
         integer_columns=("update_id", "merged_count"),
         string_columns=("side", "action"),
         sort_source_rows=True,
+        rebuild_on_refresh=True,
     )
 
 
@@ -238,6 +239,7 @@ def _snapshots(product: GateProduct) -> DatasetSpec:
         integer_columns=("update_id",),
         object_columns=("bids", "asks"),
         sort_source_rows=True,
+        rebuild_on_refresh=True,
     )
 
 

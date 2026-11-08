@@ -33,6 +33,7 @@ PRODUCT_PATHS: Mapping[str, str] = {
 }
 _SAFE_SYMBOL = re.compile(r"[A-Z0-9_]+")
 _PLAIN_MD5 = re.compile(r"[0-9a-fA-F]{32}")
+_ORDER_BOOK_DATASETS = frozenset({"order_book_updates", "order_book_snapshots"})
 
 
 class GateConnector:
@@ -169,8 +170,13 @@ class GateConnector:
         if not candidates:
             return []
         workers = min(self.max_concurrency, len(candidates))
+        hourly = key.dataset in _ORDER_BOOK_DATASETS
         with ThreadPoolExecutor(max_workers=workers) as pool:
-            found = list(pool.map(lambda item: self._probe(client, item), candidates))
+            found = list(
+                pool.map(
+                    lambda item: self._probe(client, item, hourly=hourly), candidates
+                )
+            )
         return [resource for resource in found if resource is not None]
 
     def first_resource(
@@ -224,7 +230,7 @@ class GateConnector:
         Returns:
             Integrity and local materialization metadata.
         """
-        if dataset.name in {"order_book_updates", "order_book_snapshots"}:
+        if dataset.name in _ORDER_BOOK_DATASETS:
             from veldra.gate.orderbook import ingest_order_book_day
 
             return ingest_order_book_day(
@@ -250,19 +256,29 @@ class GateConnector:
             backoff=self.backoff,
         )
 
-    def _probe(self, client: httpx.Client, resource: Resource) -> Resource | None:
+    def _probe(
+        self, client: httpx.Client, resource: Resource, *, hourly: bool
+    ) -> Resource | None:
         """Attach available metadata or skip one absent candidate archive."""
+        if hourly:
+            from veldra.gate.orderbook import has_order_book_hours
+
+            if has_order_book_hours(
+                client,
+                resource,
+                timeout=self.timeout,
+                retries=self.retries,
+                backoff=self.backoff,
+            ):
+                return resource
+            return None
         try:
             response = self._head(client, resource.url)
         except httpx.HTTPStatusError as error:
             if error.response.status_code in {404, 410}:
                 return None
             raise
-        digest = (
-            None
-            if resource.url.endswith(("00.csv.gz", "00.gz"))
-            else self._etag(response)
-        )
+        digest = self._etag(response)
         integrity = (
             IntegritySpec("response_header", "md5", expected=digest)
             if digest is not None
@@ -275,7 +291,7 @@ class GateConnector:
         symbol = key.archive_symbol or key.symbol
         folder = period.strftime("%Y%m")
         compact = period.strftime("%Y%m" if key.cadence == "monthly" else "%Y%m%d")
-        if key.dataset in {"order_book_updates", "order_book_snapshots"}:
+        if key.dataset in _ORDER_BOOK_DATASETS:
             compact = f"{period:%Y%m%d}00"
         suffix = ".gz" if key.dataset == "order_book_snapshots" else ".csv.gz"
         url = (
@@ -328,7 +344,7 @@ class GateConnector:
         """Return the best inexpensive lower-bound hint for one market."""
         published_start = (
             date(2021, 8, 1)
-            if key.dataset in {"order_book_updates", "order_book_snapshots"}
+            if key.dataset in _ORDER_BOOK_DATASETS
             else date(2023, 1, 1)
         )
         hint = self._onboard_dates.get((key.product, key.symbol))
