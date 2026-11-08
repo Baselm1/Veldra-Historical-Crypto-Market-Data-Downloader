@@ -22,7 +22,7 @@ from veldra.core.models import (
     ResourceKey,
 )
 from veldra.core.request import normalize_pair
-from veldra.gate.datasets import PRODUCTS, supports
+from veldra.gate.datasets import PRODUCTS, get_dataset, supports
 
 API_URL = "https://api.gateio.ws/api/v4"
 ARCHIVE_URL = "https://download.gatedata.org"
@@ -193,6 +193,9 @@ class GateConnector:
         """
         self._validate_resource_request(key, start_day, end_day)
         cursor = max(start_day or self._source_start(key), self._source_start(key))
+        transition = get_dataset(
+            key.product, key.dataset, requested_interval=key.interval
+        ).daily_archive_start
         while cursor <= end_day:
             last = min(
                 end_day,
@@ -200,7 +203,12 @@ class GateConnector:
                     cursor.year, cursor.month, monthrange(cursor.year, cursor.month)[1]
                 ),
             )
-            resources = self.resources(client, key, cursor, last)
+            period_key = (
+                replace(key, cadence="monthly")
+                if transition is not None and cursor < transition
+                else key
+            )
+            resources = self.resources(client, period_key, cursor, last)
             if resources:
                 return resources[0]
             cursor = last + timedelta(days=1)

@@ -220,6 +220,20 @@ def plan_archives(
             dataset,
         )
 
+    transition = dataset.daily_archive_start
+    if transition is not None and first < transition:
+        month_first = first.replace(day=1)
+        historical_last = min(last, transition - timedelta(days=1))
+        month_last = historical_last.replace(
+            day=monthrange(historical_last.year, historical_last.month)[1]
+        )
+        archives = scan(
+            replace(key, cadence="monthly"), month_first, month_last, monthly=True
+        )
+        if transition <= last:
+            archives.extend(scan(key, transition, last))
+        return select_archives(archives, dataset)
+
     if key.dataset not in getattr(source, "monthly_datasets", ()):
         return scan(
             key,
