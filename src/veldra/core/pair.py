@@ -1165,6 +1165,21 @@ def _query_with_recovery(
     return True if retry_error is None else _query_failure(result, retry_error)
 
 
+def _prefetch_eligible(
+    dataset: DatasetSpec,
+    archive_days: tuple[date, date],
+    *,
+    offline: bool,
+    refresh: bool,
+) -> bool:
+    """Select multi-day kline requests that can ingest directly from discovery."""
+    return (
+        dataset.name == "klines"
+        and archive_days[0] != archive_days[1]
+        and not (offline or refresh or dataset.requires_contract_size)
+    )
+
+
 def process_pair(
     source: Connector,
     catalog: Catalog,
@@ -1265,9 +1280,7 @@ def process_pair(
             max_workers,
         )
         if ingestion_executor is not None
-        and not (offline or refresh or dataset.requires_contract_size)
-        and dataset.name == "klines"
-        and archive_days[0] != archive_days[1]
+        and _prefetch_eligible(dataset, archive_days, offline=offline, refresh=refresh)
         else None
     )
     try:
