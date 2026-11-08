@@ -78,6 +78,7 @@ def test_catalog_creates_the_metadata_tables_and_uses_utc(catalog: Catalog) -> N
     }
 
     assert tables == {
+        "catalog_migrations",
         "archive_objects",
         "logical_partitions",
         "markets",
