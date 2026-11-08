@@ -57,6 +57,21 @@ def _deduplicate(frame: pd.DataFrame, keys: list[str]) -> pd.DataFrame:
     return result
 
 
+def _timestamps(values: pd.Series) -> pd.Series:
+    """Convert exchange milliseconds to the catalog's UTC microsecond dtype.
+
+    Args:
+        values: Numeric or string millisecond timestamps from an OKX CSV.
+
+    Returns:
+        UTC timestamps in the canonical storage resolution.
+    """
+    milliseconds = pd.to_numeric(values, errors="raise")
+    return pd.to_datetime(milliseconds, unit="ms", utc=True).astype(
+        "datetime64[us, UTC]"
+    )
+
+
 def normalize_klines(frame: pd.DataFrame, dataset: DatasetSpec) -> pd.DataFrame:
     """Return canonical one-minute Klines from an OKX module 2 CSV.
 
@@ -81,9 +96,7 @@ def normalize_klines(frame: pd.DataFrame, dataset: DatasetSpec) -> pd.DataFrame:
         ("open", "high", "low", "close", "vol", "vol_ccy", "vol_quote"),
     )
     try:
-        times = pd.to_datetime(
-            pd.to_numeric(frame["open_time"], errors="raise"), unit="ms", utc=True
-        )
+        times = _timestamps(frame["open_time"])
         confirms = pd.to_numeric(frame["confirm"], errors="raise")
     except (TypeError, ValueError) as error:
         raise DataValidationError("invalid OKX Kline time or confirmation") from error
@@ -153,9 +166,7 @@ def normalize_trades(
     _numbers(frame, ("price", "size"))
     try:
         identifiers = pd.to_numeric(frame["trade_id"], errors="raise")
-        times = pd.to_datetime(
-            pd.to_numeric(frame["created_time"], errors="raise"), unit="ms", utc=True
-        )
+        times = _timestamps(frame["created_time"])
     except (TypeError, ValueError) as error:
         raise DataValidationError("invalid OKX trade ID or timestamp") from error
     if not identifiers.mod(1).eq(0).all() or identifiers.lt(0).any():
@@ -242,9 +253,7 @@ def normalize_funding_rates(frame: pd.DataFrame, dataset: DatasetSpec) -> pd.Dat
         raise DataValidationError("OKX instrument_name cannot be empty")
     _numbers(frame, ("funding_rate",))
     try:
-        times = pd.to_datetime(
-            pd.to_numeric(frame["funding_time"], errors="raise"), unit="ms", utc=True
-        )
+        times = _timestamps(frame["funding_time"])
     except (TypeError, ValueError) as error:
         raise DataValidationError("invalid OKX funding timestamp") from error
     result = pd.DataFrame(
@@ -277,9 +286,7 @@ def normalize_borrow_rates(frame: pd.DataFrame, dataset: DatasetSpec) -> pd.Data
         raise DataValidationError("OKX borrowing currency cannot be empty")
     _numbers(frame, ("borrow_rate",))
     try:
-        times = pd.to_datetime(
-            pd.to_numeric(frame["time"], errors="raise"), unit="ms", utc=True
-        )
+        times = _timestamps(frame["time"])
     except (TypeError, ValueError) as error:
         raise DataValidationError("invalid OKX borrowing timestamp") from error
     result = pd.DataFrame(
