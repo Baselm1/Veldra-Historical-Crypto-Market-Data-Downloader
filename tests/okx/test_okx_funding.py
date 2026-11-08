@@ -39,6 +39,7 @@ def test_funding_preserves_actual_irregular_timestamps(product: str) -> None:
     frame = normalize_funding_rates(
         funding_frame(), get_dataset(product, "funding_rates")
     )
+    assert str(frame["funding_time"].dtype) == "datetime64[us, UTC]"
     assert frame["funding_rate"].tolist() == [0.0001, -0.0002]
     assert (
         frame.loc[1, "funding_time"] - frame.loc[0, "funding_time"]
