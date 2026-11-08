@@ -27,6 +27,7 @@ from veldra.core.discovery import _validate_resources, requested_days
 from veldra.core.engine import RetrievalEngine
 from veldra.core.models import Resource, ResourceKey, Result
 from veldra.binance.connector import BinanceConnector
+from veldra.binance.facade import Binance
 
 FIXTURES = Path(__file__).parent / "fixtures"
 DAY = date(2024, 1, 1)
@@ -332,6 +333,26 @@ def test_downloader_completes_and_reuses_one_spot_kline_day(
     assert markets[0].symbol == "BTCUSDT"
     assert resource.status == "ready"
     assert resource.parquet_path == expected
+
+
+def test_binance_writes_default_cache_in_the_calling_project(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Write the catalog and downloaded Parquet under the original project root."""
+    project = tmp_path / "myproject"
+    project.mkdir()
+    monkeypatch.chdir(project)
+    service = Binance(progress=False, retries=0)
+    service._downloader.transport = httpx.MockTransport(BinanceServer())
+
+    monkeypatch.chdir(tmp_path)
+    frame = service.get_klines("BTCUSDT", DAY, DAY)
+
+    assert len(frame) == 2
+    root = project / "data" / "veldra"
+    assert (root / "catalog.duckdb").is_file()
+    assert parquet_path(root, KEY, DAY).is_file()
+    assert not (tmp_path / "data").exists()
 
 
 def test_refresh_rechecks_a_cached_archive_without_redownloading_it(

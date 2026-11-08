@@ -6,6 +6,7 @@ from typing import Literal, overload
 
 import pandas as pd
 
+from veldra.core.config import DEFAULT_DATA_DIR
 from veldra.core.download import _validate_settings
 from veldra.core.engine import RetrievalEngine
 from veldra.core.inspection import (
@@ -30,7 +31,7 @@ class HTX:
 
     def __init__(
         self,
-        data_dir: str | Path = "data",
+        data_dir: str | Path = DEFAULT_DATA_DIR,
         *,
         config_path: str | Path | None = None,
         earliest_date: DateInput | Literal["all"] | None = None,

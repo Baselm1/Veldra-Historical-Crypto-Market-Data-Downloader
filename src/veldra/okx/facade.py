@@ -8,6 +8,7 @@ from typing import Literal
 import httpx
 import pandas as pd
 
+from veldra.core.config import DEFAULT_DATA_DIR
 from veldra.core.models import Availability, Market, Result
 from veldra.core.request import parse_timestamp
 from veldra.okx.chain import OptionChainFilter
@@ -44,7 +45,7 @@ class OKX:
 
     def __init__(
         self,
-        data_dir: str | Path = "data",
+        data_dir: str | Path = DEFAULT_DATA_DIR,
         *,
         config_path: str | Path | None = None,
         earliest_date: DateInput | Literal["all"] | None = None,

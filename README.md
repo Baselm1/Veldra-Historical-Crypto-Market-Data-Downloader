@@ -80,7 +80,7 @@ For example:
 ```python
 from veldra import Binance
 
-binance = Binance(data_dir="data")
+binance = Binance()
 
 btc = binance.get_klines(
     "BTCUSDT",

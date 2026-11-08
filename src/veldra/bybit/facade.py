@@ -8,6 +8,7 @@ from typing import Literal
 import httpx
 import pandas as pd
 
+from veldra.core.config import DEFAULT_DATA_DIR
 from veldra.bybit.client import BybitResponseError
 from veldra.bybit.datasets import BybitDataset, get_dataset
 from veldra.bybit.history import kline_frame, object_frame
@@ -92,7 +93,7 @@ class Bybit:
 
     def __init__(
         self,
-        data_dir: str | Path = "data",
+        data_dir: str | Path = DEFAULT_DATA_DIR,
         *,
         config_path: str | Path | None = None,
         earliest_date: DateInput | Literal["all"] | None = None,
