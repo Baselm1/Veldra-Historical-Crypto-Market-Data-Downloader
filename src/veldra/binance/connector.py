@@ -72,6 +72,7 @@ class BinanceConnector:
     code: str = "binance"
     products: tuple[str, ...] = ("spot", "um", "cm")
     max_concurrency: int = 64
+    discovery_window_days = _S3_MAX_KEYS // _DAILY_KEYS_PER_ARCHIVE - 1
     monthly_datasets = frozenset(
         {
             "klines",
