@@ -13,6 +13,7 @@ import pytest
 
 from veldra.core.cache import cache_resources
 from veldra.core.catalog import Catalog
+from veldra.binance.facade import Binance
 from veldra.core.models import Resource, ResourceKey
 from veldra.core.planner import plan_archives, select_archives
 from veldra.core.query import query_parquet
@@ -99,6 +100,59 @@ class Portal:
             )
         self.downloads.append(key)
         return httpx.Response(200, content=self.objects[key])
+
+
+def test_inactive_market_keeps_monthly_coverage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Inspect and retrieve a month extending beyond the first daily archive."""
+    portal = Portal()
+    portal.objects = {
+        key: payload
+        for key, payload in portal.objects.items()
+        if "/monthly/" in key or "2024-01-01" in key
+    }
+    monkeypatch.setattr("veldra.core.engine.utc_today", lambda: date(2024, 2, 3))
+    monkeypatch.setattr("veldra.core.inspection.utc_today", lambda: date(2024, 2, 3))
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        """Expose BTCUSDT only in the archive market listing."""
+        if request.url.host == "api.binance.com":
+            return httpx.Response(
+                200,
+                json={
+                    "symbols": [
+                        {
+                            "symbol": "ETHUSDT",
+                            "baseAsset": "ETH",
+                            "quoteAsset": "USDT",
+                            "status": "TRADING",
+                        }
+                    ]
+                },
+            )
+        if request.url.params.get("delimiter") == "/":
+            return httpx.Response(
+                200, text=listing(prefixes=("data/spot/daily/klines/BTCUSDT/",))
+            )
+        return portal(request)
+
+    service = Binance(tmp_path, earliest_date="all", retries=0, progress=False)
+    service._downloader.transport = httpx.MockTransport(respond)
+    discovered = service.discover_availability(
+        "BTCUSDT", FIRST, LAST, product="spot", dataset="klines"
+    )
+    assert discovered.remote_range == (FIRST, LAST)
+    assert discovered.available_days == 31
+
+    data = service.get_klines("BTCUSDT", FIRST, LAST, gap_policy="keep")
+    assert len(data) == 62
+    assert len(portal.downloads) == 1 and "/monthly/" in portal.downloads[0]
+    cached = service.get_klines("BTCUSDT", FIRST, LAST, gap_policy="keep", offline=True)
+    pd.testing.assert_frame_equal(data, cached)
+    assert service.get_availability(
+        "BTCUSDT", product="spot", dataset="klines"
+    ).remote_range == (FIRST, LAST)
 
 
 def test_month_and_daily_tail_are_cached_once_and_filtered_exactly(

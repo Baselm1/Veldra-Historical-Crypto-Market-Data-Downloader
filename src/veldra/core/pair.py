@@ -379,11 +379,14 @@ def _availability_range(
         )
         if resources is None:
             return None
-        bounds = catalog.resource_bounds(key)
+        bounds = catalog.resource_bounds(key, include_monthly=True)
         if bounds is not None:
             catalog.save_source_bounds(key, first.day, bounds[1])
     source_range = _availability(
-        catalog.resource_coverage_bounds(key), active, today, dataset
+        catalog.resource_coverage_bounds(key, include_monthly=not active),
+        active,
+        today,
+        dataset,
     )
     if source_range is None:
         return None

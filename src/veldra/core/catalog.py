@@ -1619,11 +1619,14 @@ class Catalog:
             if (timestamp := _utc_timestamp(row[2])) is not None
         ]
 
-    def resource_bounds(self, key: ResourceKey) -> tuple[date, date] | None:
+    def resource_bounds(
+        self, key: ResourceKey, *, include_monthly: bool = False
+    ) -> tuple[date, date] | None:
         """Return the earliest and latest discovered resource days.
 
         Args:
             key: The dataset identity whose availability is needed.
+            include_monthly: Include monthly archives for the same dataset.
 
         Returns:
             The inclusive resource bounds, or ``None`` without known files.
@@ -1633,21 +1636,22 @@ class Catalog:
             SELECT min(day), max(COALESCE(end_day, day))
             FROM resources
             WHERE source = ? AND product = ? AND dataset = ?
-              AND symbol = ? AND interval = ? AND cadence = ?
+              AND symbol = ? AND interval = ? AND cadence IN (?, ?)
             """,
-            _key_values(key),
+            [*_key_values(key), "monthly" if include_monthly else key.cadence],
         ).fetchone()
         if row is None or row[0] is None or row[1] is None:
             return None
         return row[0], row[1]
 
     def resource_coverage_bounds(
-        self, key: ResourceKey
+        self, key: ResourceKey, *, include_monthly: bool = False
     ) -> tuple[datetime, datetime] | None:
         """Return the exact UTC bounds of all discovered physical archives.
 
         Args:
             key: The dataset identity whose timestamp coverage is needed.
+            include_monthly: Include monthly archives for the same dataset.
 
         Returns:
             The earliest inclusive start and latest exclusive end, or ``None``.
@@ -1657,9 +1661,9 @@ class Catalog:
             SELECT min(coverage_start), max(coverage_end)
             FROM resources
             WHERE source = ? AND product = ? AND dataset = ?
-              AND symbol = ? AND interval = ? AND cadence = ?
+              AND symbol = ? AND interval = ? AND cadence IN (?, ?)
             """,
-            _key_values(key),
+            [*_key_values(key), "monthly" if include_monthly else key.cadence],
         ).fetchone()
         if row is None or row[0] is None or row[1] is None:
             return None
