@@ -231,7 +231,7 @@ def _snapshot(
         max_connections=source_limit,
         max_keepalive_connections=source_limit,
     )
-    with catalog_lock(catalog_path):
+    with catalog_lock(catalog_path, downloader.source.code):
         with httpx.Client(
             transport=downloader.transport,
             follow_redirects=True,
@@ -918,7 +918,7 @@ def get_availability(
     catalog_path = downloader.data_dir / "catalog.duckdb"
     if not catalog_path.is_file():
         raise RuntimeError("local availability requires cached market metadata")
-    with catalog_lock(catalog_path):
+    with catalog_lock(catalog_path, downloader.source.code):
         with open_catalog(catalog_path) as catalog:
             markets = catalog.markets(downloader.source.code, selected_product)
             if not markets:
@@ -1023,7 +1023,7 @@ def discover_availability(
         max_connections=source_limit,
         max_keepalive_connections=source_limit,
     )
-    with catalog_lock(catalog_path):
+    with catalog_lock(catalog_path, downloader.source.code):
         with httpx.Client(
             transport=downloader.transport,
             follow_redirects=True,

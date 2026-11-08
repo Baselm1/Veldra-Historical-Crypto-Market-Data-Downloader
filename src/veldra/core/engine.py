@@ -532,7 +532,7 @@ class RetrievalEngine:
             max_connections=source_limit,
             max_keepalive_connections=source_limit,
         )
-        with catalog_lock(catalog_path):
+        with catalog_lock(catalog_path, self.source.code):
             with _http_client(self.transport, limits, offline=offline) as client:
                 with open_catalog(catalog_path) as catalog:
                     markets = _load_markets(

@@ -799,7 +799,7 @@ class OKXService:
         )
         catalog_path = self.data_dir / "catalog.duckdb"
         started = perf_counter()
-        with catalog_lock(catalog_path):
+        with catalog_lock(catalog_path, "okx"):
             with self._client(offline=offline) as client:
                 with open_catalog(catalog_path) as catalog:
                     markets = self._markets(
@@ -901,7 +901,7 @@ class OKXService:
         specification = get_dataset("margin", "borrow_rates")
         request = request.resolve_dataset(specification)
         catalog_path = self.data_dir / "catalog.duckdb"
-        with catalog_lock(catalog_path):
+        with catalog_lock(catalog_path, "okx"):
             with self._client(offline=offline) as client:
                 with open_catalog(catalog_path) as catalog:
                     results = [
@@ -1074,7 +1074,7 @@ class OKXService:
         )
         catalog_path = self.data_dir / "catalog.duckdb"
         reporter = Reporter(self.progress)
-        with catalog_lock(catalog_path):
+        with catalog_lock(catalog_path, "okx"):
             with self._client(offline=bool(offline)) as client:
                 with open_catalog(catalog_path) as catalog:
                     cached = self._prepare_chain(
@@ -1401,7 +1401,7 @@ class OKXService:
         first_day, last_day = self._source_days(start_time, request.end, specification)
         reporter = Reporter(self.progress)
         catalog_path = self.data_dir / "catalog.duckdb"
-        with catalog_lock(catalog_path):
+        with catalog_lock(catalog_path, "okx"):
             with self._client(offline=offline) as client:
                 with open_catalog(catalog_path) as catalog:
                     markets = self._markets(
@@ -1520,7 +1520,7 @@ class OKXService:
         range_start, range_end = parse_range(start, end)
         subject = DataSubject(subject_kind, subject_value.strip().upper())  # type: ignore[arg-type]
         catalog_path = self.data_dir / "catalog.duckdb"
-        with catalog_lock(catalog_path):
+        with catalog_lock(catalog_path, "okx"):
             with self._client(offline=offline) as client:
                 api = OKXClient(
                     client=client,

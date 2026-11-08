@@ -308,6 +308,7 @@ def test_catalog_repairs_archive_only_rows_with_legacy_algorithms(
 
     with open_catalog(path) as first:
         first.save_discovery(key, item.day, item.day, [item])
+        first.connection.execute("DROP TABLE catalog_migrations")
         first.connection.execute(
             "UPDATE resources SET checksum_algorithm = 'sha256' "
             "WHERE source = 'gate' AND product = 'cm'"

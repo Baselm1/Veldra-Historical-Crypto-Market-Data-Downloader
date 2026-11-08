@@ -220,7 +220,7 @@ class Bitget:
             Exact canonical rows for the requested range.
         """
         catalog_path = self.data_dir / "catalog.duckdb"
-        with catalog_lock(catalog_path):
+        with catalog_lock(catalog_path, "bitget"):
             with open_catalog(catalog_path) as catalog:
                 return BitgetRESTCache(catalog, self.data_dir).get(
                     dataset,

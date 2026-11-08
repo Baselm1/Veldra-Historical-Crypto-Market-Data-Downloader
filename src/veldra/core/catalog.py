@@ -6,9 +6,10 @@ from datetime import UTC, date, datetime
 import logging
 import math
 from pathlib import Path
-from threading import RLock
+from threading import Lock, RLock
 from typing import Any, cast
 from urllib.parse import urlsplit
+from weakref import WeakValueDictionary
 
 import duckdb
 import pyarrow as pa
@@ -28,7 +29,10 @@ from veldra.core.models import (
 )
 from veldra.core.subjects import DataSubject, SubjectKind
 
-_CATALOG_LOCKS = tuple(RLock() for _ in range(64))
+_CATALOG_LOCKS: WeakValueDictionary[tuple[Path, str | None], RLock] = (
+    WeakValueDictionary()
+)
+_CATALOG_LOCKS_GUARD = Lock()
 LOGGER = logging.getLogger(__name__)
 _LEGACY_ARCHIVES_MIGRATION = 1
 _LEGACY_RESOURCE_COLUMNS = """
@@ -214,23 +218,34 @@ def open_catalog(path: Path, *, initialize: bool = True) -> Iterator[Catalog]:
     LOGGER.debug("Opening DuckDB catalog: path=%s", path)
     connection = duckdb.connect(str(path))
     try:
-        yield Catalog(connection, initialize=initialize)
+        if initialize:
+            with catalog_lock(path):
+                catalog = Catalog(connection)
+        else:
+            catalog = Catalog(connection, initialize=False)
+        yield catalog
     finally:
         connection.close()
         LOGGER.debug("Closed DuckDB catalog: path=%s", path)
 
 
 @contextmanager
-def catalog_lock(path: Path) -> Iterator[None]:
-    """Prevent overlapping in-process work against one catalog path.
+def catalog_lock(path: Path, source: str | None = None) -> Iterator[None]:
+    """Coordinate schema initialization or one source's catalog workflow.
 
     Args:
-        path: The catalog database path identifying the shared pipeline.
+        path: The catalog database path.
+        source: The exchange running a workflow, or ``None`` for schema work.
 
     Yields:
         Control after the matching process-local lock is acquired.
     """
-    lock = _CATALOG_LOCKS[hash(path.resolve()) % len(_CATALOG_LOCKS)]
+    key = (path.resolve(), source)
+    with _CATALOG_LOCKS_GUARD:
+        lock = _CATALOG_LOCKS.get(key)
+        if lock is None:
+            lock = RLock()
+            _CATALOG_LOCKS[key] = lock
     with lock:
         yield
 
@@ -254,6 +269,14 @@ class Catalog:
 
     def _create_schema(self) -> None:
         """Create metadata tables and migrate older catalogs when needed."""
+        if (
+            "catalog_migrations" in self._tables()
+            and self.connection.execute(
+                "SELECT version FROM catalog_migrations WHERE version = ?",
+                [_LEGACY_ARCHIVES_MIGRATION],
+            ).fetchone()
+        ):
+            return
         self.connection.execute("""
             CREATE TABLE IF NOT EXISTS markets (
                 source VARCHAR NOT NULL,
@@ -1255,11 +1278,6 @@ class Catalog:
 
     def _migrate_legacy_archives(self) -> None:
         """Backfill physical and logical metadata once for an existing catalog."""
-        if self.connection.execute(
-            "SELECT version FROM catalog_migrations WHERE version = ?",
-            [_LEGACY_ARCHIVES_MIGRATION],
-        ).fetchone():
-            return
         now = datetime.now(UTC)
         with self._transaction():
             rows = self.connection.execute(f"""
