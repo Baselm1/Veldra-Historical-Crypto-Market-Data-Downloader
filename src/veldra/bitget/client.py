@@ -10,6 +10,7 @@ from typing import Protocol, cast
 import httpx
 
 from veldra.core.download import retry_delay
+from veldra.core.http_budget import ExchangeHTTPClient, RequestBudget
 from veldra.core.rate_limit import RatePolicy, RollingWindowRateLimiter
 
 REST_URL = "https://api.bitget.com"
@@ -120,6 +121,7 @@ class BitgetClient:
         self,
         *,
         client: httpx.Client | None = None,
+        budget: RequestBudget | None = None,
         limiter: Limiter | None = None,
         timeout: float = 30.0,
         retries: int = 3,
@@ -131,6 +133,7 @@ class BitgetClient:
 
         Args:
             client: Optional externally managed HTTPX client.
+            budget: Optional request budget for a pool owned by this client.
             limiter: Optional shared quota registry.
             timeout: Per-attempt request timeout in seconds.
             retries: Retries following the first attempt.
@@ -138,7 +141,9 @@ class BitgetClient:
             sleeper: Delay function used between attempts.
             jitter: Full-jitter function receiving a maximum delay.
         """
-        self.client = client or httpx.Client()
+        self.client = client or ExchangeHTTPClient(
+            budget or RequestBudget("bitget", 32), follow_redirects=False
+        )
         self._owns_client = client is None
         self.limiter = limiter or BitgetRateLimiter()
         self.timeout = _positive_number(timeout, "timeout")

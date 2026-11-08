@@ -49,7 +49,7 @@ class BybitService:
             discovery_tail_days=discovery_tail_days,
             market_refresh_hours=market_refresh_hours,
         )
-        self._http = httpx.Client(transport=transport, follow_redirects=True)
+        self._http = self.downloader._client(offline=False)
         self.client = BybitClient(
             client=self._http,
             limiter=connector.limiter,

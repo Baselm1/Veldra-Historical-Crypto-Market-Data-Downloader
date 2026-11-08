@@ -1,7 +1,7 @@
 """Persist normalized Bitget REST histories as queryable Parquet ranges."""
 
 from collections.abc import Callable, Sequence
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 import json
 from pathlib import Path
@@ -21,6 +21,9 @@ from veldra.core.models import (
 from veldra.core.subjects import DataSubject
 
 type FrameFetcher = Callable[[], pd.DataFrame]
+
+_FINALITY_DELAY = timedelta(days=3)
+_PROVISIONAL_TTL = timedelta(hours=6)
 
 
 class BitgetRESTCache:
@@ -55,7 +58,7 @@ class BitgetRESTCache:
             start: Inclusive UTC request boundary.
             end: Exclusive UTC request boundary.
             product: Bitget Futures settlement product.
-            fetch: Source request to call only when local data is absent.
+            fetch: Source request to call when local data is absent or stale.
             interval: Stored Kline interval, or ``None`` for event data.
 
         Returns:
@@ -68,7 +71,8 @@ class BitgetRESTCache:
             "bitget", product, dataset, subject, interval, start, end
         )
         cached = self._covering_partition(candidates, start, end)
-        if cached is not None:
+        now = datetime.now(UTC)
+        if cached is not None and self._fresh(cached, now):
             frame = self._read_cached(
                 cached, spec.time_column, spec.ordering_columns, start, end
             )
@@ -85,9 +89,29 @@ class BitgetRESTCache:
             end,
             frame,
             spec.time_column,
+            observed_at=now,
         )
         return self._query(
             partition, spec.time_column, spec.ordering_columns, start, end
+        )
+
+    def _fresh(self, partition: LogicalPartition, now: datetime) -> bool:
+        """Check when the cached source snapshot was taken relative to finality."""
+        key = self._key(
+            partition.dataset,
+            partition.subject,
+            partition.product,
+            partition.interval,
+            partition.coverage_start,
+            partition.coverage_end,
+        )
+        archive = self.catalog.archive(key)
+        if archive is None or archive.status != "ready":
+            return False
+        final_at = partition.coverage_end + _FINALITY_DELAY
+        observed_at = archive.discovered_at
+        return observed_at >= final_at or (
+            now < final_at and now - observed_at < _PROVISIONAL_TTL
         )
 
     @classmethod
@@ -232,6 +256,8 @@ class BitgetRESTCache:
         end: datetime,
         frame: pd.DataFrame,
         time_column: str,
+        *,
+        observed_at: datetime,
     ) -> LogicalPartition:
         """Atomically publish one normalized REST response and its metadata.
 
@@ -244,6 +270,7 @@ class BitgetRESTCache:
             end: Exclusive UTC request boundary.
             frame: Validated canonical rows.
             time_column: Timestamp column used to describe the rows.
+            observed_at: UTC time when the source request began.
 
         Returns:
             Catalog partition representing the stored range.
@@ -255,6 +282,7 @@ class BitgetRESTCache:
                     key,
                     f"https://api.bitget.com/{dataset}",
                     integrity=IntegritySpec("archive_only"),
+                    discovered_at=observed_at,
                 )
             ]
         )

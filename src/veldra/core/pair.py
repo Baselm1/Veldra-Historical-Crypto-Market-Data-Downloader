@@ -17,9 +17,11 @@ from veldra.core.datasets import DatasetSpec
 from veldra.core.reporting import Reporter, format_range, format_time
 from veldra.core.discovery import (
     ArchiveBatch,
+    boundary_predates_known_cadence,
     covered_days,
     latest_published_day,
     latest_published_end,
+    record_source_boundary,
     requested_days,
 )
 from veldra.core.models import (
@@ -258,6 +260,7 @@ def _first_resource(
     result: Result,
     reporter: Reporter,
     *,
+    requested_start: datetime,
     refresh: bool,
     offline: bool,
 ) -> Resource | None:
@@ -272,6 +275,7 @@ def _first_resource(
         today: The current UTC date and exclusive active boundary.
         result: The result receiving discovery failures.
         reporter: The optional Rich activity reporter.
+        requested_start: The requested UTC start used to detect older archive layouts.
         refresh: Whether to repeat source-boundary discovery.
         offline: Whether source access is forbidden.
 
@@ -280,20 +284,38 @@ def _first_resource(
     """
     source_bounds = catalog.source_bounds(key)
     cached_day = source_bounds[0] if source_bounds is not None else None
-    if cached_day is not None and not refresh:
-        resources = catalog.resources(key, cached_day, cached_day)
+    mixed = dataset.daily_archive_start is not None
+    if cached_day is not None and (
+        offline
+        or (
+            not refresh
+            and not boundary_predates_known_cadence(
+                requested_start, cached_day, dataset
+            )
+        )
+    ):
+        resources = (
+            catalog_archives(catalog, key, cached_day, cached_day)
+            if mixed
+            else catalog.resources(key, cached_day, cached_day)
+        )
         if resources:
             LOGGER.debug("Reused source boundary: key=%s day=%s", key, cached_day)
             return resources[0]
     if offline:
-        fallback = catalog.resource_bounds(key)
+        fallback = catalog.resource_bounds(key, include_monthly=mixed)
         if fallback is None:
             return None
         day = fallback[0]
-        resources = catalog.resources(key, day, day)
+        resources = (
+            catalog_archives(catalog, key, day, day)
+            if mixed
+            else catalog.resources(key, day, day)
+        )
         return resources[0] if resources else None
     try:
-        with reporter.status(f"Finding the first {key.symbol} daily file"):
+        file_kind = "archive" if mixed or key.cadence == "monthly" else "daily file"
+        with reporter.status(f"Finding the first {key.symbol} {file_kind}"):
             first = source.first_resource(
                 client,
                 key,
@@ -305,8 +327,7 @@ def _first_resource(
         result.errors.append(Message("discovery_failed", str(error)))
         return None
     if first is not None:
-        catalog.save_discovery(key, first.day, first.day, [first])
-        catalog.save_source_bounds(key, first.day, None)
+        record_source_boundary(catalog, key, first)
     return first
 
 
@@ -321,6 +342,7 @@ def _availability_range(
     result: Result,
     reporter: Reporter,
     *,
+    requested_start: datetime,
     active: bool,
     refresh: bool,
     offline: bool,
@@ -338,6 +360,7 @@ def _availability_range(
         today: The current UTC day and exclusive active boundary.
         result: The result receiving discovery failures.
         reporter: The optional Rich activity reporter.
+        requested_start: The requested UTC start used to detect older archive layouts.
         active: Whether the market can receive new daily files.
         refresh: Whether source metadata must be refreshed.
         offline: Whether source access is forbidden.
@@ -355,6 +378,7 @@ def _availability_range(
         today,
         result,
         reporter,
+        requested_start=requested_start,
         refresh=refresh,
         offline=offline,
     )
@@ -384,7 +408,9 @@ def _availability_range(
         if bounds is not None:
             catalog.save_source_bounds(key, first.day, bounds[1])
     source_range = _availability(
-        catalog.resource_coverage_bounds(key, include_monthly=not active),
+        catalog.resource_coverage_bounds(
+            key, include_monthly=not active or dataset.daily_archive_start is not None
+        ),
         active,
         today,
         dataset,
@@ -1255,6 +1281,7 @@ def process_pair(
         today,
         result,
         display,
+        requested_start=request.start,
         active=active,
         refresh=refresh,
         offline=offline,

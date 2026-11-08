@@ -1,6 +1,7 @@
 """Discover requested daily resources and record them in the catalog."""
 
 from collections.abc import Callable, Iterator
+from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 import logging
 
@@ -16,6 +17,36 @@ LOGGER = logging.getLogger(__name__)
 DISCOVERY_TTL = timedelta(hours=24)
 DEFAULT_DISCOVERY_WINDOW_DAYS = 31
 type ArchiveBatch = Callable[[list[Resource]], None]
+
+
+def record_source_boundary(catalog: Catalog, key: ResourceKey, first: Resource) -> None:
+    """Persist the first archive under its cadence and the source start under the dataset.
+
+    Args:
+        catalog: Catalog that will store the source metadata.
+        key: Dataset identity used when requesting the source boundary.
+        first: Earliest archive reported by the source.
+    """
+    resource_key = replace(key, cadence=first.cadence)
+    catalog.save_discovery(resource_key, first.day, first.last_day, [first])
+    catalog.save_source_bounds(key, first.day, None)
+
+
+def boundary_predates_known_cadence(
+    requested_start: datetime, known_start: date, dataset: DatasetSpec
+) -> bool:
+    """Detect an older request whose cached boundary covers only the daily generation.
+
+    Args:
+        requested_start: First requested UTC timestamp.
+        known_start: First archive day previously recorded in the catalog.
+        dataset: Dataset declaring any historical monthly generation.
+
+    Returns:
+        Whether to discover the source start again for the older request.
+    """
+    transition = dataset.daily_archive_start
+    return transition is not None and requested_start.date() < transition <= known_start
 
 
 def covered_days(resources: list[Resource]) -> set[date]:
