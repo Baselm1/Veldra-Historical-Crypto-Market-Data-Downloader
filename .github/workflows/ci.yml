@@ -1,0 +1,79 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    name: Tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-python@v7.1.0
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install test dependencies
+        run: python -m pip install -e ".[dev]"
+      - name: Run tests with coverage
+        run: python -m pytest
+
+  quality:
+    name: Python quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-python@v7.1.0
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install quality tools
+        run: python -m pip install -e ".[dev]"
+      - name: Check formatting
+        run: python -m black --check src tests
+      - name: Check types
+        run: python -m mypy src
+      - name: Lint source
+        run: python -m pylint src
+      - name: Report complexity and maintainability
+        run: |
+          python -m radon cc src -n B -s --total-average
+          python -m radon mi src -n B -s
+
+  package:
+    name: Build and smoke-test distribution
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-python@v7.1.0
+        with:
+          python-version: "3.14"
+      - name: Build distributions
+        run: |
+          python -m pip install build
+          python -m build
+      - name: Install the wheel and import outside the checkout
+        run: |
+          python -m pip install dist/*.whl
+          cd "$RUNNER_TEMP"
+          python -I -c "from pathlib import Path; from sysconfig import get_path; import veldra; assert Path(veldra.__file__).resolve().is_relative_to(Path(get_path('purelib')).resolve()); assert veldra.Binance"
