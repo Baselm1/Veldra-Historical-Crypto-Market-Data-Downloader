@@ -559,3 +559,43 @@ def test_inspection_rejects_invalid_scalar_options(
     else:
         with pytest.raises((TypeError, ValueError), match=message):
             okx.get_markets(product="spot", **kwargs)  # type: ignore[arg-type]
+
+
+def test_batch_availability_groups_native_subjects_and_reuses_checkpoints(
+    tmp_path: Path,
+) -> None:
+    """Use one native request for two subjects and no manifest calls on retry."""
+    fixture = InspectionFixture()
+    manifest_queries: list[str] = []
+
+    def serve(request: httpx.Request) -> httpx.Response:
+        if not request.url.path.endswith("/market-data-history"):
+            return fixture(request)
+        symbols = request.url.params["instIdList"]
+        manifest_queries.append(symbols)
+        groups = []
+        for symbol in symbols.split(","):
+            single = httpx.Request(
+                request.method, request.url.copy_set_param("instIdList", symbol)
+            )
+            groups.extend(fixture(single).json()["data"][0]["details"])
+        return httpx.Response(
+            200,
+            json={"code": "0", "data": [{"dateAggrType": "daily", "details": groups}]},
+        )
+
+    okx = OKX(
+        tmp_path,
+        earliest_date="all",
+        retries=0,
+        progress=False,
+        transport=httpx.MockTransport(serve),
+    )
+    args = (["ETH-USDT", "BTC-USDT"], "2025-01-01T00:00:00Z", "2025-01-01T01:00:00Z")
+    first = okx.discover_availability_many(*args, product="spot", dataset="klines")
+    assert [item.symbol for item in first] == args[0]
+    assert all(item.available_days == 1 for item in first)
+    assert (
+        okx.discover_availability_many(*args, product="spot", dataset="klines") == first
+    )
+    assert manifest_queries == ["ETH-USDT,BTC-USDT"]

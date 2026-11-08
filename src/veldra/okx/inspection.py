@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
+from itertools import batched
 import math
 from typing import TYPE_CHECKING
 
 import httpx
 
 from veldra.core.catalog import Catalog, catalog_lock, open_catalog
-from veldra.core.discovery import latest_published_day
+from veldra.core.discovery import _scan_ranges, latest_published_day
+from veldra.core.inspection import _discovery_targets
 from veldra.core.matching import exact_markets, rank_markets
 from veldra.core.models import (
     Availability,
@@ -578,7 +581,12 @@ def _availability(
         Immutable known remote, scanned, and cached coverage.
     """
     archives = catalog.archives_between(
-        "okx", specification.product, specification.name, date.min, date.max
+        "okx",
+        specification.product,
+        specification.name,
+        date.min,
+        date.max,
+        subject=subject,
     )
     relevant = [
         item
@@ -860,3 +868,185 @@ def discover_availability(
                     specification,
                     specification.resolve_interval(interval),
                 )
+
+
+def discover_availability_many(
+    service: OKXService,
+    pairs: list[str],
+    start: object,
+    end: object,
+    *,
+    product: object,
+    dataset: object,
+    interval: object = None,
+    refresh: object = False,
+) -> list[Availability]:
+    """Discover OKX archives in native subject batches, reusing checkpoints."""
+    selected_refresh = _boolean(refresh, "refresh")
+    selected_product = _product(product)
+    selected_dataset = parse_identifier(dataset, name="dataset")
+    specification = get_dataset(selected_product, selected_dataset)
+    request = Request.parse(
+        pairs,
+        start,
+        end,
+        product=selected_product,
+        dataset=selected_dataset,
+        interval=interval,
+        gap_policy="keep" if specification.supports_gap_policy else None,
+    ).resolve_dataset(specification)
+    effective_start = service._effective_start(request)
+    if effective_start >= request.end:
+        raise ValueError("request ends before configured OKX history")
+    first, last = service._source_days(effective_start, request.end, specification)
+    path = service.data_dir / "catalog.duckdb"
+    with service._client(offline=False) as client:
+        with catalog_lock(path, "okx"), open_catalog(path) as catalog:
+            targets = _batch_targets(
+                service,
+                catalog,
+                client,
+                request,
+                specification,
+                refresh=selected_refresh,
+            )
+            groups = _batch_ranges(
+                catalog, targets, first, last, refresh=selected_refresh
+            )
+        if groups:
+            _discover_batches(service, client, request, groups)
+        with catalog_lock(path, "okx"), open_catalog(path, initialize=False) as catalog:
+            return [
+                _availability(
+                    service,
+                    catalog,
+                    market,
+                    key.data_subject,
+                    specification,
+                    specification.resolve_interval(interval),
+                )
+                for market, key in targets
+            ]
+
+
+def _batch_targets(
+    service: OKXService,
+    catalog: Catalog,
+    client: httpx.Client,
+    request: Request,
+    specification: DatasetSpec,
+    *,
+    refresh: bool,
+) -> list[tuple[Market, ResourceKey]]:
+    """Resolve inputs using a single market snapshot for the product."""
+    if specification.name == "borrow_rates":
+        identities = [
+            _inspection_identity(
+                service, catalog, request.product, request.dataset, pair
+            )[:2]
+            for pair in request.pairs
+        ]
+    else:
+        markets = service._markets(
+            catalog,
+            client,
+            request.product,
+            Reporter(service.progress),
+            refresh=refresh,
+            offline=False,
+        )
+        resolved = _discovery_targets(
+            request.pairs,
+            markets,
+            resolve=lambda pair: _resolved_market(pair, request.product, markets),
+        )
+        identities = [(market, _subject(specification, market)) for market in resolved]
+    return [
+        (
+            market,
+            ResourceKey(
+                "okx",
+                request.product,
+                request.dataset,
+                subject.value,
+                specification.base_interval,
+                subject=subject,
+            ),
+        )
+        for market, subject in identities
+    ]
+
+
+def _batch_ranges(
+    catalog: Catalog,
+    targets: list[tuple[Market, ResourceKey]],
+    first: date,
+    last: date,
+    *,
+    refresh: bool,
+) -> dict[tuple[date, date], list[ResourceKey]]:
+    """Group matching outstanding ranges without repeating fresh checkpoints."""
+    groups: dict[tuple[date, date], list[ResourceKey]] = {}
+    now = datetime.now(UTC)
+    for key in dict.fromkeys(key for _, key in targets):
+        ranges = _scan_ranges(
+            first,
+            last,
+            catalog.discovery_checkpoints(key),
+            known=[],
+            active=False,
+            refresh=refresh,
+            offline=False,
+            tail_days=7,
+            now=now,
+        )
+        for bounds in ranges:
+            groups.setdefault(bounds, []).append(key)
+    return groups
+
+
+def _discover_batches(
+    service: OKXService,
+    client: httpx.Client,
+    request: Request,
+    groups: dict[tuple[date, date], list[ResourceKey]],
+) -> None:
+    """Fetch native manifest batches concurrently and serialize their writes."""
+    path = service.data_dir / "catalog.duckdb"
+    discovery = OKXManifestDiscovery(service.connector._api(client))
+    jobs = [
+        (bounds, keys) for bounds, group in groups.items() for keys in batched(group, 5)
+    ]
+
+    def fetch(
+        job: tuple[tuple[date, date], tuple[ResourceKey, ...]],
+    ) -> Exception | None:
+        (first, last), keys = job
+        try:
+            with open_catalog(path, initialize=False) as catalog:
+                cached = catalog.ready_archives_between(
+                    "okx", request.product, request.dataset, first, last
+                )
+                plan = OKXArchivePlanner(discovery, cached=cached).plan(
+                    request.product,
+                    request.dataset,
+                    [key.data_subject for key in keys],
+                    first,
+                    last,
+                    transport="specific",
+                )
+                with catalog_lock(path, "okx"):
+                    catalog.save_archives(plan.selected)
+                    for key in keys:
+                        catalog.save_discovery(key, first, last, [])
+        except Exception as error:
+            error.add_note(
+                f"OKX availability for {', '.join(key.symbol for key in keys)}"
+            )
+            return error
+        return None
+
+    with ThreadPoolExecutor(max_workers=service._http_budget.limit) as pool:
+        errors = [error for error in pool.map(fetch, jobs) if error is not None]
+    if errors:
+        raise ExceptionGroup("OKX archive availability discovery failed", errors)

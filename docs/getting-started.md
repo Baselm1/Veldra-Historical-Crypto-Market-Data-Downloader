@@ -228,6 +228,11 @@ discovered = binance.discover_availability(
 `discover_availability()` lists the bounded remote range but does not download
 market archives.
 
+Pass a list of pairs to `discover_availability_many()` to check the same date
+range for several markets using one exchange request budget. Results follow
+input order. If a request fails, an exception group reports the failure, and
+another call can reuse the successful catalog checkpoints.
+
 ## Configuration
 
 The default configuration is equivalent to:

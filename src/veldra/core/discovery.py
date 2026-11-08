@@ -1,6 +1,7 @@
 """Discover requested daily resources and record them in the catalog."""
 
 from collections.abc import Callable, Iterator
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 import logging
@@ -17,6 +18,7 @@ LOGGER = logging.getLogger(__name__)
 DISCOVERY_TTL = timedelta(hours=24)
 DEFAULT_DISCOVERY_WINDOW_DAYS = 31
 type ArchiveBatch = Callable[[list[Resource]], None]
+type CheckpointGuard = Callable[[], AbstractContextManager[None]]
 
 
 def record_source_boundary(catalog: Catalog, key: ResourceKey, first: Resource) -> None:
@@ -148,6 +150,7 @@ def discover_resources(
     tail_days: int = 7,
     reporter: Reporter | None = None,
     on_batch: ArchiveBatch | None = None,
+    checkpoint_guard: CheckpointGuard = nullcontext,
 ) -> list[Resource]:
     """Discover and persist resources overlapping one request.
 
@@ -165,6 +168,7 @@ def discover_resources(
         tail_days: The recent active-market days eligible for periodic rescans.
         reporter: The optional activity reporter for actual source scans.
         on_batch: Optional consumer of settled archive batches during discovery.
+        checkpoint_guard: Context that serializes catalog writes after remote discovery.
 
     Returns:
         All cataloged resources in the requested daily range.
@@ -227,7 +231,8 @@ def discover_resources(
             for scan_start, scan_end in windows:
                 found = source.resources(client, key, scan_start, scan_end)
                 _validate_resources(found, scan_start, scan_end)
-                catalog.save_discovery(key, scan_start, scan_end, found)
+                with checkpoint_guard():
+                    catalog.save_discovery(key, scan_start, scan_end, found)
                 if on_batch is not None and found:
                     on_batch(catalog.resources(key, scan_start, scan_end))
                 LOGGER.debug(
