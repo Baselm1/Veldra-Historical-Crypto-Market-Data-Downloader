@@ -79,12 +79,17 @@ def trade_archive(frame: pd.DataFrame) -> tuple[ArchiveObject, bytes]:
 def test_spot_trades_preserve_side_ids_and_explicit_quantities() -> None:
     """Confirm equal timestamps and derived quote quantities remain deterministic."""
     dataset = get_dataset("spot", "trades")
-    frame = normalize_trades(trade_frame(), dataset)
+    raw = trade_frame()
+    raw["created_time"] = 1735689600123
+    frame = normalize_trades(raw, dataset)
     assert list(frame.columns) == ["instrument_id", *dataset.stored_columns]
     assert frame["trade_id"].tolist() == [10, 11]
     assert frame["side"].tolist() == ["buy", "sell"]
     assert frame["quote_quantity"].tolist() == [200.0, 303.0]
-    assert str(frame["event_time"].dtype) == "datetime64[ms, UTC]"
+    assert str(frame["event_time"].dtype) == "datetime64[us, UTC]"
+    assert (
+        frame["event_time"].tolist() == [pd.Timestamp("2025-01-01T00:00:00.123Z")] * 2
+    )
 
 
 def test_trade_exact_duplicates_are_removed_but_conflicts_fail() -> None:
