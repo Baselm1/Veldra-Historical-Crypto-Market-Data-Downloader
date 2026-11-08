@@ -45,6 +45,7 @@ class DurableSource:
     def __init__(self) -> None:
         """Create an empty record of source activity."""
         self.resource_calls: list[tuple[date, date]] = []
+        self.absent: set[date] = set()
         self.ingest_calls: list[date] = []
         self.checksum_calls: list[date] = []
         self.checksums: dict[date, str] = {}
@@ -100,7 +101,9 @@ class DurableSource:
             One resource for every day in the inclusive range.
         """
         self.resource_calls.append((start_day, end_day))
-        return [resource(day) for day in days(start_day, end_day)]
+        return [
+            resource(day) for day in days(start_day, end_day) if day not in self.absent
+        ]
 
     def first_resource(
         self,
@@ -253,6 +256,72 @@ def test_active_discovery_reuses_a_fresh_recent_tail() -> None:
     assert source.resource_calls == []
 
 
+@pytest.mark.parametrize("refresh", [False, True])
+def test_discovery_rechecks_a_confirmed_absence(tmp_path: Path, refresh: bool) -> None:
+    """Reuse fresh negative coverage and discover a later publication."""
+    source = DurableSource()
+    missing = date(2025, 1, 3)
+    source.absent.add(missing)
+    with duckdb.connect(str(tmp_path / "catalog.duckdb")) as connection:
+        store = Catalog(connection)
+        with httpx.Client() as client:
+            first = discover_resources(
+                source, store, client, KEY, START, END, active=False
+            )
+            assert missing not in {item.day for item in first}
+            source.resource_calls.clear()
+            source.absent.clear()
+            repeated = discover_resources(
+                source, store, client, KEY, START, END, active=False
+            )
+            assert repeated == first
+            assert not source.resource_calls
+            if not refresh:
+                connection.execute(
+                    "UPDATE discovery_segments SET scanned_at = ?",
+                    [
+                        datetime.now(UTC).replace(tzinfo=None)
+                        - DISCOVERY_TTL
+                        - timedelta(seconds=1)
+                    ],
+                )
+            found = discover_resources(
+                source, store, client, KEY, START, END, active=False, refresh=refresh
+            )
+
+    assert missing in {item.day for item in found}
+    expected = (
+        (START.date(), (END - timedelta(days=1)).date())
+        if refresh
+        else (missing, missing)
+    )
+    assert source.resource_calls == [expected]
+
+
+def test_failed_discovery_is_retryable_without_waiting_for_expiry() -> None:
+    """Distinguish a confirmed empty listing from rate limiting and timeouts."""
+    store = catalog()
+    source = DurableSource()
+
+    class RateLimitedSource(DurableSource):
+        """Pass through a retryable response instead of an archive listing."""
+
+        def resources(
+            self, client: httpx.Client, key: ResourceKey, start_day: date, end_day: date
+        ) -> list[Resource]:
+            """Raise an HTTP error before the caller can record a scan."""
+            client.head("https://example.test/archive").raise_for_status()
+            raise AssertionError("expected a rate-limited response")
+
+    with httpx.Client(
+        transport=httpx.MockTransport(lambda request: httpx.Response(429))
+    ) as client:
+        with pytest.raises(httpx.HTTPStatusError):
+            discover_resources(RateLimitedSource(), store, client, KEY, START, END)
+        assert not store.discovery_checkpoints(KEY)
+        assert len(discover_resources(source, store, client, KEY, START, END)) == 10
+
+
 def test_active_discovery_rescans_only_a_stale_recent_tail() -> None:
     """Confirm an active market revisits stale tail days without scanning history."""
     source = DurableSource()
@@ -352,6 +421,10 @@ def test_active_tail_scans_only_days_without_fresh_coverage() -> None:
         date(2025, 1, 1),
         date(2025, 1, 10),
         checkpoints,
+        known=[
+            (date(2025, 1, 1), date(2025, 1, 8)),
+            (date(2025, 1, 10), date(2025, 1, 10)),
+        ],
         active=True,
         refresh=False,
         offline=False,
@@ -369,6 +442,7 @@ def test_discovery_checkpoint_is_fresh_at_the_ttl_boundary() -> None:
             date(2025, 1, 8),
             date(2025, 1, 10),
             [(date(2025, 1, 8), date(2025, 1, 10), now - DISCOVERY_TTL)],
+            known=[],
             active=True,
             refresh=False,
             offline=False,

@@ -877,7 +877,7 @@ def test_offline_http_client_rejects_requests_without_loading_tls(
     monkeypatch.setattr(downloader_module, "_ssl_context", fail_tls_setup)
     with downloader_module._http_client(
         None,
-        httpx.Limits(max_connections=1),
+        downloader_module.RequestBudget("binance", 1),
         offline=True,
     ) as client:
         with pytest.raises(RuntimeError, match="offline mode attempted"):

@@ -102,6 +102,8 @@ Veldra stores ordinary Klines at `1m` and returns:
 
 Gate Futures additionally publish native `10s` archives. An explicit
 `interval="10s"` request uses those files. Spot does not support `10s`.
+Gate Spot Kline archives use monthly files through March 2024 and daily
+files from April 2024. Requests spanning the transition use both layouts.
 Missing source candles remain sparse by default with `gap_policy="keep"`;
 callers may request another supported gap policy explicitly.
 

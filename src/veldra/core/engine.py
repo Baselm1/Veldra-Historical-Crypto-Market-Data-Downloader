@@ -17,6 +17,7 @@ import pandas as pd
 from veldra.core.catalog import Catalog, catalog_lock, open_catalog
 from veldra.core.config import DEFAULT_DATA_DIR, Settings, load_settings
 from veldra.core.datasets import DatasetSpec, DatasetResolver
+from veldra.core.http_budget import ExchangeHTTPClient, RequestBudget
 from veldra.core.reporting import Reporter, format_source
 from veldra.core.models import Market, Result
 from veldra.core.pair import process_pair
@@ -68,7 +69,7 @@ def _reject_offline_request(request: httpx.Request) -> httpx.Response:
 
 def _http_client(
     transport: httpx.BaseTransport | None,
-    limits: httpx.Limits,
+    budget: RequestBudget,
     *,
     offline: bool,
 ) -> httpx.Client:
@@ -76,7 +77,7 @@ def _http_client(
 
     Args:
         transport: An optional caller-supplied HTTP transport.
-        limits: The source-wide connection-pool limits.
+        budget: Permits shared by the exchange's HTTP clients.
         offline: Whether every attempted HTTP request must fail locally.
 
     Returns:
@@ -86,18 +87,11 @@ def _http_client(
         return httpx.Client(
             transport=httpx.MockTransport(_reject_offline_request),
             follow_redirects=True,
-            limits=limits,
         )
-    if transport is not None:
-        return httpx.Client(
-            transport=transport,
-            follow_redirects=True,
-            limits=limits,
-        )
-    return httpx.Client(
-        verify=_ssl_context(),
-        follow_redirects=True,
-        limits=limits,
+    return ExchangeHTTPClient(
+        budget,
+        transport=transport,
+        verify=True if transport is not None else _ssl_context(),
     )
 
 
@@ -436,12 +430,19 @@ class RetrievalEngine:
             raise ValueError("earliest_date must be before today in UTC")
         self.kline_base_interval = self.settings.kline_base_interval
         self.max_workers = _positive_integer(max_workers, "max_workers")
+        self._http_budget = RequestBudget(
+            source.code, _source_limit(source, self.max_workers)
+        )
         self.discovery_tail_days = _positive_integer(
             discovery_tail_days, "discovery_tail_days"
         )
         self.market_refresh_hours = _positive_number(
             market_refresh_hours, "market_refresh_hours"
         )
+
+    def _client(self, *, offline: bool) -> httpx.Client:
+        """Create a request client using this runtime's shared HTTP budget."""
+        return _http_client(self.transport, self._http_budget, offline=offline)
 
     def get_results(
         self,
@@ -527,13 +528,8 @@ class RetrievalEngine:
             refresh,
             offline,
         )
-        source_limit = _source_limit(self.source, self.max_workers)
-        limits = httpx.Limits(
-            max_connections=source_limit,
-            max_keepalive_connections=source_limit,
-        )
         with catalog_lock(catalog_path, self.source.code):
-            with _http_client(self.transport, limits, offline=offline) as client:
+            with self._client(offline=offline) as client:
                 with open_catalog(catalog_path) as catalog:
                     markets = _load_markets(
                         self.source,
@@ -558,7 +554,7 @@ class RetrievalEngine:
                     refresh=refresh,
                     offline=offline,
                     discovery_tail_days=self.discovery_tail_days,
-                    max_workers=source_limit,
+                    max_workers=self._http_budget.limit,
                     reporter=reporter,
                 )
         LOGGER.info(

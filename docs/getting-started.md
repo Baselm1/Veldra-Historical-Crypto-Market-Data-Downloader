@@ -52,7 +52,7 @@ All eight constructors accept these common options:
 | `data_dir` | `"data/veldra"` | DuckDB catalog and Parquet cache root |
 | `config_path` | `None` | Optional TOML settings file |
 | `earliest_date` | `None` | Override the configured history boundary; use `"all"` for full source history |
-| `max_workers` | `32` | Exchange-wide archive worker ceiling |
+| `max_workers` | `32` | Per-facade archive worker and in-flight HTTP ceilings |
 | `market_refresh_hours` | `24.0` | Market metadata cache lifetime |
 | `timeout` | `30.0` | Timeout for each HTTP attempt, in seconds |
 | `retries` | `3` | Retries after the first HTTP attempt |
@@ -60,7 +60,10 @@ All eight constructors accept these common options:
 | `progress` | `True` | Show Rich status and download progress |
 
 Archive-backed facades also accept `discovery_tail_days`. API-backed sources
-use endpoint-specific rate limiters.
+use endpoint-specific rate limiters. Each exchange can have at most 32
+in-flight HTTP requests in one process, shared across facade instances.
+The facade's `max_workers` and lower source limits also constrain its own
+metadata, discovery, archive, and REST requests.
 
 Every facade exposes `data_dir`, `earliest_date`, and `max_workers`. Facades
 with one configured physical Kline interval also expose
@@ -71,7 +74,7 @@ with one configured physical Kline interval also expose
 | `data_dir` | Resolved catalog and Parquet root |
 | `earliest_date` | Configured UTC history boundary, or `None` for all history |
 | `kline_base_interval` | Configured physical Kline interval, when applicable |
-| `max_workers` | Exchange-wide worker ceiling |
+| `max_workers` | Configured per-facade worker ceiling |
 
 ## Retrieve data
 
