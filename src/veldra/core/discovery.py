@@ -35,18 +35,21 @@ def record_source_boundary(catalog: Catalog, key: ResourceKey, first: Resource) 
 def boundary_predates_known_cadence(
     requested_start: datetime, known_start: date, dataset: DatasetSpec
 ) -> bool:
-    """Detect an older request whose cached boundary covers only the daily generation.
+    """Detect an older request whose cached boundary may omit historical archives.
 
     Args:
         requested_start: First requested UTC timestamp.
         known_start: First archive day previously recorded in the catalog.
-        dataset: Dataset declaring any historical monthly generation.
+        dataset: Dataset declaring an archive transition or earlier discovery floor.
 
     Returns:
         Whether to discover the source start again for the older request.
     """
-    transition = dataset.daily_archive_start
-    return transition is not None and requested_start.date() < transition <= known_start
+    source_day = (requested_start + dataset.archive_day_offset).date()
+    return any(
+        boundary is not None and source_day < boundary <= known_start
+        for boundary in (dataset.daily_archive_start, dataset.previous_archive_floor)
+    )
 
 
 def covered_days(resources: list[Resource]) -> set[date]:

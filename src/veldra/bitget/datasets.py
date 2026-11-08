@@ -1,7 +1,7 @@
 """Declare Bitget products, datasets, schemas, and physical intervals."""
 
 from collections.abc import Mapping
-from datetime import timedelta
+from datetime import date, timedelta
 from types import MappingProxyType
 from typing import Literal
 
@@ -165,6 +165,7 @@ def _klines(product: BitgetProduct) -> DatasetSpec:
         archive_day_offset=ARCHIVE_DAY_OFFSET,
         archive_symbol_attribute="pair",
         bounded_history_lookup=True,
+        previous_archive_floor=date(2023, 1, 1) if product == "spot" else None,
     )
 
 
