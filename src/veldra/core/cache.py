@@ -264,6 +264,8 @@ def _revalidate_cached_resource(
     Returns:
         Whether the local partition remains usable and an optional warning.
     """
+    if resource.cadence == "monthly" and getattr(source, "monthly_cache_only", False):
+        return True, None
     if resource.integrity_spec.mode not in {"sidecar", "response_header"}:
         LOGGER.debug(
             "Cached archive cannot be source-revalidated: day=%s mode=%s",

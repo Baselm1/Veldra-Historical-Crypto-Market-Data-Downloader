@@ -41,9 +41,10 @@ the requested range, and returning 527,040 rows.
 
 This is a sustained multi-file result, not a promise for every request. Fixed
 discovery and processing costs mean the official helper can be faster for one
-small file. Veldra greedily uses monthly archives for complete historical
-months and daily archives for uncovered edges and recent data, while retaining
-minute-level queries.
+small file. Veldra discovers and downloads daily Binance archives. It can
+still read valid monthly Parquet from earlier versions without contacting
+Binance for those files. Missing or invalid cache entries are rebuilt from
+daily archives, and output resampling is independent of the archive cadence.
 
 ## Products and datasets
 
