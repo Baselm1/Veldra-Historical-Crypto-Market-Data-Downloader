@@ -11,6 +11,7 @@ from .catalog import Catalog
 from .cache import valid_cached_path
 from .datasets import DatasetSpec
 from .discovery import (
+    ArchiveBatch,
     covered_days,
     discover_resources,
     requested_days,
@@ -169,6 +170,7 @@ def plan_archives(
     offline: bool = False,
     tail_days: int = 7,
     reporter: Reporter | None = None,
+    on_batch: ArchiveBatch | None = None,
 ) -> list[Resource]:
     """Discover useful monthly archives and daily files for uncovered dates.
 
@@ -185,6 +187,7 @@ def plan_archives(
         offline: Use only cataloged resources.
         tail_days: Recent days subject to discovery freshness.
         reporter: Optional progress display.
+        on_batch: Optional consumer of settled daily archive batches.
 
     Returns:
         A non-overlapping set of physical archives for the request.
@@ -213,6 +216,7 @@ def plan_archives(
             offline=offline,
             tail_days=(scan_end - scan_start).days + 1 if monthly else tail_days,
             reporter=reporter,
+            on_batch=on_batch if not monthly else None,
         )
 
     def scan_transition(transition: date) -> list[Resource]:

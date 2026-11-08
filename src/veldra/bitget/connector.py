@@ -97,6 +97,7 @@ class BitgetConnector:
     code = "bitget"
     products: tuple[str, ...] = tuple(PRODUCTS)
     max_concurrency = 32
+    discovery_window_days = 7
     monthly_datasets: frozenset[str] = frozenset()
 
     def __init__(
