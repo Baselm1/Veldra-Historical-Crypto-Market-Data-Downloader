@@ -1,6 +1,7 @@
 """Test OKX Spot trade normalization and public facade behavior."""
 
 from base64 import b64encode
+from dataclasses import replace
 from datetime import date
 from hashlib import md5
 from io import BytesIO
@@ -139,3 +140,40 @@ def test_trade_provider_writes_queryable_raw_events(tmp_path: Path) -> None:
     assert value.materialization.row_count == 2
     assert value.partitions[0].interval is None
     assert value.partitions[0].predicate_value == "BTC-USDT"
+
+
+def test_shared_swap_archive_normalizes_only_requested_product(tmp_path: Path) -> None:
+    """Exclude inverse rows before converting linear contract quantities."""
+    linear = "BTC-USDT-SWAP"
+    inverse = "BTC-USD-SWAP"
+    item, content = trade_archive(trade_frame(instrument_name=[linear, inverse]))
+    item = replace(
+        item,
+        key=replace(
+            item.key,
+            product="linear_swap",
+            remote_scope_kind="all",
+            remote_scope_value="ANY",
+        ),
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        """Serve the mixed archive with its checksum."""
+        return httpx.Response(
+            200,
+            content=content,
+            headers={"Content-MD5": b64encode(md5(content).digest()).decode()},
+            request=request,
+        )
+
+    path = tmp_path / "linear.parquet"
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        result = OKXArchiveProvider(
+            client,
+            retries=0,
+            contract_sizes={linear: 0.1},
+            allowed_instruments={linear},
+        ).materialize(item, path)
+
+    assert [partition.predicate_value for partition in result.partitions] == [linear]
+    assert pd.read_parquet(path)["base_quantity"].tolist() == [0.2]

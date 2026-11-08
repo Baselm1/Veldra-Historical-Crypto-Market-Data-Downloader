@@ -501,13 +501,14 @@ class OKXArchiveProvider:
                 raise DataValidationError(
                     "OKX archive is not a readable ZIP/CSV"
                 ) from error
-            frame = normalize(raw, dataset, self.contract_sizes)
-            if self.allowed_instruments is not None:
-                frame = frame[frame["instrument_id"].isin(self.allowed_instruments)]
-                if frame.empty:
+            if self.allowed_instruments is not None and "instrument_name" in raw:
+                instruments = raw["instrument_name"].astype("string").str.strip()
+                raw = raw.loc[instruments.isin(self.allowed_instruments)].copy()
+                if raw.empty:
                     raise DataValidationError(
                         "OKX archive contains no instruments for the requested product"
                     )
+            frame = normalize(raw, dataset, self.contract_sizes)
             if (
                 frame[dataset.time_column].min() < start
                 or frame[dataset.time_column].max() >= end
