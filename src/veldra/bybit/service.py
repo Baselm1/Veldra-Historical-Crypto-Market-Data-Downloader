@@ -49,7 +49,7 @@ class BybitService:
             discovery_tail_days=discovery_tail_days,
             market_refresh_hours=market_refresh_hours,
         )
-        self._http = httpx.Client(transport=transport, follow_redirects=True)
+        self._http = self.downloader._client(offline=False)
         self.client = BybitClient(
             client=self._http,
             limiter=connector.limiter,
@@ -106,7 +106,12 @@ class BybitService:
     ) -> pd.DataFrame:
         """Return one REST dataset through its persistent range cache."""
         catalog_path = self.data_dir / "catalog.duckdb"
-        with catalog_lock(catalog_path, "bybit"):
+        scope = (
+            f"bybit/klines/{product}/{interval}/{subject.value}"
+            if dataset == "klines"
+            else "bybit"
+        )
+        with catalog_lock(catalog_path, scope):
             with open_catalog(catalog_path) as catalog:
                 return BybitRESTCache(catalog, self.data_dir).get(
                     dataset,

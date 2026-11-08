@@ -9,7 +9,7 @@ from contextlib import contextmanager
 from dataclasses import replace
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
-from threading import Barrier, Lock
+from threading import Barrier, Event, Lock
 from time import sleep
 from unittest.mock import patch
 
@@ -864,6 +864,71 @@ def test_distinct_sources_overlap_with_one_catalog(tmp_path: Path) -> None:
         for source in sources:
             key = ResourceKey(source.code, "spot", "klines", "BTCUSDT", "1m")
             assert catalog.resources(key, day, day)[0].status == "ready"
+
+
+@pytest.mark.parametrize("second_page_fails", [False, True])
+def test_kline_ingestion_starts_before_later_discovery_finishes(
+    tmp_path: Path, second_page_fails: bool
+) -> None:
+    """Start the first archive during discovery and persist it after failure."""
+    first = date(2024, 1, 1)
+    third = first + timedelta(days=2)
+    ingest_started = Event()
+
+    class PagedSource(RangeSource):
+        """Hold a second listing until the first-page ingestion starts."""
+
+        discovery_window_days = 2
+
+        def resources(
+            self, client: httpx.Client, key: ResourceKey, start_day: date, end_day: date
+        ) -> list[Resource]:
+            """Check that ingestion overlaps the next discovery request."""
+            if start_day == third:
+                assert ingest_started.wait(
+                    timeout=3
+                ), "first page did not start ingesting"
+                if second_page_fails:
+                    raise httpx.ReadTimeout("second page unavailable")
+            return super().resources(client, key, start_day, end_day)
+
+        def ingest(
+            self,
+            client: httpx.Client,
+            resource: Resource,
+            dataset: DatasetSpec,
+            destination: Path,
+        ) -> IngestedResource:
+            """Signal when the fixture's first requested archive starts."""
+            if resource.day == first:
+                ingest_started.set()
+            return super().ingest(client, resource, dataset, destination)
+
+    source = PagedSource(
+        [market("BTCUSDT")], {"BTCUSDT": [first - timedelta(days=1), first, third]}
+    )
+    result = one_result(
+        service(tmp_path, source).get_results(
+            "BTCUSDT",
+            first,
+            third + timedelta(days=1),
+            gap_policy="keep",
+            progress=False,
+        )
+    )
+    assert ingest_started.is_set()
+    key = ResourceKey(source.code, "spot", "klines", "BTCUSDT", "1m")
+    with open_catalog(tmp_path / "catalog.duckdb") as catalog:
+        assert catalog.resources(key, first, first)[0].status == "ready"
+        assert catalog.discovery_ranges(key)[-1] == (
+            (first, first + timedelta(days=1))
+            if second_page_fails
+            else (third, third + timedelta(days=1))
+        )
+    if second_page_fails:
+        assert result.errors[0].code == "discovery_failed"
+    else:
+        assert not result.errors and len(result.data) == 2
 
 
 def test_overlapping_calls_to_one_source_reuse_the_published_archive(

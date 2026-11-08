@@ -11,6 +11,7 @@ from .catalog import Catalog
 from .cache import valid_cached_path
 from .datasets import DatasetSpec
 from .discovery import (
+    ArchiveBatch,
     covered_days,
     discover_resources,
     requested_days,
@@ -125,6 +126,7 @@ def _monthly_candidates(
     last: date,
     *,
     refresh: bool,
+    allow_downloads: bool,
 ) -> list[Resource]:
     """Select ready files and usable whole-month downloads without overlaps.
 
@@ -134,6 +136,7 @@ def _monthly_candidates(
         first: First requested calendar day.
         last: Last requested calendar day.
         refresh: Whether failed monthly downloads should be retried.
+        allow_downloads: Whether to select monthly archives that need ingestion.
 
     Returns:
         Ready files plus monthly downloads worth attempting.
@@ -142,7 +145,8 @@ def _monthly_candidates(
     for resource in resources:
         ready = valid_cached_path(resource, dataset) is not None
         usable_month = (
-            resource.cadence == "monthly"
+            allow_downloads
+            and resource.cadence == "monthly"
             and (refresh or resource.status != "failed")
             and first <= resource.day
             and resource.last_day <= last
@@ -166,6 +170,7 @@ def plan_archives(
     offline: bool = False,
     tail_days: int = 7,
     reporter: Reporter | None = None,
+    on_batch: ArchiveBatch | None = None,
 ) -> list[Resource]:
     """Discover useful monthly archives and daily files for uncovered dates.
 
@@ -182,6 +187,7 @@ def plan_archives(
         offline: Use only cataloged resources.
         tail_days: Recent days subject to discovery freshness.
         reporter: Optional progress display.
+        on_batch: Optional consumer of settled daily archive batches.
 
     Returns:
         A non-overlapping set of physical archives for the request.
@@ -210,7 +216,22 @@ def plan_archives(
             offline=offline,
             tail_days=(scan_end - scan_start).days + 1 if monthly else tail_days,
             reporter=reporter,
+            on_batch=on_batch if not monthly else None,
         )
+
+    def scan_transition(transition: date) -> list[Resource]:
+        """Select both archive generations on either side of the transition."""
+        month_first = first.replace(day=1)
+        historical_last = min(last, transition - timedelta(days=1))
+        month_last = historical_last.replace(
+            day=monthrange(historical_last.year, historical_last.month)[1]
+        )
+        archives = scan(
+            replace(key, cadence="monthly"), month_first, month_last, monthly=True
+        )
+        if transition <= last:
+            archives.extend(scan(key, transition, last))
+        return select_archives(archives, dataset)
 
     if key.cadence == "monthly":
         for month_start, month_end in _overlapping_months(first, last):
@@ -220,20 +241,27 @@ def plan_archives(
             dataset,
         )
 
+    transition = dataset.daily_archive_start
+    if transition is not None and first < transition:
+        return scan_transition(transition)
+
     if key.dataset not in getattr(source, "monthly_datasets", ()):
         return scan(
             key,
             first,
             last + timedelta(days=dataset.discovery_lookahead_days),
         )
-    existing = catalog_archives_between(catalog, key, start, end)
-    cached = [r for r in existing if valid_cached_path(r, dataset) is not None]
+    allow_monthly_downloads = not getattr(source, "monthly_cache_only", False)
     month_key = replace(key, cadence="monthly")
-    months = [
-        (a, b)
-        for a, b in _months(first, last)
-        if refresh or not any(r.day <= b and r.last_day >= a for r in cached)
-    ]
+    months: list[tuple[date, date]] = []
+    if allow_monthly_downloads and not offline:
+        existing = catalog_archives_between(catalog, key, start, end)
+        cached = [r for r in existing if valid_cached_path(r, dataset) is not None]
+        months = [
+            (a, b)
+            for a, b in _months(first, last)
+            if refresh or not any(r.day <= b and r.last_day >= a for r in cached)
+        ]
     for month_start, month_end in _merge_ranges(months):
         # Monthly publication can lag into the next month; retry absent months
         # after the same TTL as daily discovery, including inactive markets.
@@ -252,6 +280,7 @@ def plan_archives(
         first,
         last,
         refresh=refresh,
+        allow_downloads=allow_monthly_downloads,
     )
     for gap_start, gap_end in _uncovered_ranges(
         first, last, [(r.day, r.last_day) for r in selected if r.cadence == "monthly"]

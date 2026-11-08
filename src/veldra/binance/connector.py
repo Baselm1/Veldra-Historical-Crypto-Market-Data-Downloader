@@ -72,6 +72,8 @@ class BinanceConnector:
     code: str = "binance"
     products: tuple[str, ...] = ("spot", "um", "cm")
     max_concurrency: int = 64
+    monthly_cache_only = True
+    discovery_window_days = _S3_MAX_KEYS // _DAILY_KEYS_PER_ARCHIVE - 1
     monthly_datasets = frozenset(
         {
             "klines",
@@ -166,6 +168,7 @@ class BinanceConnector:
         Returns:
             The lowercase SHA-256 digest declared by Binance.
         """
+        self._require_downloadable(resource.cadence)
         return archive_checksum(
             client,
             resource,
@@ -358,6 +361,7 @@ class BinanceConnector:
         Returns:
             Integrity metadata for the completed Parquet file.
         """
+        self._require_downloadable(resource.cadence)
         return ingest_archive(
             client,
             resource,
@@ -807,6 +811,13 @@ class BinanceConnector:
         if product not in self.products:
             raise ValueError(f"unsupported Binance product: {product}")
 
+    def _require_downloadable(self, cadence: str) -> None:
+        """Limit upstream Binance requests to daily archives."""
+        if self.monthly_cache_only and cadence == "monthly":
+            raise ValueError(
+                "Binance monthly archives are available only in local cache"
+            )
+
     def _validate_resource_request(
         self, key: ResourceKey, start_day: date | None, end_day: date
     ) -> DatasetSpec:
@@ -822,6 +833,7 @@ class BinanceConnector:
             raise ValueError(f"unsupported source: {key.source}")
         if key.cadence not in {"daily", "monthly"}:
             raise ValueError("unsupported archive cadence")
+        self._require_downloadable(key.cadence)
         if key.cadence == "monthly" and key.dataset not in self.monthly_datasets:
             raise ValueError("dataset has no monthly archives")
         self._check_product(key.product)

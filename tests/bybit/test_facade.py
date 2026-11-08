@@ -2,8 +2,10 @@
 
 from datetime import UTC, datetime
 from pathlib import Path
+from threading import Barrier
 from typing import Any
 
+import httpx
 import pandas as pd
 import pytest
 
@@ -72,6 +74,44 @@ def test_empty_success_is_reported_as_an_unavailable_range(
     assert isinstance(frame, pd.DataFrame)
     assert frame.attrs["download"]["errors"][0]["code"] == "range_unavailable"
     api.close()
+
+
+def test_independent_kline_pairs_share_a_parallel_rest_batch(tmp_path: Path) -> None:
+    """Fetch two subjects concurrently, preserve order, and reuse the cache."""
+    both_fetching = Barrier(2, timeout=5)
+    requests: list[str] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        """Block both market requests until the other is in flight."""
+        symbol = request.url.params["symbol"]
+        requests.append(symbol)
+        both_fetching.wait()
+        row = ["1735689600000", "100", "101", "99", "100.5", "1", "100.5"]
+        return httpx.Response(200, json={"retCode": 0, "result": {"list": [row]}})
+
+    with Bybit(
+        tmp_path,
+        max_workers=2,
+        retries=0,
+        progress=False,
+        transport=httpx.MockTransport(respond),
+    ) as api:
+        symbols = ["BTCUSDT", "btcusdt", "ETHUSDT"]
+        start, end = "2025-01-01T00:00:00Z", "2025-01-01T00:01:00Z"
+        frames = api.get_klines(symbols, start, end)
+        assert isinstance(frames, list)
+        assert [frame.attrs["download"]["pair"] for frame in frames] == [
+            "BTCUSDT",
+            "BTCUSDT",
+            "ETHUSDT",
+        ]
+        assert frames[0] is not frames[1]
+        cached = api.get_klines(symbols, start, end, offline=True)
+        assert isinstance(cached, list)
+        for online, offline in zip(frames, cached, strict=True):
+            pd.testing.assert_frame_equal(online, offline)
+
+    assert sorted(requests) == ["BTCUSDT", "ETHUSDT"]
 
 
 @pytest.mark.parametrize(

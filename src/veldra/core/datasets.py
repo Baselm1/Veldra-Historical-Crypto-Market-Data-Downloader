@@ -2,7 +2,7 @@
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import date, timedelta
 import logging
 from typing import Literal, Protocol
 
@@ -330,6 +330,8 @@ class DatasetSpec:
     archive_day_offset: timedelta = timedelta(0)
     publication_delay_days: int = 1
     archive_cadence: ArchiveCadence = "daily"
+    daily_archive_start: date | None = None
+    rebuild_on_refresh: bool = False
     bounded_history_lookup: bool = False
 
     def __post_init__(self) -> None:
@@ -375,6 +377,12 @@ class DatasetSpec:
             self.publication_delay_days,
         )
         _validate_archive_cadence(self.archive_cadence)
+        if self.daily_archive_start is not None and (
+            self.archive_cadence != "daily" or self.daily_archive_start.day != 1
+        ):
+            raise ValueError(
+                "a daily archive transition must start on a month boundary"
+            )
         schemas = self.csv_schemas
         identities = [(schema.columns, schema.header) for schema in schemas]
         if len(identities) != len(set(identities)):

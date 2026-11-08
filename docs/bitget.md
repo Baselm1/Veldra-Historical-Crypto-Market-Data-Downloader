@@ -48,8 +48,11 @@ Futures reference data comes from rate-limited public REST endpoints. Mark,
 index, and premium candles contain OHLC prices; Bitget fills both volume fields
 with zero because these are reference prices rather than executed trades.
 Native intervals are `1m`, `3m`, `5m`, `15m`, `30m`, `1h`, `4h`, `6h`, `12h`,
-and `1d`. Veldra stores normalized reference ranges as Parquet, so later calls
-covered by those ranges are served locally.
+and `1d`. Veldra stores normalized reference ranges as Parquet. A snapshot
+fetched within three days of the range end is provisional, including empty or
+partial responses. Veldra reuses it for up to six hours and checks the source
+again on the first request after the three-day window. Snapshots fetched
+after that window are served locally.
 
 ```python
 from datetime import UTC, datetime, timedelta

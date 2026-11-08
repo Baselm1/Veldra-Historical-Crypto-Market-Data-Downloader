@@ -72,6 +72,35 @@ def _hour_resource(
     return replace(resource, url=url, integrity=_integrity(response))
 
 
+def has_order_book_hours(
+    client: httpx.Client,
+    resource: Resource,
+    *,
+    timeout: float,
+    retries: int,
+    backoff: float,
+) -> bool:
+    """Report whether any hourly object exists for the logical day.
+
+    Args:
+        client: The shared HTTP client.
+        resource: Logical source day with an hour-zero URL template.
+        timeout: Timeout in seconds per probe.
+        retries: Retries after the first probe attempt.
+        backoff: Initial exponential retry delay in seconds.
+
+    Returns:
+        True as soon as one published hour is found.
+    """
+    return any(
+        _hour_resource(
+            client, resource, hour, timeout=timeout, retries=retries, backoff=backoff
+        )
+        is not None
+        for hour in range(24)
+    )
+
+
 def _ingest_update_hour(
     client: httpx.Client,
     resource: Resource,

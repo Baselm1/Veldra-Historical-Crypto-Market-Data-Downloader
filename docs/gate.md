@@ -102,6 +102,8 @@ Veldra stores ordinary Klines at `1m` and returns:
 
 Gate Futures additionally publish native `10s` archives. An explicit
 `interval="10s"` request uses those files. Spot does not support `10s`.
+Gate Spot Kline archives use monthly files through March 2024 and daily
+files from April 2024. Requests spanning the transition use both layouts.
 Missing source candles remain sparse by default with `gap_policy="keep"`;
 callers may request another supported gap policy explicitly.
 Active Spot kline retrieval searches only the requested window. Use
@@ -114,6 +116,10 @@ Updates and snapshots answer different questions:
 - Updates contain only changed price levels and are compact event history.
 - Snapshots contain complete bid and ask ladders at each observation and are
   easier to inspect independently.
+
+Veldra combines available hourly archives into one cached day, including days
+without a midnight archive. Use `refresh=True` to rebuild a cached day from the
+hours currently published by Gate.
 
 Snapshot `bids` and `asks` are nested lists of `price` and `quantity`
 structures. Update rows contain `side`, `action`, `price`, and an explicit

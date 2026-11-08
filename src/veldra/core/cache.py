@@ -1,9 +1,9 @@
 """Materialize discovered daily resources in the local Parquet cache."""
 
-from concurrent.futures import Executor, ThreadPoolExecutor
+from concurrent.futures import Executor, Future, ThreadPoolExecutor
 from contextlib import ExitStack
 from dataclasses import dataclass, field, replace
-from datetime import date
+from datetime import date, datetime
 import logging
 from pathlib import Path
 
@@ -264,6 +264,8 @@ def _revalidate_cached_resource(
     Returns:
         Whether the local partition remains usable and an optional warning.
     """
+    if resource.cadence == "monthly" and getattr(source, "monthly_cache_only", False):
+        return True, None
     if resource.integrity_spec.mode not in {"sidecar", "response_header"}:
         LOGGER.debug(
             "Cached archive cannot be source-revalidated: day=%s mode=%s",
@@ -386,6 +388,9 @@ def _cached_coverage(
     if not refresh or offline:
         coverage.paths.extend(path for _resource, path in cached)
         return coverage, pending
+    if dataset.rebuild_on_refresh:
+        pending.extend(cached)
+        return coverage, pending
 
     paths, changed, warnings = _revalidate_cached_resources(
         source,
@@ -459,6 +464,95 @@ def _record_outcomes(
         )
 
 
+class ArchivePrefetch:
+    """Ingest settled archives on the shared executor while discovery continues."""
+
+    def __init__(
+        self,
+        source: Connector,
+        catalog: Catalog,
+        client: httpx.Client,
+        key: ResourceKey,
+        dataset: DatasetSpec,
+        data_dir: Path,
+        executor: Executor,
+        requested: tuple[datetime, datetime],
+        max_workers: int,
+    ) -> None:
+        """Prepare a bounded queue whose catalog writes stay on the caller thread."""
+        self._source = source
+        self._catalog = catalog
+        self._client = client
+        self._key = key
+        self._dataset = dataset
+        self._data_dir = data_dir
+        self._executor = executor
+        self._requested = requested
+        self._capacity = _worker_count(source, dataset, max_workers) * 2
+        self._submitted: set[tuple[str, date]] = set()
+        self._pending: list[
+            tuple[
+                tuple[Resource, Path],
+                Future[tuple[IngestedResource | None, Exception | None]],
+            ]
+        ] = []
+        self.coverage = CacheCoverage()
+
+    def submitted(self, resource: Resource) -> bool:
+        """Report whether this archive already has a queued or completed job."""
+        return (resource.cadence, resource.day) in self._submitted
+
+    def offer(self, resources: list[Resource]) -> None:
+        """Queue missing archives and publish completed results in bounded groups."""
+        self._publish_completed(wait=False)
+        start, end = self._requested
+        for resource in resources:
+            left, right = resource.coverage
+            if (
+                right <= start
+                or left >= end
+                or self.submitted(resource)
+                or valid_cached_path(resource, self._dataset) is not None
+            ):
+                continue
+            if len(self._pending) >= self._capacity:
+                self._publish_completed(wait=True)
+            destination = parquet_path(
+                self._data_dir, self._key, resource.day, resource.cadence
+            )
+            future = self._executor.submit(
+                _ingest_resource,
+                self._source,
+                self._client,
+                self._dataset,
+                resource,
+                destination,
+            )
+            self._pending.append(((resource, destination), future))
+            self._submitted.add((resource.cadence, resource.day))
+
+    def finish(self) -> None:
+        """Publish all queued outcomes, including after an interrupted listing."""
+        self._publish_completed(wait=True)
+
+    def _publish_completed(self, *, wait: bool) -> None:
+        """Write ready outcomes and retain any futures still in progress."""
+        completed = []
+        outcomes = []
+        pending = []
+        for item, future in self._pending:
+            if wait or future.done():
+                completed.append(item)
+                outcomes.append(future.result())
+            else:
+                pending.append((item, future))
+        if completed:
+            _record_outcomes(
+                self._catalog, self._key, completed, outcomes, self.coverage
+            )
+        self._pending = pending
+
+
 def cache_resources(
     source: Connector,
     catalog: Catalog,
@@ -474,6 +568,7 @@ def cache_resources(
     reporter: Reporter | None = None,
     executor: Executor | None = None,
     requested_range: tuple[date, date] | None = None,
+    prefetched: ArchivePrefetch | None = None,
 ) -> CacheCoverage:
     """Reuse valid files and ingest every missing known resource.
 
@@ -491,16 +586,22 @@ def cache_resources(
         reporter: The optional Rich activity reporter.
         executor: An optional request-wide executor shared by every pair.
         requested_range: Optional inclusive days limiting monthly recovery downloads.
+        prefetched: Optional outcomes already published during discovery.
 
     Returns:
         Usable paths and isolated resource problems.
     """
     worker_count = _worker_count(source, dataset, max_workers)
+    remaining = (
+        [resource for resource in resources if not prefetched.submitted(resource)]
+        if prefetched is not None
+        else resources
+    )
     coverage, pending = _cached_coverage(
         source,
         client,
         dataset,
-        resources,
+        remaining,
         data_dir,
         key,
         offline=offline,
@@ -508,6 +609,9 @@ def cache_resources(
         worker_count=worker_count,
         executor=executor,
     )
+    if prefetched is not None:
+        coverage.paths.extend(prefetched.coverage.paths)
+        coverage.problems.extend(prefetched.coverage.problems)
     display = reporter if reporter is not None else Reporter(False)
     noun = "file" if len(resources) == 1 else "files"
     missing_label = "not cached" if offline else "to download"

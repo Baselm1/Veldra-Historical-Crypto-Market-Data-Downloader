@@ -1,5 +1,7 @@
 """Discover requested daily resources and record them in the catalog."""
 
+from collections.abc import Callable, Iterator
+from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 import logging
 
@@ -13,6 +15,38 @@ from veldra.core.connector import Connector
 
 LOGGER = logging.getLogger(__name__)
 DISCOVERY_TTL = timedelta(hours=24)
+DEFAULT_DISCOVERY_WINDOW_DAYS = 31
+type ArchiveBatch = Callable[[list[Resource]], None]
+
+
+def record_source_boundary(catalog: Catalog, key: ResourceKey, first: Resource) -> None:
+    """Persist the first archive under its cadence and the source start under the dataset.
+
+    Args:
+        catalog: Catalog that will store the source metadata.
+        key: Dataset identity used when requesting the source boundary.
+        first: Earliest archive reported by the source.
+    """
+    resource_key = replace(key, cadence=first.cadence)
+    catalog.save_discovery(resource_key, first.day, first.last_day, [first])
+    catalog.save_source_bounds(key, first.day, None)
+
+
+def boundary_predates_known_cadence(
+    requested_start: datetime, known_start: date, dataset: DatasetSpec
+) -> bool:
+    """Detect an older request whose cached boundary covers only the daily generation.
+
+    Args:
+        requested_start: First requested UTC timestamp.
+        known_start: First archive day previously recorded in the catalog.
+        dataset: Dataset declaring any historical monthly generation.
+
+    Returns:
+        Whether to discover the source start again for the older request.
+    """
+    transition = dataset.daily_archive_start
+    return transition is not None and requested_start.date() < transition <= known_start
 
 
 def covered_days(resources: list[Resource]) -> set[date]:
@@ -110,6 +144,7 @@ def discover_resources(
     offline: bool = False,
     tail_days: int = 7,
     reporter: Reporter | None = None,
+    on_batch: ArchiveBatch | None = None,
 ) -> list[Resource]:
     """Discover and persist resources overlapping one request.
 
@@ -126,6 +161,7 @@ def discover_resources(
         offline: Whether all source access must be skipped.
         tail_days: The recent active-market days eligible for periodic rescans.
         reporter: The optional activity reporter for actual source scans.
+        on_batch: Optional consumer of settled archive batches during discovery.
 
     Returns:
         All cataloged resources in the requested daily range.
@@ -134,11 +170,17 @@ def discover_resources(
     start_day, end_day = requested_days(start, end, offset)
     if tail_days < 1:
         raise ValueError("tail_days must be positive")
+    resources = catalog.resources_between(key, start, end)
     checkpoints = catalog.discovery_checkpoints(key)
     scan_ranges = _scan_ranges(
         start_day,
         end_day,
         checkpoints,
+        known=[
+            (resource.day, resource.last_day)
+            for resource in resources
+            if resource.status != "missing"
+        ],
         active=active,
         refresh=refresh,
         offline=offline,
@@ -158,22 +200,43 @@ def discover_resources(
         offline,
     )
     display = reporter if reporter is not None else Reporter(False)
+    if on_batch is not None:
+        on_batch(
+            [
+                resource
+                for resource in resources
+                if all(
+                    resource.last_day < first or resource.day > last
+                    for first, last in scan_ranges
+                )
+            ]
+        )
     if scan_ranges:
+        windows = (
+            _scan_windows(
+                scan_ranges,
+                getattr(source, "discovery_window_days", DEFAULT_DISCOVERY_WINDOW_DAYS),
+            )
+            if on_batch is not None
+            else iter(scan_ranges)
+        )
         with display.status(f"Discovering {key.symbol} {key.cadence} files"):
-            for scan_start, scan_end in scan_ranges:
-                resources = source.resources(client, key, scan_start, scan_end)
-                _validate_resources(resources, scan_start, scan_end)
-                catalog.save_discovery(key, scan_start, scan_end, resources)
+            for scan_start, scan_end in windows:
+                found = source.resources(client, key, scan_start, scan_end)
+                _validate_resources(found, scan_start, scan_end)
+                catalog.save_discovery(key, scan_start, scan_end, found)
+                if on_batch is not None and found:
+                    on_batch(catalog.resources(key, scan_start, scan_end))
                 LOGGER.debug(
                     "Resource range discovered: key=%s range=[%s, %s] resources=%d",
                     key,
                     scan_start,
                     scan_end,
-                    len(resources),
+                    len(found),
                 )
+        resources = catalog.resources_between(key, start, end)
     elif not offline:
         display.info(f"{key.symbol}: reused cached {key.cadence}-file discovery")
-    resources = catalog.resources_between(key, start, end)
     LOGGER.info(
         "Resource discovery complete: key=%s resources=%d scans=%d",
         key,
@@ -183,11 +246,25 @@ def discover_resources(
     return resources
 
 
+def _scan_windows(
+    ranges: list[tuple[date, date]], days: int
+) -> Iterator[tuple[date, date]]:
+    """Yield consecutive bounded ranges for incremental discovery."""
+    if days < 1:
+        raise ValueError("discovery window must be positive")
+    for start, end in ranges:
+        while start <= end:
+            last = min(end, start + timedelta(days=days - 1))
+            yield start, last
+            start = last + timedelta(days=1)
+
+
 def _scan_ranges(
     start_day: date,
     end_day: date,
     checkpoints: list[DiscoveryCheckpoint],
     *,
+    known: list[tuple[date, date]],
     active: bool,
     refresh: bool,
     offline: bool,
@@ -200,6 +277,7 @@ def _scan_ranges(
         start_day: The first day whose availability is needed.
         end_day: The last day whose availability is needed.
         checkpoints: The inclusive ranges already searched and their scan times.
+        known: The inclusive date ranges of archives already confirmed to exist.
         active: Whether recent listings may still change.
         refresh: Whether the caller requested a complete rescan.
         offline: Whether source access is forbidden.
@@ -211,14 +289,13 @@ def _scan_ranges(
     """
     if offline:
         return []
-    if refresh or not checkpoints:
+    if refresh:
         return [(start_day, end_day)]
 
-    covered_ranges = [(start, end) for start, end, _ in checkpoints]
-    ranges = _uncovered_ranges(start_day, end_day, covered_ranges)
+    fresh_ranges = _fresh_ranges(checkpoints, now)
+    ranges = _uncovered_ranges(start_day, end_day, [*known, *fresh_ranges])
     if active:
         tail_start = max(start_day, end_day - timedelta(days=tail_days - 1))
-        fresh_ranges = _fresh_ranges(checkpoints, now)
         ranges.extend(_uncovered_ranges(tail_start, end_day, fresh_ranges))
     return _merge_ranges(ranges)
 
