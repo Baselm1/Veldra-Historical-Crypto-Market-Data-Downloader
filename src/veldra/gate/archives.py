@@ -52,8 +52,10 @@ def _object(
 ) -> SpotKlineArchive | None:
     """Decode one candle object while rejecting results outside the prefix."""
     key = item.findtext("{*}Key")
-    if not key or not key.startswith(prefix) or "/" in key.removeprefix(prefix):
+    if not key or not key.startswith(prefix):
         raise ValueError("Gate archive listing returned an object outside its prefix")
+    if "/" in key.removeprefix(prefix):
+        return None
     match = _OBJECT_NAME.fullmatch(key.rsplit("/", 1)[-1])
     if match is None:
         return None
@@ -61,7 +63,8 @@ def _object(
     monthly = len(compact) == 6
     day = datetime.strptime(compact, "%Y%m" if monthly else "%Y%m%d").date()
     if day.replace(day=1) != month:
-        raise ValueError("Gate archive date does not match its folder")
+        # Gate can also publish a month-end file under the following month.
+        return None
     etag = (item.findtext("{*}ETag") or "").strip('"')
     return SpotKlineArchive(
         symbol,

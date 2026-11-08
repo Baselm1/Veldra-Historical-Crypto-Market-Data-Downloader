@@ -46,6 +46,8 @@ def test_list_spot_archives_includes_delisted_pairs_and_overlapping_cadences(
                 [
                     prefix + "OLD_USDT-20221201.csv.gz",
                     prefix + "OLD_USDT-20221205.csv.gz",
+                    prefix + "OLD_USDT-20221130.csv.gz",
+                    prefix + "s3deals/OLD_USDT-202212.csv.gz",
                 ],
             ),
         )
